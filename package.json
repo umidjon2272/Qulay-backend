@@ -2,6 +2,9 @@
   "name": "yechim-ai-backend",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+  "node": "22.x"
+},
   "description": "Yechim AI backend foundation and authentication API",
   "scripts": {
     "build": "prisma generate && nest build",
