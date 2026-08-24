@@ -10,5 +10,6 @@ exports.default = () => ({
         refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN ?? '30d',
     },
     bcryptSaltRounds: Number.parseInt(process.env.BCRYPT_SALT_ROUNDS ?? '12', 10),
+    authTimingLogs: process.env.AUTH_TIMING_LOGS === 'true',
 });
 //# sourceMappingURL=configuration.js.map

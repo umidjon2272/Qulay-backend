@@ -8,5 +8,6 @@ declare const _default: () => {
         refreshExpiresIn: string;
     };
     bcryptSaltRounds: number;
+    authTimingLogs: boolean;
 };
 export default _default;

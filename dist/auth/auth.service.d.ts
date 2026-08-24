@@ -17,6 +17,7 @@ export declare class AuthService {
     private readonly prisma;
     private readonly jwtService;
     private readonly configService;
+    private readonly logger;
     constructor(usersService: UsersService, prisma: PrismaService, jwtService: JwtService, configService: ConfigService);
     register(dto: RegisterDto): Promise<AuthResponse>;
     login(dto: LoginDto): Promise<AuthResponse>;
@@ -27,6 +28,8 @@ export declare class AuthService {
     me(payload: JwtPayload): Promise<PublicUser>;
     private issueAndPersistTokens;
     private createTokenPair;
+    private timestamp;
+    private logTiming;
     private verifyRefreshToken;
     private findMatchingRefreshToken;
     private hashPassword;

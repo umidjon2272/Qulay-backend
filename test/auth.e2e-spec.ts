@@ -13,6 +13,7 @@ describe('Foundation and auth API', () => {
   let userId: string;
   let accessToken: string;
   let refreshToken: string;
+  let concurrentUserId: string;
 
   beforeAll(async () => {
     const moduleRef: TestingModule = await Test.createTestingModule({
@@ -35,6 +36,9 @@ describe('Foundation and auth API', () => {
   afterAll(async () => {
     if (userId) {
       await prisma.user.delete({ where: { id: userId } }).catch(() => undefined);
+    }
+    if (concurrentUserId) {
+      await prisma.user.delete({ where: { id: concurrentUserId } }).catch(() => undefined);
     }
     await app.close();
   });
@@ -103,6 +107,26 @@ describe('Foundation and auth API', () => {
       .post('/api/auth/refresh')
       .send({ refreshToken: oldRefreshToken })
       .expect(401);
+  });
+
+  it('allows only one concurrent rotation for the same refresh token', async () => {
+    const registration = await request(app.getHttpServer())
+      .post('/api/auth/register')
+      .send({
+        email: `auth-concurrent-${Date.now()}@example.com`,
+        password,
+        firstName: 'Race',
+        lastName: 'Test',
+      })
+      .expect(201);
+    concurrentUserId = registration.body.user.id;
+
+    const results = await Promise.all([
+      request(app.getHttpServer()).post('/api/auth/refresh').send({ refreshToken: registration.body.refreshToken }),
+      request(app.getHttpServer()).post('/api/auth/refresh').send({ refreshToken: registration.body.refreshToken }),
+    ]);
+
+    expect(results.map((result) => result.status).sort()).toEqual([200, 401]);
   });
 
   it('logs out by revoking the current refresh token', async () => {

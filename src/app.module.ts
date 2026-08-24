@@ -31,6 +31,7 @@ import { UsageModule } from './usage/usage.module';
         JWT_ACCESS_EXPIRES_IN: Joi.string().min(1).default('15m'),
         JWT_REFRESH_EXPIRES_IN: Joi.string().min(1).default('30d'),
         BCRYPT_SALT_ROUNDS: Joi.number().integer().min(10).max(14).default(12),
+        AUTH_TIMING_LOGS: Joi.boolean().truthy('true').falsy('false').default(false),
         PORT: Joi.number().integer().min(1).max(65535).default(3000),
         FRONTEND_URL: Joi.string().min(1).default('http://localhost:5173'),
       }),

@@ -91,6 +91,9 @@ model User {
 model RefreshToken {
   id        String    @id @default(uuid()) @db.Uuid
   tokenHash String
+  // Deterministic lookup key avoids bcrypt-scanning every active session.
+  // Nullable keeps refresh compatibility with rows created before this migration.
+  tokenFingerprint String? @db.Char(64)
   userId    String    @db.Uuid
   expiresAt DateTime
   revokedAt DateTime?
@@ -98,6 +101,7 @@ model RefreshToken {
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+  @@index([userId, tokenFingerprint, revokedAt, expiresAt])
   @@index([expiresAt])
 }
 
