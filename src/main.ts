@@ -37,7 +37,11 @@ async function bootstrap(): Promise<void> {
   });
 
   await app.get(PrismaService).enableShutdownHooks(app);
-  await app.listen(configService.getOrThrow<number>('port'));
+const port = configService.getOrThrow<number>('port');
+
+await app.listen(port, '0.0.0.0');
+
+console.log(`Qulay AI backend running on port ${port}`);
 }
 
 void bootstrap();
