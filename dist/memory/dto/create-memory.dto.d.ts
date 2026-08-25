@@ -1,7 +1,9 @@
-import { MemoryCategory } from '@prisma/client';
+import { MemoryType } from '@prisma/client';
 export declare class CreateMemoryDto {
     key: string;
     value: string;
-    category?: MemoryCategory;
+    type?: MemoryType;
     importance?: number;
+    source?: string;
+    contactId?: string | null;
 }

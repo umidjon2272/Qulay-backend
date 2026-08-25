@@ -38,9 +38,11 @@ export declare class TodayService {
             title: string;
             description: string | null;
             participant: string | null;
+            location: string | null;
             startsAt: Date;
             endsAt: Date;
             reminderMinutesBefore: number;
+            contactId: string | null;
         }[];
         overdueTasks: {
             id: string;
@@ -63,9 +65,11 @@ export declare class TodayService {
             title: string;
             description: string | null;
             participant: string | null;
+            location: string | null;
             startsAt: Date;
             endsAt: Date;
             reminderMinutesBefore: number;
+            contactId: string | null;
         } | null;
     }>;
 }

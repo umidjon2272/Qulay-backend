@@ -9,6 +9,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.MemoryModule = void 0;
 const common_1 = require("@nestjs/common");
 const common_module_1 = require("../common/common.module");
+const activity_log_module_1 = require("../activity-log/activity-log.module");
 const prisma_module_1 = require("../prisma/prisma.module");
 const memory_controller_1 = require("./memory.controller");
 const memory_service_1 = require("./memory.service");
@@ -17,7 +18,7 @@ let MemoryModule = class MemoryModule {
 exports.MemoryModule = MemoryModule;
 exports.MemoryModule = MemoryModule = __decorate([
     (0, common_1.Module)({
-        imports: [prisma_module_1.PrismaModule, common_module_1.CommonModule],
+        imports: [prisma_module_1.PrismaModule, common_module_1.CommonModule, activity_log_module_1.ActivityLogModule],
         controllers: [memory_controller_1.MemoryController],
         providers: [memory_service_1.MemoryService],
         exports: [memory_service_1.MemoryService],

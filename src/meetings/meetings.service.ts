@@ -7,12 +7,14 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateMeetingDto } from './dto/create-meeting.dto';
 import { MeetingQueryDto } from './dto/meeting-query.dto';
 import { UpdateMeetingDto } from './dto/update-meeting.dto';
+import { NotificationSchedulerService } from '../notifications/notification-scheduler.service';
 
 @Injectable()
 export class MeetingsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly activityLog: ActivityLogService,
+    private readonly notificationScheduler?: NotificationSchedulerService,
   ) {}
 
   async listForUser(userId: string, query: MeetingQueryDto) {
@@ -56,6 +58,7 @@ export class MeetingsService {
   }
 
   async createForUser(userId: string, dto: CreateMeetingDto) {
+    await this.assertContactOwnership(userId, dto.contactId);
     const startsAt = parseDateTime(dto.startsAt);
     const endsAt = parseDateTime(dto.endsAt);
     this.assertTimeOrder(startsAt, endsAt);
@@ -65,10 +68,12 @@ export class MeetingsService {
         title: dto.title,
         description: dto.description,
         participant: dto.participant,
+        location: dto.location,
         startsAt,
         endsAt,
         reminderMinutesBefore: dto.reminderMinutesBefore ?? 15,
         status: dto.status ?? MeetingStatus.SCHEDULED,
+        contactId: dto.contactId,
       },
     });
     await this.activityLog.record({
@@ -77,45 +82,64 @@ export class MeetingsService {
       entityType: 'MEETING',
       entityId: meeting.id,
     });
+    await this.notificationScheduler?.scheduleMeetingNotification(userId, meeting);
     return meeting;
   }
 
   async updateForUser(userId: string, id: string, dto: UpdateMeetingDto) {
     const current = await this.getForUser(userId, id);
+    await this.assertContactOwnership(userId, dto.contactId);
     const startsAt = dto.startsAt ? parseDateTime(dto.startsAt) : current.startsAt;
     const endsAt = dto.endsAt ? parseDateTime(dto.endsAt) : current.endsAt;
     this.assertTimeOrder(startsAt, endsAt);
-    return this.prisma.meeting.update({
+    const meeting = await this.prisma.meeting.update({
       where: { id: current.id },
       data: {
         title: dto.title,
         description: dto.description,
         participant: dto.participant,
+        location: dto.location,
         startsAt: dto.startsAt ? startsAt : undefined,
         endsAt: dto.endsAt ? endsAt : undefined,
         reminderMinutesBefore: dto.reminderMinutesBefore,
         status: dto.status,
+        contactId: dto.contactId,
       },
     });
+    await this.notificationScheduler?.scheduleMeetingNotification(userId, meeting);
+    return meeting;
   }
 
   async deleteForUser(userId: string, id: string): Promise<{ message: string }> {
     await this.getForUser(userId, id);
     await this.prisma.meeting.delete({ where: { id } });
+    await this.notificationScheduler?.cancelEntityNotifications(userId, 'MEETING', id);
     return { message: 'Meeting deleted successfully' };
   }
 
   async cancelForUser(userId: string, id: string) {
     await this.getForUser(userId, id);
-    return this.prisma.meeting.update({
+    const meeting = await this.prisma.meeting.update({
       where: { id },
       data: { status: MeetingStatus.CANCELLED },
     });
+    await this.notificationScheduler?.cancelEntityNotifications(userId, 'MEETING', id);
+    return meeting;
   }
 
   private assertTimeOrder(startsAt: Date, endsAt: Date): void {
     if (endsAt <= startsAt) {
       throw new BadRequestException('endsAt must be after startsAt');
+    }
+  }
+
+  private async assertContactOwnership(userId: string, contactId?: string | null): Promise<void> {
+    if (!contactId) {
+      return;
+    }
+    const contact = await this.prisma.contact.findFirst({ where: { id: contactId, userId } });
+    if (!contact) {
+      throw new NotFoundException('Contact was not found');
     }
   }
 }

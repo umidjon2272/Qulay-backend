@@ -13,12 +13,13 @@ const common_module_1 = require("../common/common.module");
 const prisma_module_1 = require("../prisma/prisma.module");
 const reminders_controller_1 = require("./reminders.controller");
 const reminders_service_1 = require("./reminders.service");
+const notifications_module_1 = require("../notifications/notifications.module");
 let RemindersModule = class RemindersModule {
 };
 exports.RemindersModule = RemindersModule;
 exports.RemindersModule = RemindersModule = __decorate([
     (0, common_1.Module)({
-        imports: [prisma_module_1.PrismaModule, common_module_1.CommonModule, activity_log_module_1.ActivityLogModule],
+        imports: [prisma_module_1.PrismaModule, common_module_1.CommonModule, activity_log_module_1.ActivityLogModule, notifications_module_1.NotificationsModule],
         controllers: [reminders_controller_1.RemindersController],
         providers: [reminders_service_1.RemindersService],
         exports: [reminders_service_1.RemindersService],

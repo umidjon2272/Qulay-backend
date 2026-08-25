@@ -1,6 +1,6 @@
 import { Transform } from 'class-transformer';
-import { IsEnum, IsInt, IsOptional, IsString, Max, MaxLength, Min, MinLength } from 'class-validator';
-import { MemoryCategory } from '@prisma/client';
+import { IsEnum, IsInt, IsOptional, IsString, IsUUID, Max, MaxLength, Min, MinLength } from 'class-validator';
+import { MemoryType } from '@prisma/client';
 
 export class UpdateMemoryDto {
   @IsOptional()
@@ -17,12 +17,21 @@ export class UpdateMemoryDto {
   value?: string;
 
   @IsOptional()
-  @IsEnum(MemoryCategory)
-  category?: MemoryCategory;
+  @IsEnum(MemoryType)
+  type?: MemoryType;
 
   @IsOptional()
   @IsInt()
   @Min(1)
   @Max(10)
   importance?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  source?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  contactId?: string | null;
 }

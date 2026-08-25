@@ -1,11 +1,12 @@
-import { IsEnum, IsOptional, IsString, MaxLength } from 'class-validator';
-import { MemoryCategory } from '@prisma/client';
+import { Type } from 'class-transformer';
+import { IsEnum, IsInt, IsOptional, IsString, IsUUID, Max, MaxLength, Min } from 'class-validator';
+import { MemoryType } from '@prisma/client';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 
 export class MemoryQueryDto extends PaginationQueryDto {
   @IsOptional()
-  @IsEnum(MemoryCategory)
-  category?: MemoryCategory;
+  @IsEnum(MemoryType)
+  type?: MemoryType;
 
   @IsOptional()
   @IsString()
@@ -16,4 +17,15 @@ export class MemoryQueryDto extends PaginationQueryDto {
   @IsString()
   @MaxLength(200)
   search?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  contactId?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(10)
+  importance?: number;
 }

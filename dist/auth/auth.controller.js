@@ -17,18 +17,42 @@ const common_1 = require("@nestjs/common");
 const current_user_decorator_1 = require("../common/decorators/current-user.decorator");
 const jwt_auth_guard_1 = require("../common/guards/jwt-auth.guard");
 const auth_service_1 = require("./auth.service");
+const forgot_password_dto_1 = require("./dto/forgot-password.dto");
+const reset_password_dto_1 = require("./dto/reset-password.dto");
+const password_reset_service_1 = require("./password-reset/password-reset.service");
+const change_password_dto_1 = require("./dto/change-password.dto");
 const login_dto_1 = require("./dto/login.dto");
 const refresh_token_dto_1 = require("./dto/refresh-token.dto");
 const register_dto_1 = require("./dto/register.dto");
+const security_rate_limit_service_1 = require("../common/security/security-rate-limit.service");
+const rate_limit_exception_1 = require("../common/security/rate-limit.exception");
 let AuthController = class AuthController {
-    constructor(authService) {
+    constructor(authService, passwordResetService, rateLimiter) {
         this.authService = authService;
+        this.passwordResetService = passwordResetService;
+        this.rateLimiter = rateLimiter;
     }
-    register(dto) {
+    forgotPassword(dto, request) {
+        return this.passwordResetService.forgotPassword(dto, request.ip ?? 'unknown');
+    }
+    resetPassword(dto, request) {
+        return this.passwordResetService.resetPassword(dto, request.ip ?? 'unknown');
+    }
+    register(dto, request) {
+        const ip = request.ip ?? 'unknown';
+        if (!this.rateLimiter.isAllowed('register-ip', ip, 10, 10 * 60 * 1000)
+            || !this.rateLimiter.isAllowed('register-email', dto.email.trim().toLowerCase(), 3, 60 * 60 * 1000)) {
+            throw new rate_limit_exception_1.RateLimitException('Too many registration attempts. Try again later.');
+        }
         return this.authService.register(dto);
     }
-    login(dto) {
-        return this.authService.login(dto);
+    login(dto, request) {
+        const ip = request.ip ?? 'unknown';
+        if (!this.rateLimiter.isAllowed('login-ip', ip, 30, 15 * 60 * 1000)
+            || !this.rateLimiter.isAllowed('login-email', dto.email.trim().toLowerCase(), 15, 15 * 60 * 1000)) {
+            throw new rate_limit_exception_1.RateLimitException('Too many login attempts. Try again later.');
+        }
+        return this.authService.login(dto, ip);
     }
     refresh(dto) {
         return this.authService.refresh(dto);
@@ -39,22 +63,45 @@ let AuthController = class AuthController {
     me(user) {
         return this.authService.me(user);
     }
+    changePassword(user, dto) {
+        return this.authService.changePassword(user.sub, dto);
+    }
 };
 exports.AuthController = AuthController;
+__decorate([
+    (0, common_1.Post)('forgot-password'),
+    (0, common_1.HttpCode)(common_1.HttpStatus.OK),
+    __param(0, (0, common_1.Body)()),
+    __param(1, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [forgot_password_dto_1.ForgotPasswordDto, Object]),
+    __metadata("design:returntype", void 0)
+], AuthController.prototype, "forgotPassword", null);
+__decorate([
+    (0, common_1.Post)('reset-password'),
+    (0, common_1.HttpCode)(common_1.HttpStatus.OK),
+    __param(0, (0, common_1.Body)()),
+    __param(1, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [reset_password_dto_1.ResetPasswordDto, Object]),
+    __metadata("design:returntype", void 0)
+], AuthController.prototype, "resetPassword", null);
 __decorate([
     (0, common_1.Post)('register'),
     (0, common_1.HttpCode)(common_1.HttpStatus.CREATED),
     __param(0, (0, common_1.Body)()),
+    __param(1, (0, common_1.Req)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [register_dto_1.RegisterDto]),
+    __metadata("design:paramtypes", [register_dto_1.RegisterDto, Object]),
     __metadata("design:returntype", void 0)
 ], AuthController.prototype, "register", null);
 __decorate([
     (0, common_1.Post)('login'),
     (0, common_1.HttpCode)(common_1.HttpStatus.OK),
     __param(0, (0, common_1.Body)()),
+    __param(1, (0, common_1.Req)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [login_dto_1.LoginDto]),
+    __metadata("design:paramtypes", [login_dto_1.LoginDto, Object]),
     __metadata("design:returntype", void 0)
 ], AuthController.prototype, "login", null);
 __decorate([
@@ -81,8 +128,20 @@ __decorate([
     __metadata("design:paramtypes", [Object]),
     __metadata("design:returntype", void 0)
 ], AuthController.prototype, "me", null);
+__decorate([
+    (0, common_1.Patch)('change-password'),
+    (0, common_1.UseGuards)(jwt_auth_guard_1.JwtAuthGuard),
+    (0, common_1.HttpCode)(common_1.HttpStatus.OK),
+    __param(0, (0, current_user_decorator_1.CurrentUser)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, change_password_dto_1.ChangePasswordDto]),
+    __metadata("design:returntype", void 0)
+], AuthController.prototype, "changePassword", null);
 exports.AuthController = AuthController = __decorate([
     (0, common_1.Controller)('auth'),
-    __metadata("design:paramtypes", [auth_service_1.AuthService])
+    __metadata("design:paramtypes", [auth_service_1.AuthService,
+        password_reset_service_1.PasswordResetService,
+        security_rate_limit_service_1.SecurityRateLimitService])
 ], AuthController);
 //# sourceMappingURL=auth.controller.js.map

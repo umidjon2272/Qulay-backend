@@ -1,5 +1,5 @@
 import { Transform } from 'class-transformer';
-import { IsEnum, IsISO8601, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, MinLength } from 'class-validator';
+import { IsEnum, IsISO8601, IsInt, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min, MinLength } from 'class-validator';
 import { MeetingStatus } from '@prisma/client';
 
 const dateTimeWithTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/;
@@ -20,6 +20,15 @@ export class CreateMeetingDto {
   @IsString()
   @MaxLength(200)
   participant?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  contactId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  location?: string;
 
   @IsString()
   @IsISO8601({ strict: true, strictSeparator: true })

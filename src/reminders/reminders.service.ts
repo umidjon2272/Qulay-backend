@@ -7,12 +7,14 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateReminderDto } from './dto/create-reminder.dto';
 import { ReminderQueryDto } from './dto/reminder-query.dto';
 import { UpdateReminderDto } from './dto/update-reminder.dto';
+import { NotificationSchedulerService } from '../notifications/notification-scheduler.service';
 
 @Injectable()
 export class RemindersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly activityLog: ActivityLogService,
+    private readonly notificationScheduler?: NotificationSchedulerService,
   ) {}
 
   async listForUser(userId: string, query: ReminderQueryDto) {
@@ -82,13 +84,14 @@ export class RemindersService {
       entityType: 'REMINDER',
       entityId: reminder.id,
     });
+    await this.notificationScheduler?.scheduleReminderNotification(userId, reminder);
     return reminder;
   }
 
   async updateForUser(userId: string, id: string, dto: UpdateReminderDto) {
     const current = await this.getForUser(userId, id);
     const status = dto.status ?? current.status;
-    return this.prisma.reminder.update({
+    const reminder = await this.prisma.reminder.update({
       where: { id: current.id },
       data: {
         title: dto.title,
@@ -102,19 +105,24 @@ export class RemindersService {
             : null,
       },
     });
+    await this.notificationScheduler?.scheduleReminderNotification(userId, reminder);
+    return reminder;
   }
 
   async deleteForUser(userId: string, id: string): Promise<{ message: string }> {
     await this.getForUser(userId, id);
     await this.prisma.reminder.delete({ where: { id } });
+    await this.notificationScheduler?.cancelEntityNotifications(userId, 'REMINDER', id);
     return { message: 'Reminder deleted successfully' };
   }
 
   async completeForUser(userId: string, id: string) {
     await this.getForUser(userId, id);
-    return this.prisma.reminder.update({
+    const reminder = await this.prisma.reminder.update({
       where: { id },
       data: { status: ReminderStatus.COMPLETED, completedAt: new Date() },
     });
+    await this.notificationScheduler?.cancelEntityNotifications(userId, 'REMINDER', id);
+    return reminder;
   }
 }

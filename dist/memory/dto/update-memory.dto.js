@@ -33,9 +33,9 @@ __decorate([
 ], UpdateMemoryDto.prototype, "value", void 0);
 __decorate([
     (0, class_validator_1.IsOptional)(),
-    (0, class_validator_1.IsEnum)(client_1.MemoryCategory),
+    (0, class_validator_1.IsEnum)(client_1.MemoryType),
     __metadata("design:type", String)
-], UpdateMemoryDto.prototype, "category", void 0);
+], UpdateMemoryDto.prototype, "type", void 0);
 __decorate([
     (0, class_validator_1.IsOptional)(),
     (0, class_validator_1.IsInt)(),
@@ -43,4 +43,15 @@ __decorate([
     (0, class_validator_1.Max)(10),
     __metadata("design:type", Number)
 ], UpdateMemoryDto.prototype, "importance", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MaxLength)(100),
+    __metadata("design:type", String)
+], UpdateMemoryDto.prototype, "source", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsUUID)('4'),
+    __metadata("design:type", Object)
+], UpdateMemoryDto.prototype, "contactId", void 0);
 //# sourceMappingURL=update-memory.dto.js.map

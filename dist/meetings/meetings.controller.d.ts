@@ -16,9 +16,11 @@ export declare class MeetingsController {
             title: string;
             description: string | null;
             participant: string | null;
+            location: string | null;
             startsAt: Date;
             endsAt: Date;
             reminderMinutesBefore: number;
+            contactId: string | null;
         }[];
         meta: import("../common/dto/pagination-query.dto").PaginationMeta;
     }>;
@@ -31,9 +33,11 @@ export declare class MeetingsController {
         title: string;
         description: string | null;
         participant: string | null;
+        location: string | null;
         startsAt: Date;
         endsAt: Date;
         reminderMinutesBefore: number;
+        contactId: string | null;
     }>;
     create(user: AuthenticatedUser, dto: CreateMeetingDto): Promise<{
         id: string;
@@ -44,9 +48,11 @@ export declare class MeetingsController {
         title: string;
         description: string | null;
         participant: string | null;
+        location: string | null;
         startsAt: Date;
         endsAt: Date;
         reminderMinutesBefore: number;
+        contactId: string | null;
     }>;
     update(user: AuthenticatedUser, id: string, dto: UpdateMeetingDto): Promise<{
         id: string;
@@ -57,9 +63,11 @@ export declare class MeetingsController {
         title: string;
         description: string | null;
         participant: string | null;
+        location: string | null;
         startsAt: Date;
         endsAt: Date;
         reminderMinutesBefore: number;
+        contactId: string | null;
     }>;
     delete(user: AuthenticatedUser, id: string): Promise<{
         message: string;
@@ -73,8 +81,10 @@ export declare class MeetingsController {
         title: string;
         description: string | null;
         participant: string | null;
+        location: string | null;
         startsAt: Date;
         endsAt: Date;
         reminderMinutesBefore: number;
+        contactId: string | null;
     }>;
 }

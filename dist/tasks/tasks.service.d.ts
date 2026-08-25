@@ -3,10 +3,12 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateTaskDto } from './dto/create-task.dto';
 import { TaskQueryDto } from './dto/task-query.dto';
 import { UpdateTaskDto } from './dto/update-task.dto';
+import { NotificationSchedulerService } from '../notifications/notification-scheduler.service';
 export declare class TasksService {
     private readonly prisma;
     private readonly activityLog;
-    constructor(prisma: PrismaService, activityLog: ActivityLogService);
+    private readonly notificationScheduler?;
+    constructor(prisma: PrismaService, activityLog: ActivityLogService, notificationScheduler?: NotificationSchedulerService | undefined);
     listForUser(userId: string, query: TaskQueryDto): Promise<{
         items: {
             id: string;

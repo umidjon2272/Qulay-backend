@@ -28,4 +28,9 @@ __decorate([
     (0, class_validator_1.MaxLength)(50000),
     __metadata("design:type", String)
 ], CreateNoteDto.prototype, "content", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsUUID)('4'),
+    __metadata("design:type", String)
+], CreateNoteDto.prototype, "contactId", void 0);
 //# sourceMappingURL=create-note.dto.js.map

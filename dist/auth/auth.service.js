@@ -20,12 +20,17 @@ const node_crypto_1 = require("node:crypto");
 const prisma_service_1 = require("../prisma/prisma.service");
 const users_service_1 = require("../users/users.service");
 const public_user_type_1 = require("../users/types/public-user.type");
+const login_brute_force_service_1 = require("./login-brute-force.service");
+const auth_security_audit_service_1 = require("./auth-security-audit.service");
+const rate_limit_exception_1 = require("../common/security/rate-limit.exception");
 let AuthService = AuthService_1 = class AuthService {
-    constructor(usersService, prisma, jwtService, configService) {
+    constructor(usersService, prisma, jwtService, configService, bruteForce, securityAudit) {
         this.usersService = usersService;
         this.prisma = prisma;
         this.jwtService = jwtService;
         this.configService = configService;
+        this.bruteForce = bruteForce;
+        this.securityAudit = securityAudit;
         this.logger = new common_1.Logger(AuthService_1.name);
     }
     async register(dto) {
@@ -36,6 +41,7 @@ let AuthService = AuthService_1 = class AuthService {
         const existingUser = await this.usersService.findByEmail(email);
         this.logTiming('register:user_lookup', stageStartedAt);
         if (existingUser) {
+            await this.securityAudit.recordUserAction(existingUser.id, auth_security_audit_service_1.AuthSecurityAuditService.actions.REGISTER_FAILED, 'email_already_registered');
             throw new common_1.ConflictException('Email is already registered');
         }
         stageStartedAt = this.timestamp();
@@ -52,27 +58,44 @@ let AuthService = AuthService_1 = class AuthService {
             language: dto.language?.trim(),
         });
         this.logTiming('register:user_create', stageStartedAt);
+        await this.securityAudit.recordUserAction(user.id, auth_security_audit_service_1.AuthSecurityAuditService.actions.REGISTERED);
         return this.issueAndPersistTokens(user, 'register', startedAt);
     }
-    async login(dto) {
+    async login(dto, ip = 'unknown') {
         const startedAt = this.timestamp();
         this.logTiming('login:start', startedAt);
         const email = this.normalizeEmail(dto.email);
+        if (this.bruteForce.isBlocked(ip, email)) {
+            this.securityAudit.recordSuspicious(auth_security_audit_service_1.AuthSecurityAuditService.actions.LOGIN_BLOCKED, ip, email);
+            throw new rate_limit_exception_1.RateLimitException('Too many login attempts. Try again later.');
+        }
         let stageStartedAt = this.timestamp();
         const user = await this.usersService.findByEmailWithPassword(email);
         this.logTiming('login:user_lookup', stageStartedAt);
         if (!user || user.status === client_1.UserStatus.BLOCKED) {
             if (user?.status === client_1.UserStatus.BLOCKED) {
+                await this.securityAudit.recordUserAction(user.id, auth_security_audit_service_1.AuthSecurityAuditService.actions.LOGIN_FAILED, 'blocked_user');
                 throw new common_1.ForbiddenException('User is blocked');
             }
+            const locked = this.bruteForce.recordFailure(ip, email);
+            this.securityAudit.recordSuspicious(locked ? auth_security_audit_service_1.AuthSecurityAuditService.actions.LOGIN_BLOCKED : auth_security_audit_service_1.AuthSecurityAuditService.actions.LOGIN_FAILED, ip, email);
+            if (locked)
+                throw new rate_limit_exception_1.RateLimitException('Too many login attempts. Try again later.');
             throw new common_1.UnauthorizedException('Invalid email or password');
         }
         stageStartedAt = this.timestamp();
         const passwordMatches = await bcrypt.compare(dto.password, user.passwordHash);
         this.logTiming('login:bcrypt_compare', stageStartedAt);
         if (!passwordMatches) {
+            const locked = this.bruteForce.recordFailure(ip, email);
+            await this.securityAudit.recordUserAction(user.id, auth_security_audit_service_1.AuthSecurityAuditService.actions.LOGIN_FAILED, 'invalid_credentials');
+            this.securityAudit.recordSuspicious(locked ? auth_security_audit_service_1.AuthSecurityAuditService.actions.LOGIN_BLOCKED : auth_security_audit_service_1.AuthSecurityAuditService.actions.LOGIN_FAILED, ip, email);
+            if (locked)
+                throw new rate_limit_exception_1.RateLimitException('Too many login attempts. Try again later.');
             throw new common_1.UnauthorizedException('Invalid email or password');
         }
+        this.bruteForce.recordSuccess(ip, email);
+        await this.securityAudit.recordUserAction(user.id, auth_security_audit_service_1.AuthSecurityAuditService.actions.LOGIN_SUCCEEDED);
         return this.issueAndPersistTokens((0, public_user_type_1.toPublicUser)(user), 'login', startedAt);
     }
     async refresh(dto) {
@@ -145,6 +168,7 @@ let AuthService = AuthService_1 = class AuthService {
         }
         this.logTiming('refresh:rotation_persist', stageStartedAt);
         this.logTiming('refresh:end', startedAt);
+        await this.securityAudit.recordUserAction(user.id, auth_security_audit_service_1.AuthSecurityAuditService.actions.REFRESH_SUCCEEDED);
         return {
             user: (0, public_user_type_1.toPublicUser)(user),
             accessToken: tokenPair.accessToken,
@@ -176,6 +200,7 @@ let AuthService = AuthService_1 = class AuthService {
             where: { id: storedToken.id, revokedAt: null },
             data: { revokedAt: new Date() },
         });
+        await this.securityAudit.recordUserAction(payload.sub, auth_security_audit_service_1.AuthSecurityAuditService.actions.LOGOUT_COMPLETED);
         return { message: 'Logged out successfully' };
     }
     async me(payload) {
@@ -184,6 +209,41 @@ let AuthService = AuthService_1 = class AuthService {
             throw new common_1.UnauthorizedException('User no longer exists');
         }
         return user;
+    }
+    async changePassword(userId, dto) {
+        const user = await this.usersService.findByIdWithPassword(userId);
+        if (!user) {
+            throw new common_1.UnauthorizedException('User no longer exists');
+        }
+        const currentPasswordMatches = await bcrypt.compare(dto.currentPassword, user.passwordHash);
+        if (!currentPasswordMatches) {
+            throw new common_1.BadRequestException('Joriy parol noto‘g‘ri');
+        }
+        if (dto.currentPassword === dto.newPassword) {
+            throw new common_1.BadRequestException('Yangi parol eski parol bilan bir xil bo‘lmasin');
+        }
+        const newPasswordHash = await this.hashPassword(dto.newPassword);
+        try {
+            await this.prisma.$transaction(async (transaction) => {
+                await transaction.user.update({
+                    where: { id: userId },
+                    data: { passwordHash: newPasswordHash },
+                });
+                await transaction.refreshToken.updateMany({
+                    where: { userId, revokedAt: null },
+                    data: { revokedAt: new Date() },
+                });
+            });
+        }
+        catch {
+            throw new common_1.InternalServerErrorException('Unable to change password');
+        }
+        await this.securityAudit.recordUserAction(userId, auth_security_audit_service_1.AuthSecurityAuditService.actions.PASSWORD_CHANGED);
+        return {
+            success: true,
+            message: 'Parol muvaffaqiyatli o‘zgartirildi',
+            requiresRelogin: true,
+        };
     }
     async issueAndPersistTokens(user, operation, startedAt) {
         const tokenStartedAt = this.timestamp();
@@ -293,6 +353,8 @@ exports.AuthService = AuthService = AuthService_1 = __decorate([
     __metadata("design:paramtypes", [users_service_1.UsersService,
         prisma_service_1.PrismaService,
         jwt_1.JwtService,
-        config_1.ConfigService])
+        config_1.ConfigService,
+        login_brute_force_service_1.LoginBruteForceService,
+        auth_security_audit_service_1.AuthSecurityAuditService])
 ], AuthService);
 //# sourceMappingURL=auth.service.js.map

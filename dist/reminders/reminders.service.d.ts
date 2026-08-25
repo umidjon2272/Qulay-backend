@@ -3,10 +3,12 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateReminderDto } from './dto/create-reminder.dto';
 import { ReminderQueryDto } from './dto/reminder-query.dto';
 import { UpdateReminderDto } from './dto/update-reminder.dto';
+import { NotificationSchedulerService } from '../notifications/notification-scheduler.service';
 export declare class RemindersService {
     private readonly prisma;
     private readonly activityLog;
-    constructor(prisma: PrismaService, activityLog: ActivityLogService);
+    private readonly notificationScheduler?;
+    constructor(prisma: PrismaService, activityLog: ActivityLogService, notificationScheduler?: NotificationSchedulerService | undefined);
     listForUser(userId: string, query: ReminderQueryDto): Promise<{
         items: {
             id: string;

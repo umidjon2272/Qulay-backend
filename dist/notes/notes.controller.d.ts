@@ -14,6 +14,7 @@ export declare class NotesController {
             userId: string;
             content: string;
             title: string;
+            contactId: string | null;
         }[];
         meta: import("../common/dto/pagination-query.dto").PaginationMeta;
     }>;
@@ -24,6 +25,7 @@ export declare class NotesController {
         userId: string;
         content: string;
         title: string;
+        contactId: string | null;
     }>;
     create(user: AuthenticatedUser, dto: CreateNoteDto): Promise<{
         id: string;
@@ -32,6 +34,7 @@ export declare class NotesController {
         userId: string;
         content: string;
         title: string;
+        contactId: string | null;
     }>;
     update(user: AuthenticatedUser, id: string, dto: UpdateNoteDto): Promise<{
         id: string;
@@ -40,6 +43,7 @@ export declare class NotesController {
         userId: string;
         content: string;
         title: string;
+        contactId: string | null;
     }>;
     delete(user: AuthenticatedUser, id: string): Promise<{
         message: string;

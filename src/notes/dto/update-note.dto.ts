@@ -1,5 +1,5 @@
 import { Transform } from 'class-transformer';
-import { IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { IsOptional, IsString, IsUUID, MaxLength, MinLength } from 'class-validator';
 
 export class UpdateNoteDto {
   @IsOptional()
@@ -14,4 +14,8 @@ export class UpdateNoteDto {
   @MinLength(1)
   @MaxLength(50000)
   content?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  contactId?: string | null;
 }

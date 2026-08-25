@@ -31,9 +31,9 @@ __decorate([
 ], CreateMemoryDto.prototype, "value", void 0);
 __decorate([
     (0, class_validator_1.IsOptional)(),
-    (0, class_validator_1.IsEnum)(client_1.MemoryCategory),
+    (0, class_validator_1.IsEnum)(client_1.MemoryType),
     __metadata("design:type", String)
-], CreateMemoryDto.prototype, "category", void 0);
+], CreateMemoryDto.prototype, "type", void 0);
 __decorate([
     (0, class_validator_1.IsOptional)(),
     (0, class_validator_1.IsInt)(),
@@ -41,4 +41,15 @@ __decorate([
     (0, class_validator_1.Max)(10),
     __metadata("design:type", Number)
 ], CreateMemoryDto.prototype, "importance", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MaxLength)(100),
+    __metadata("design:type", String)
+], CreateMemoryDto.prototype, "source", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsUUID)('4'),
+    __metadata("design:type", Object)
+], CreateMemoryDto.prototype, "contactId", void 0);
 //# sourceMappingURL=create-memory.dto.js.map

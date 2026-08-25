@@ -7,12 +7,14 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateTaskDto } from './dto/create-task.dto';
 import { TaskQueryDto } from './dto/task-query.dto';
 import { UpdateTaskDto } from './dto/update-task.dto';
+import { NotificationSchedulerService } from '../notifications/notification-scheduler.service';
 
 @Injectable()
 export class TasksService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly activityLog: ActivityLogService,
+    private readonly notificationScheduler?: NotificationSchedulerService,
   ) {}
 
   async listForUser(userId: string, query: TaskQueryDto) {
@@ -75,6 +77,7 @@ export class TasksService {
       entityType: 'TASK',
       entityId: task.id,
     });
+    await this.notificationScheduler?.scheduleTaskNotification(userId, task);
     return task;
   }
 
@@ -95,12 +98,14 @@ export class TasksService {
             : null,
       },
     });
+    await this.notificationScheduler?.scheduleTaskNotification(userId, task);
     return task;
   }
 
   async deleteForUser(userId: string, id: string): Promise<{ message: string }> {
     await this.getForUser(userId, id);
     await this.prisma.task.delete({ where: { id } });
+    await this.notificationScheduler?.cancelEntityNotifications(userId, 'TASK', id);
     return { message: 'Task deleted successfully' };
   }
 
@@ -110,6 +115,7 @@ export class TasksService {
       where: { id },
       data: { status: TaskStatus.COMPLETED, completedAt: new Date() },
     });
+    await this.notificationScheduler?.cancelEntityNotifications(userId, 'TASK', id);
     await this.activityLog.record({
       userId,
       action: ACTIVITY_ACTIONS.TASK_COMPLETED,
@@ -124,6 +130,9 @@ export class TasksService {
     return this.prisma.task.update({
       where: { id },
       data: { status: TaskStatus.TODO, completedAt: null },
+    }).then(async (task) => {
+      await this.notificationScheduler?.scheduleTaskNotification(userId, task);
+      return task;
     });
   }
 }

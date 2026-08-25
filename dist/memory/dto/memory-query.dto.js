@@ -10,6 +10,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MemoryQueryDto = void 0;
+const class_transformer_1 = require("class-transformer");
 const class_validator_1 = require("class-validator");
 const client_1 = require("@prisma/client");
 const pagination_query_dto_1 = require("../../common/dto/pagination-query.dto");
@@ -18,9 +19,9 @@ class MemoryQueryDto extends pagination_query_dto_1.PaginationQueryDto {
 exports.MemoryQueryDto = MemoryQueryDto;
 __decorate([
     (0, class_validator_1.IsOptional)(),
-    (0, class_validator_1.IsEnum)(client_1.MemoryCategory),
+    (0, class_validator_1.IsEnum)(client_1.MemoryType),
     __metadata("design:type", String)
-], MemoryQueryDto.prototype, "category", void 0);
+], MemoryQueryDto.prototype, "type", void 0);
 __decorate([
     (0, class_validator_1.IsOptional)(),
     (0, class_validator_1.IsString)(),
@@ -33,4 +34,17 @@ __decorate([
     (0, class_validator_1.MaxLength)(200),
     __metadata("design:type", String)
 ], MemoryQueryDto.prototype, "search", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsUUID)('4'),
+    __metadata("design:type", String)
+], MemoryQueryDto.prototype, "contactId", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_transformer_1.Type)(() => Number),
+    (0, class_validator_1.IsInt)(),
+    (0, class_validator_1.Min)(1),
+    (0, class_validator_1.Max)(10),
+    __metadata("design:type", Number)
+], MemoryQueryDto.prototype, "importance", void 0);
 //# sourceMappingURL=memory-query.dto.js.map

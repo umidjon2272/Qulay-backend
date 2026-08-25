@@ -16,10 +16,12 @@ const activity_log_service_1 = require("../activity-log/activity-log.service");
 const pagination_query_dto_1 = require("../common/dto/pagination-query.dto");
 const date_utils_1 = require("../common/date.utils");
 const prisma_service_1 = require("../prisma/prisma.service");
+const notification_scheduler_service_1 = require("../notifications/notification-scheduler.service");
 let TasksService = class TasksService {
-    constructor(prisma, activityLog) {
+    constructor(prisma, activityLog, notificationScheduler) {
         this.prisma = prisma;
         this.activityLog = activityLog;
+        this.notificationScheduler = notificationScheduler;
     }
     async listForUser(userId, query) {
         const where = {
@@ -78,6 +80,7 @@ let TasksService = class TasksService {
             entityType: 'TASK',
             entityId: task.id,
         });
+        await this.notificationScheduler?.scheduleTaskNotification(userId, task);
         return task;
     }
     async updateForUser(userId, id, dto) {
@@ -96,11 +99,13 @@ let TasksService = class TasksService {
                     : null,
             },
         });
+        await this.notificationScheduler?.scheduleTaskNotification(userId, task);
         return task;
     }
     async deleteForUser(userId, id) {
         await this.getForUser(userId, id);
         await this.prisma.task.delete({ where: { id } });
+        await this.notificationScheduler?.cancelEntityNotifications(userId, 'TASK', id);
         return { message: 'Task deleted successfully' };
     }
     async completeForUser(userId, id) {
@@ -109,6 +114,7 @@ let TasksService = class TasksService {
             where: { id },
             data: { status: client_1.TaskStatus.COMPLETED, completedAt: new Date() },
         });
+        await this.notificationScheduler?.cancelEntityNotifications(userId, 'TASK', id);
         await this.activityLog.record({
             userId,
             action: activity_log_service_1.ACTIVITY_ACTIONS.TASK_COMPLETED,
@@ -122,6 +128,9 @@ let TasksService = class TasksService {
         return this.prisma.task.update({
             where: { id },
             data: { status: client_1.TaskStatus.TODO, completedAt: null },
+        }).then(async (task) => {
+            await this.notificationScheduler?.scheduleTaskNotification(userId, task);
+            return task;
         });
     }
 };
@@ -129,6 +138,7 @@ exports.TasksService = TasksService;
 exports.TasksService = TasksService = __decorate([
     (0, common_1.Injectable)(),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
-        activity_log_service_1.ActivityLogService])
+        activity_log_service_1.ActivityLogService,
+        notification_scheduler_service_1.NotificationSchedulerService])
 ], TasksService);
 //# sourceMappingURL=tasks.service.js.map

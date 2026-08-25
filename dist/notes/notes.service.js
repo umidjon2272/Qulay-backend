@@ -50,11 +50,13 @@ let NotesService = class NotesService {
         return note;
     }
     async createForUser(userId, dto) {
+        await this.assertContactOwnership(userId, dto.contactId);
         const note = await this.prisma.note.create({
             data: {
                 userId,
                 title: dto.title,
                 content: dto.content,
+                contactId: dto.contactId,
             },
         });
         await this.activityLog.record({
@@ -67,15 +69,25 @@ let NotesService = class NotesService {
     }
     async updateForUser(userId, id, dto) {
         const current = await this.getForUser(userId, id);
+        await this.assertContactOwnership(userId, dto.contactId);
         return this.prisma.note.update({
             where: { id: current.id },
-            data: { title: dto.title, content: dto.content },
+            data: { title: dto.title, content: dto.content, contactId: dto.contactId },
         });
     }
     async deleteForUser(userId, id) {
         await this.getForUser(userId, id);
         await this.prisma.note.delete({ where: { id } });
         return { message: 'Note deleted successfully' };
+    }
+    async assertContactOwnership(userId, contactId) {
+        if (!contactId) {
+            return;
+        }
+        const contact = await this.prisma.contact.findFirst({ where: { id: contactId, userId } });
+        if (!contact) {
+            throw new common_1.NotFoundException('Contact was not found');
+        }
     }
 };
 exports.NotesService = NotesService;

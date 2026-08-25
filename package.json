@@ -3,24 +3,24 @@
   "version": "0.1.0",
   "private": true,
   "engines": {
-  "node": "22.x"
-},
+    "node": "22.x"
+  },
   "description": "Yechim AI backend foundation and authentication API",
-"scripts": {
-  "build": "nest build",
-  "start": "node dist/main.js",
-  "start:dev": "nest start --watch",
-  "start:debug": "nest start --debug --watch",
-  "start:prod": "node dist/main.js",
-  "prisma:generate": "node node_modules/prisma/build/index.js generate",
-  "prisma:migrate": "node node_modules/prisma/build/index.js migrate dev",
-  "prisma:deploy": "node node_modules/prisma/build/index.js migrate deploy",
-  "prisma:studio": "node node_modules/prisma/build/index.js studio",
-  "lint": "tsc --noEmit",
-  "test": "jest --config ./test/jest.unit.json --runInBand",
-  "test:watch": "jest --watch",
-  "test:e2e": "jest --config ./test/jest-e2e.json --runInBand"
-},
+  "scripts": {
+    "build": "nest build",
+    "start": "node dist/main.js",
+    "start:dev": "nest start --watch",
+    "start:debug": "nest start --debug --watch",
+    "start:prod": "node dist/main.js",
+    "prisma:generate": "node node_modules/prisma/build/index.js generate",
+    "prisma:migrate": "node node_modules/prisma/build/index.js migrate dev",
+    "prisma:deploy": "node node_modules/prisma/build/index.js migrate deploy",
+    "prisma:studio": "node node_modules/prisma/build/index.js studio",
+    "lint": "tsc --noEmit",
+    "test": "jest --config ./test/jest.unit.json --runInBand",
+    "test:watch": "jest --watch",
+    "test:e2e": "jest --config ./test/jest-e2e.json --runInBand"
+  },
   "dependencies": {
     "@nestjs/common": "^11.0.11",
     "@nestjs/config": "^4.0.2",
@@ -31,9 +31,12 @@
     "bcryptjs": "^3.0.2",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",
+    "file-type": "^21.3.4",
+    "helmet": "^8.3.0",
     "joi": "^17.13.3",
     "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.2"
+    "rxjs": "^7.8.2",
+    "teleproto": "^1.228.0"
   },
   "devDependencies": {
     "@nestjs/cli": "^11.0.0",

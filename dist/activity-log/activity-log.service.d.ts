@@ -6,6 +6,44 @@ export declare const ACTIVITY_ACTIONS: {
     readonly REMINDER_CREATED: "REMINDER_CREATED";
     readonly MEETING_CREATED: "MEETING_CREATED";
     readonly NOTE_CREATED: "NOTE_CREATED";
+    readonly CONTACT_CREATED: "CONTACT_CREATED";
+    readonly CONTACT_UPDATED: "CONTACT_UPDATED";
+    readonly CONTACT_DELETED: "CONTACT_DELETED";
+    readonly MEMORY_CREATED: "MEMORY_CREATED";
+    readonly MEMORY_UPDATED: "MEMORY_UPDATED";
+    readonly MEMORY_DELETED: "MEMORY_DELETED";
+    readonly FINANCE_TRANSACTION_CREATED: "FINANCE_TRANSACTION_CREATED";
+    readonly FINANCE_TRANSACTION_UPDATED: "FINANCE_TRANSACTION_UPDATED";
+    readonly FINANCE_TRANSACTION_DELETED: "FINANCE_TRANSACTION_DELETED";
+    readonly FINANCE_CATEGORY_CREATED: "FINANCE_CATEGORY_CREATED";
+    readonly FINANCE_CATEGORY_UPDATED: "FINANCE_CATEGORY_UPDATED";
+    readonly FINANCE_CATEGORY_DELETED: "FINANCE_CATEGORY_DELETED";
+    readonly AI_TOOL_EXECUTED: "AI_TOOL_EXECUTED";
+    readonly TELEGRAM_CONNECTED: "TELEGRAM_CONNECTED";
+    readonly TELEGRAM_DISCONNECTED: "TELEGRAM_DISCONNECTED";
+    readonly TELEGRAM_MESSAGE_SENT: "TELEGRAM_MESSAGE_SENT";
+    readonly NOTIFICATION_SENT: "NOTIFICATION_SENT";
+    readonly NOTIFICATION_FAILED: "NOTIFICATION_FAILED";
+    readonly GOOGLE_CONNECTED: "GOOGLE_CONNECTED";
+    readonly GOOGLE_DISCONNECTED: "GOOGLE_DISCONNECTED";
+    readonly GOOGLE_CALENDAR_EVENT_CREATED: "GOOGLE_CALENDAR_EVENT_CREATED";
+    readonly GOOGLE_CALENDAR_EVENT_UPDATED: "GOOGLE_CALENDAR_EVENT_UPDATED";
+    readonly GOOGLE_CALENDAR_EVENT_DELETED: "GOOGLE_CALENDAR_EVENT_DELETED";
+    readonly FILE_UPLOADED: "FILE_UPLOADED";
+    readonly FILE_DELETED: "FILE_DELETED";
+    readonly PASSWORD_RESET_REQUESTED: "PASSWORD_RESET_REQUESTED";
+    readonly PASSWORD_RESET_COMPLETED: "PASSWORD_RESET_COMPLETED";
+    readonly LOGIN_FAILED: "LOGIN_FAILED";
+    readonly LOGIN_SUCCEEDED: "LOGIN_SUCCEEDED";
+    readonly LOGIN_BLOCKED: "LOGIN_BLOCKED";
+    readonly REGISTERED: "REGISTERED";
+    readonly REGISTER_FAILED: "REGISTER_FAILED";
+    readonly REFRESH_SUCCEEDED: "REFRESH_SUCCEEDED";
+    readonly LOGOUT_COMPLETED: "LOGOUT_COMPLETED";
+    readonly PASSWORD_CHANGED: "PASSWORD_CHANGED";
+    readonly FOLDER_CREATED: "FOLDER_CREATED";
+    readonly FOLDER_UPDATED: "FOLDER_UPDATED";
+    readonly FOLDER_DELETED: "FOLDER_DELETED";
 };
 export type ActivityLogInput = {
     userId: string;
@@ -20,10 +58,10 @@ export declare class ActivityLogService {
     record(input: ActivityLogInput): Prisma.Prisma__ActivityLogClient<{
         id: string;
         createdAt: Date;
-        userId: string;
         action: string;
         entityType: string;
         entityId: string | null;
         metadata: Prisma.JsonValue | null;
+        userId: string;
     }, never, import("@prisma/client/runtime/library").DefaultArgs, Prisma.PrismaClientOptions>;
 }

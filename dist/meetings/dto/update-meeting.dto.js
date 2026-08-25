@@ -39,6 +39,17 @@ __decorate([
 ], UpdateMeetingDto.prototype, "participant", void 0);
 __decorate([
     (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsUUID)('4'),
+    __metadata("design:type", String)
+], UpdateMeetingDto.prototype, "contactId", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MaxLength)(500),
+    __metadata("design:type", String)
+], UpdateMeetingDto.prototype, "location", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
     (0, class_validator_1.IsString)(),
     (0, class_validator_1.IsISO8601)({ strict: true, strictSeparator: true }),
     (0, class_validator_1.Matches)(dateTimeWithTimezone, { message: 'startsAt must include a timezone offset or Z' }),

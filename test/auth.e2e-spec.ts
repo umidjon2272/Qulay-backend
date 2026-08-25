@@ -14,6 +14,10 @@ describe('Foundation and auth API', () => {
   let accessToken: string;
   let refreshToken: string;
   let concurrentUserId: string;
+  let changePasswordUserId: string;
+  let changePasswordAccessToken: string;
+  let changePasswordRefreshToken: string;
+  const changedPassword = 'NewStrongPassword123!';
 
   beforeAll(async () => {
     const moduleRef: TestingModule = await Test.createTestingModule({
@@ -39,6 +43,9 @@ describe('Foundation and auth API', () => {
     }
     if (concurrentUserId) {
       await prisma.user.delete({ where: { id: concurrentUserId } }).catch(() => undefined);
+    }
+    if (changePasswordUserId) {
+      await prisma.user.delete({ where: { id: changePasswordUserId } }).catch(() => undefined);
     }
     await app.close();
   });
@@ -91,6 +98,82 @@ describe('Foundation and auth API', () => {
         expect(response.body.id).toBe(userId);
         expect(response.body.passwordHash).toBeUndefined();
       });
+  });
+
+  it('changes the password only for an authenticated user and revokes every refresh session', async () => {
+    await request(app.getHttpServer())
+      .patch('/api/auth/change-password')
+      .send({ currentPassword: password, newPassword: changedPassword, confirmPassword: changedPassword })
+      .expect(401);
+
+    const registration = await request(app.getHttpServer())
+      .post('/api/auth/register')
+      .send({
+        email: `auth-password-${Date.now()}@example.com`,
+        password,
+        firstName: 'Password',
+        lastName: 'Test',
+      })
+      .expect(201);
+    changePasswordUserId = registration.body.user.id;
+    changePasswordAccessToken = registration.body.accessToken;
+    changePasswordRefreshToken = registration.body.refreshToken;
+    const secondLogin = await request(app.getHttpServer())
+      .post('/api/auth/login')
+      .send({ email: registration.body.user.email, password })
+      .expect(200);
+    const secondRefreshToken = secondLogin.body.refreshToken as string;
+
+    await request(app.getHttpServer())
+      .patch('/api/auth/change-password')
+      .set('Authorization', `Bearer ${changePasswordAccessToken}`)
+      .send({ currentPassword: 'WrongPassword123!', newPassword: changedPassword, confirmPassword: changedPassword })
+      .expect(400);
+
+    await request(app.getHttpServer())
+      .patch('/api/auth/change-password')
+      .set('Authorization', `Bearer ${changePasswordAccessToken}`)
+      .send({ currentPassword: password, newPassword: changedPassword, confirmPassword: 'DifferentPassword123!' })
+      .expect(400);
+
+    await request(app.getHttpServer())
+      .patch('/api/auth/change-password')
+      .set('Authorization', `Bearer ${changePasswordAccessToken}`)
+      .send({ currentPassword: password, newPassword: 'short', confirmPassword: 'short' })
+      .expect(400);
+
+    await request(app.getHttpServer())
+      .patch('/api/auth/change-password')
+      .set('Authorization', `Bearer ${changePasswordAccessToken}`)
+      .send({ currentPassword: password, newPassword: password, confirmPassword: password })
+      .expect(400);
+
+    await request(app.getHttpServer())
+      .patch('/api/auth/change-password')
+      .set('Authorization', `Bearer ${changePasswordAccessToken}`)
+      .send({ currentPassword: password, newPassword: changedPassword, confirmPassword: changedPassword })
+      .expect(200)
+      .expect({ success: true, message: 'Parol muvaffaqiyatli o‘zgartirildi', requiresRelogin: true });
+
+    await request(app.getHttpServer())
+      .post('/api/auth/login')
+      .send({ email: registration.body.user.email, password })
+      .expect(401);
+
+    const loginWithNewPassword = await request(app.getHttpServer())
+      .post('/api/auth/login')
+      .send({ email: registration.body.user.email, password: changedPassword })
+      .expect(200);
+
+    expect(loginWithNewPassword.body.user.passwordHash).toBeUndefined();
+    await request(app.getHttpServer())
+      .post('/api/auth/refresh')
+      .send({ refreshToken: changePasswordRefreshToken })
+      .expect(401);
+    await request(app.getHttpServer())
+      .post('/api/auth/refresh')
+      .send({ refreshToken: secondRefreshToken })
+      .expect(401);
   });
 
   it('rotates refresh tokens and revokes the old token', async () => {

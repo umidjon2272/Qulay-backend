@@ -13,12 +13,13 @@ const common_module_1 = require("../common/common.module");
 const prisma_module_1 = require("../prisma/prisma.module");
 const tasks_controller_1 = require("./tasks.controller");
 const tasks_service_1 = require("./tasks.service");
+const notifications_module_1 = require("../notifications/notifications.module");
 let TasksModule = class TasksModule {
 };
 exports.TasksModule = TasksModule;
 exports.TasksModule = TasksModule = __decorate([
     (0, common_1.Module)({
-        imports: [prisma_module_1.PrismaModule, common_module_1.CommonModule, activity_log_module_1.ActivityLogModule],
+        imports: [prisma_module_1.PrismaModule, common_module_1.CommonModule, activity_log_module_1.ActivityLogModule, notifications_module_1.NotificationsModule],
         controllers: [tasks_controller_1.TasksController],
         providers: [tasks_service_1.TasksService],
         exports: [tasks_service_1.TasksService],

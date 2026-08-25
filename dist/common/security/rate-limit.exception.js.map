@@ -1,0 +1,1 @@
+{"version":3,"file":"rate-limit.exception.js","sourceRoot":"","sources":["../../../src/common/security/rate-limit.exception.ts"],"names":[],"mappings":";;;AAAA,2CAA2D;AAE3D,MAAa,kBAAmB,SAAQ,sBAAa;IACnD,YAAY,OAAO,GAAG,qCAAqC;QACzD,KAAK,CAAC,OAAO,EAAE,mBAAU,CAAC,iBAAiB,CAAC,CAAC;IAC/C,CAAC;CACF;AAJD,gDAIC"}

@@ -1,4 +1,4 @@
-import { ConflictException, ForbiddenException, Injectable, InternalServerErrorException, Logger, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, InternalServerErrorException, Logger, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService, JwtSignOptions } from '@nestjs/jwt';
 import { User, UserStatus } from '@prisma/client';
@@ -8,9 +8,13 @@ import { PrismaService } from '../prisma/prisma.service';
 import { UsersService } from '../users/users.service';
 import { PublicUser, toPublicUser } from '../users/types/public-user.type';
 import { LoginDto } from './dto/login.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { RegisterDto } from './dto/register.dto';
 import { JwtPayload } from './types/jwt-payload.type';
+import { LoginBruteForceService } from './login-brute-force.service';
+import { AuthSecurityAuditService } from './auth-security-audit.service';
+import { RateLimitException } from '../common/security/rate-limit.exception';
 
 type TokenPair = {
   accessToken: string;
@@ -35,6 +39,8 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
+    private readonly bruteForce: LoginBruteForceService,
+    private readonly securityAudit: AuthSecurityAuditService,
   ) {}
 
   async register(dto: RegisterDto): Promise<AuthResponse> {
@@ -45,6 +51,7 @@ export class AuthService {
     const existingUser = await this.usersService.findByEmail(email);
     this.logTiming('register:user_lookup', stageStartedAt);
     if (existingUser) {
+      await this.securityAudit.recordUserAction(existingUser.id, AuthSecurityAuditService.actions.REGISTER_FAILED, 'email_already_registered');
       throw new ConflictException('Email is already registered');
     }
 
@@ -64,21 +71,30 @@ export class AuthService {
     });
     this.logTiming('register:user_create', stageStartedAt);
 
+    await this.securityAudit.recordUserAction(user.id, AuthSecurityAuditService.actions.REGISTERED);
     return this.issueAndPersistTokens(user, 'register', startedAt);
   }
 
-  async login(dto: LoginDto): Promise<AuthResponse> {
+  async login(dto: LoginDto, ip = 'unknown'): Promise<AuthResponse> {
     const startedAt = this.timestamp();
     this.logTiming('login:start', startedAt);
     const email = this.normalizeEmail(dto.email);
+    if (this.bruteForce.isBlocked(ip, email)) {
+      this.securityAudit.recordSuspicious(AuthSecurityAuditService.actions.LOGIN_BLOCKED, ip, email);
+      throw new RateLimitException('Too many login attempts. Try again later.');
+    }
     let stageStartedAt = this.timestamp();
     const user = await this.usersService.findByEmailWithPassword(email);
     this.logTiming('login:user_lookup', stageStartedAt);
 
     if (!user || user.status === UserStatus.BLOCKED) {
       if (user?.status === UserStatus.BLOCKED) {
+        await this.securityAudit.recordUserAction(user.id, AuthSecurityAuditService.actions.LOGIN_FAILED, 'blocked_user');
         throw new ForbiddenException('User is blocked');
       }
+      const locked = this.bruteForce.recordFailure(ip, email);
+      this.securityAudit.recordSuspicious(locked ? AuthSecurityAuditService.actions.LOGIN_BLOCKED : AuthSecurityAuditService.actions.LOGIN_FAILED, ip, email);
+      if (locked) throw new RateLimitException('Too many login attempts. Try again later.');
       throw new UnauthorizedException('Invalid email or password');
     }
 
@@ -86,9 +102,15 @@ export class AuthService {
     const passwordMatches = await bcrypt.compare(dto.password, user.passwordHash);
     this.logTiming('login:bcrypt_compare', stageStartedAt);
     if (!passwordMatches) {
+      const locked = this.bruteForce.recordFailure(ip, email);
+      await this.securityAudit.recordUserAction(user.id, AuthSecurityAuditService.actions.LOGIN_FAILED, 'invalid_credentials');
+      this.securityAudit.recordSuspicious(locked ? AuthSecurityAuditService.actions.LOGIN_BLOCKED : AuthSecurityAuditService.actions.LOGIN_FAILED, ip, email);
+      if (locked) throw new RateLimitException('Too many login attempts. Try again later.');
       throw new UnauthorizedException('Invalid email or password');
     }
 
+    this.bruteForce.recordSuccess(ip, email);
+    await this.securityAudit.recordUserAction(user.id, AuthSecurityAuditService.actions.LOGIN_SUCCEEDED);
     return this.issueAndPersistTokens(toPublicUser(user), 'login', startedAt);
   }
 
@@ -169,6 +191,7 @@ export class AuthService {
     }
     this.logTiming('refresh:rotation_persist', stageStartedAt);
     this.logTiming('refresh:end', startedAt);
+    await this.securityAudit.recordUserAction(user.id, AuthSecurityAuditService.actions.REFRESH_SUCCEEDED);
 
     return {
       user: toPublicUser(user),
@@ -204,6 +227,7 @@ export class AuthService {
       where: { id: storedToken.id, revokedAt: null },
       data: { revokedAt: new Date() },
     });
+    await this.securityAudit.recordUserAction(payload.sub, AuthSecurityAuditService.actions.LOGOUT_COMPLETED);
 
     return { message: 'Logged out successfully' };
   }
@@ -214,6 +238,49 @@ export class AuthService {
       throw new UnauthorizedException('User no longer exists');
     }
     return user;
+  }
+
+  async changePassword(userId: string, dto: ChangePasswordDto): Promise<{
+    success: true;
+    message: string;
+    requiresRelogin: true;
+  }> {
+    const user = await this.usersService.findByIdWithPassword(userId);
+    if (!user) {
+      throw new UnauthorizedException('User no longer exists');
+    }
+
+    const currentPasswordMatches = await bcrypt.compare(dto.currentPassword, user.passwordHash);
+    if (!currentPasswordMatches) {
+      throw new BadRequestException('Joriy parol noto‘g‘ri');
+    }
+
+    if (dto.currentPassword === dto.newPassword) {
+      throw new BadRequestException('Yangi parol eski parol bilan bir xil bo‘lmasin');
+    }
+
+    const newPasswordHash = await this.hashPassword(dto.newPassword);
+    try {
+      await this.prisma.$transaction(async (transaction) => {
+        await transaction.user.update({
+          where: { id: userId },
+          data: { passwordHash: newPasswordHash },
+        });
+        await transaction.refreshToken.updateMany({
+          where: { userId, revokedAt: null },
+          data: { revokedAt: new Date() },
+        });
+      });
+    } catch {
+      throw new InternalServerErrorException('Unable to change password');
+    }
+    await this.securityAudit.recordUserAction(userId, AuthSecurityAuditService.actions.PASSWORD_CHANGED);
+
+    return {
+      success: true,
+      message: 'Parol muvaffaqiyatli o‘zgartirildi',
+      requiresRelogin: true,
+    };
   }
 
   private async issueAndPersistTokens(user: PublicUser, operation: 'register' | 'login', startedAt: bigint): Promise<AuthResponse> {

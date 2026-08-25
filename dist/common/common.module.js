@@ -12,6 +12,7 @@ const jwt_1 = require("@nestjs/jwt");
 const prisma_module_1 = require("../prisma/prisma.module");
 const jwt_auth_guard_1 = require("./guards/jwt-auth.guard");
 const roles_guard_1 = require("./guards/roles.guard");
+const security_rate_limit_service_1 = require("./security/security-rate-limit.service");
 let CommonModule = class CommonModule {
 };
 exports.CommonModule = CommonModule;
@@ -19,8 +20,8 @@ exports.CommonModule = CommonModule = __decorate([
     (0, common_1.Global)(),
     (0, common_1.Module)({
         imports: [prisma_module_1.PrismaModule, jwt_1.JwtModule.register({})],
-        providers: [jwt_auth_guard_1.JwtAuthGuard, roles_guard_1.RolesGuard],
-        exports: [jwt_1.JwtModule, jwt_auth_guard_1.JwtAuthGuard, roles_guard_1.RolesGuard],
+        providers: [jwt_auth_guard_1.JwtAuthGuard, roles_guard_1.RolesGuard, security_rate_limit_service_1.SecurityRateLimitService],
+        exports: [jwt_1.JwtModule, jwt_auth_guard_1.JwtAuthGuard, roles_guard_1.RolesGuard, security_rate_limit_service_1.SecurityRateLimitService],
     })
 ], CommonModule);
 //# sourceMappingURL=common.module.js.map

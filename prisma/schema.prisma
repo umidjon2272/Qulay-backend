@@ -48,13 +48,14 @@ enum MessageRole {
   TOOL
 }
 
-enum MemoryCategory {
-  PROFILE
-  PREFERENCE
+enum MemoryType {
+  PERSONAL
+  BUSINESS
   CONTACT
+  PREFERENCE
+  DECISION
   GOAL
-  WORK
-  OTHER
+  CONTEXT
 }
 
 enum UsageType {
@@ -64,44 +65,229 @@ enum UsageType {
   FILE
 }
 
+enum FinanceTransactionType {
+  INCOME
+  EXPENSE
+}
+
+enum FinanceCategoryType {
+  INCOME
+  EXPENSE
+  BOTH
+}
+
+enum FinanceCurrency {
+  UZS
+  USD
+}
+
+enum TelegramConnectionStatus {
+  DISCONNECTED
+  AWAITING_CODE
+  AWAITING_PASSWORD
+  CONNECTED
+  ERROR
+}
+
+enum GoogleConnectionStatus {
+  DISCONNECTED
+  CONNECTED
+  ERROR
+}
+
+enum NotificationType {
+  TASK
+  REMINDER
+  MEETING
+  SYSTEM
+  AI
+}
+
+enum NotificationChannel {
+  IN_APP
+  TELEGRAM
+  WEB_PUSH
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  READ
+  FAILED
+  CANCELLED
+}
+
+enum FileStorageProvider {
+  LOCAL
+  S3
+}
+
+enum FileSource {
+  UPLOAD
+  GOOGLE_DRIVE
+  TELEGRAM
+  SYSTEM
+}
+
+enum FileStatus {
+  ACTIVE
+  PROCESSING
+  FAILED
+  DELETED
+}
+
 model User {
-  id            String         @id @default(uuid()) @db.Uuid
-  email         String         @unique
-  passwordHash  String
-  firstName     String
-  lastName      String
-  avatarUrl     String?
-  role          UserRole       @default(USER)
-  status        UserStatus     @default(ACTIVE)
-  timezone      String         @default("UTC")
-  language      String         @default("en")
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
-  refreshTokens RefreshToken[]
-  tasks         Task[]
-  reminders     Reminder[]
-  meetings      Meeting[]
-  notes         Note[]
-  conversations Conversation[]
-  memories      UserMemory[]
-  aiUsage       AiUsage[]
-  activityLogs  ActivityLog[]
+  id                  String               @id @default(uuid()) @db.Uuid
+  email               String               @unique
+  passwordHash        String
+  firstName           String
+  lastName            String
+  avatarUrl           String?
+  role                UserRole             @default(USER)
+  status              UserStatus           @default(ACTIVE)
+  timezone            String               @default("UTC")
+  language            String               @default("en")
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  refreshTokens       RefreshToken[]
+  passwordResetTokens PasswordResetToken[]
+  tasks               Task[]
+  reminders           Reminder[]
+  meetings            Meeting[]
+  notes               Note[]
+  conversations       Conversation[]
+  memories            UserMemory[]
+  contacts            Contact[]
+  aiUsage             AiUsage[]
+  activityLogs        ActivityLog[]
+  financeTransactions FinanceTransaction[]
+  financeCategories   FinanceCategory[]
+  telegramConnection  TelegramConnection?
+  googleConnection    GoogleConnection?
+  notifications        Notification[]
+  notificationPreference NotificationPreference?
+  files               UserFile[]
+  fileFolders         FileFolder[]
+
+  @@index([createdAt])
+  @@index([status, createdAt])
+  @@index([role, status])
+}
+
+model FileFolder {
+  id        String       @id @default(uuid()) @db.Uuid
+  userId    String       @db.Uuid
+  name      String       @db.VarChar(200)
+  parentId  String?      @db.Uuid
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent    FileFolder?  @relation("FileFolderTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children  FileFolder[] @relation("FileFolderTree")
+  files     UserFile[]
+
+  @@unique([userId, parentId, name])
+  @@index([userId, parentId])
+}
+
+model UserFile {
+  id              String               @id @default(uuid()) @db.Uuid
+  userId          String               @db.Uuid
+  originalName    String               @db.VarChar(255)
+  storedName      String               @db.VarChar(255)
+  label           String?              @db.VarChar(200)
+  mimeType        String               @db.VarChar(200)
+  extension       String?              @db.VarChar(20)
+  sizeBytes       BigInt
+  storageProvider FileStorageProvider  @default(LOCAL)
+  storageKey      String               @db.VarChar(1000)
+  folderId        String?              @db.Uuid
+  source          FileSource            @default(UPLOAD)
+  status          FileStatus            @default(ACTIVE)
+  checksum        String?              @db.Char(64)
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+  deletedAt       DateTime?
+  user            User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  folder          FileFolder?          @relation(fields: [folderId], references: [id], onDelete: SetNull)
+
+  @@index([userId, status, createdAt])
+  @@index([userId, folderId])
+  @@index([userId, mimeType])
+  @@index([userId, source])
+  @@index([userId, checksum])
+  @@index([createdAt])
+}
+
+model GoogleConnection {
+  id                     String                 @id @default(uuid()) @db.Uuid
+  userId                 String                 @unique @db.Uuid
+  googleUserId           String?
+  email                  String?
+  displayName            String?
+  encryptedAccessToken   String?
+  encryptedRefreshToken  String?
+  accessTokenExpiresAt   DateTime?
+  scopes                 String[]               @default([])
+  status                 GoogleConnectionStatus @default(DISCONNECTED)
+  connectedAt            DateTime?
+  lastUsedAt             DateTime?
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
+  user                   User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+}
+
+model TelegramConnection {
+  id                    String                   @id @default(uuid()) @db.Uuid
+  userId                String                   @unique @db.Uuid
+  telegramUserId        String?
+  // Encrypted compact payload; never a plaintext phone number.
+  phoneNumber           String?
+  username              String?                  @db.VarChar(100)
+  displayName           String?                  @db.VarChar(200)
+  encryptedSession      String?
+  encryptedPhoneCodeHash String?
+  status                TelegramConnectionStatus @default(DISCONNECTED)
+  connectedAt           DateTime?
+  lastUsedAt            DateTime?
+  createdAt             DateTime                 @default(now())
+  updatedAt             DateTime                 @updatedAt
+  user                  User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status])
 }
 
 model RefreshToken {
-  id        String    @id @default(uuid()) @db.Uuid
-  tokenHash String
+  id               String    @id @default(uuid()) @db.Uuid
+  tokenHash        String
   // Deterministic lookup key avoids bcrypt-scanning every active session.
   // Nullable keeps refresh compatibility with rows created before this migration.
-  tokenFingerprint String? @db.Char(64)
-  userId    String    @db.Uuid
-  expiresAt DateTime
-  revokedAt DateTime?
-  createdAt DateTime  @default(now())
-  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenFingerprint String?   @db.Char(64)
+  userId           String    @db.Uuid
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  createdAt        DateTime  @default(now())
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([userId, tokenFingerprint, revokedAt, expiresAt])
+  @@index([expiresAt])
+}
+
+model PasswordResetToken {
+  id              String    @id @default(uuid()) @db.Uuid
+  userId          String    @db.Uuid
+  tokenFingerprint String   @db.Char(64)
+  tokenHash       String
+  expiresAt       DateTime
+  usedAt          DateTime?
+  createdAt       DateTime  @default(now())
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenFingerprint])
   @@index([expiresAt])
 }
 
@@ -148,16 +334,20 @@ model Meeting {
   title                 String        @db.VarChar(200)
   description           String?       @db.Text
   participant           String?       @db.VarChar(200)
+  location              String?       @db.VarChar(500)
   startsAt              DateTime
   endsAt                DateTime
   reminderMinutesBefore Int           @default(15)
   status                MeetingStatus @default(SCHEDULED)
+  contactId             String?       @db.Uuid
   createdAt             DateTime      @default(now())
   updatedAt             DateTime      @updatedAt
   user                  User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contact               Contact?      @relation(fields: [contactId], references: [id], onDelete: SetNull)
 
   @@index([userId, startsAt])
   @@index([userId, status])
+  @@index([userId, contactId, startsAt])
 }
 
 model Note {
@@ -168,8 +358,11 @@ model Note {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contactId String?  @db.Uuid
+  contact   Contact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
 
   @@index([userId, createdAt])
+  @@index([userId, contactId, updatedAt])
 }
 
 model Conversation {
@@ -196,19 +389,100 @@ model Message {
 }
 
 model UserMemory {
-  id         String         @id @default(uuid()) @db.Uuid
-  userId     String         @db.Uuid
-  key        String         @db.VarChar(100)
-  value      String         @db.Text
-  category   MemoryCategory @default(OTHER)
-  importance Int            @default(5)
-  createdAt  DateTime       @default(now())
-  updatedAt  DateTime       @updatedAt
-  user       User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id         String     @id @default(uuid()) @db.Uuid
+  userId     String     @db.Uuid
+  type       MemoryType @default(CONTEXT)
+  key        String     @db.VarChar(100)
+  value      String     @db.Text
+  importance Int        @default(5)
+  source     String     @default("MANUAL") @db.VarChar(100)
+  contactId  String?    @db.Uuid
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+  lastUsedAt DateTime?
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contact    Contact?   @relation(fields: [contactId], references: [id], onDelete: SetNull)
 
   @@unique([userId, key])
-  @@index([userId, category])
+  @@index([userId, type])
+  @@index([userId, contactId])
   @@index([userId, createdAt])
+  @@index([userId, lastUsedAt])
+}
+
+model Contact {
+  id                  String               @id @default(uuid()) @db.Uuid
+  userId              String               @db.Uuid
+  firstName           String               @db.VarChar(100)
+  lastName            String?              @db.VarChar(100)
+  displayName         String               @db.VarChar(200)
+  phone               String?              @db.VarChar(50)
+  email               String?              @db.VarChar(320)
+  telegramUsername    String?              @db.VarChar(100)
+  company             String?              @db.VarChar(200)
+  position            String?              @db.VarChar(200)
+  notes               String?              @db.Text
+  tags                String[]             @default([])
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  user                User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  meetings            Meeting[]
+  memories            UserMemory[]
+  notesRelation       Note[]
+  financeTransactions FinanceTransaction[]
+
+  @@index([userId])
+  @@index([displayName])
+  @@index([phone])
+  @@index([email])
+  @@index([telegramUsername])
+  @@index([userId, displayName])
+  @@index([userId, phone])
+  @@index([userId, email])
+  @@index([userId, telegramUsername])
+}
+
+model FinanceCategory {
+  id           String               @id @default(uuid()) @db.Uuid
+  userId       String               @db.Uuid
+  name         String               @db.VarChar(100)
+  type         FinanceCategoryType
+  icon         String?              @db.VarChar(100)
+  color        String?              @db.VarChar(30)
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+  user         User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions FinanceTransaction[]
+
+  @@unique([userId, name, type])
+  @@index([userId])
+  @@index([userId, type])
+}
+
+model FinanceTransaction {
+  id              String                 @id @default(uuid()) @db.Uuid
+  userId          String                 @db.Uuid
+  type            FinanceTransactionType
+  amount          Decimal                @db.Decimal(18, 2)
+  currency        FinanceCurrency
+  categoryId      String?                @db.Uuid
+  title           String                 @db.VarChar(200)
+  description     String?                @db.Text
+  transactionDate DateTime
+  contactId       String?                @db.Uuid
+  source          String?                @db.VarChar(100)
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+  user            User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category        FinanceCategory?       @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  contact         Contact?               @relation(fields: [contactId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([userId, transactionDate])
+  @@index([userId, type])
+  @@index([userId, categoryId])
+  @@index([userId, currency])
+  @@index([userId, currency, transactionDate])
 }
 
 model AiUsage {
@@ -225,6 +499,7 @@ model AiUsage {
 
   @@index([userId, type])
   @@index([userId, createdAt])
+  @@index([createdAt, type])
 }
 
 model ActivityLog {
@@ -240,4 +515,55 @@ model ActivityLog {
   @@index([userId, createdAt])
   @@index([userId, action])
   @@index([entityType, entityId])
+  @@index([createdAt])
+  @@index([action, createdAt])
+  @@index([entityType, createdAt])
+}
+
+model Notification {
+  id            String               @id @default(uuid()) @db.Uuid
+  userId        String               @db.Uuid
+  type          NotificationType
+  title         String               @db.VarChar(200)
+  message       String               @db.Text
+  entityType    String?              @db.VarChar(100)
+  entityId      String?              @db.Uuid
+  channel       NotificationChannel
+  status        NotificationStatus   @default(PENDING)
+  scheduledAt   DateTime?
+  sentAt        DateTime?
+  readAt        DateTime?
+  failedAt      DateTime?
+  metadata      Json?
+  retryCount    Int                  @default(0)
+  nextRetryAt   DateTime?
+  claimedAt     DateTime?
+  claimToken    String?              @db.VarChar(100)
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+  user          User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, readAt])
+  @@index([status, scheduledAt])
+  @@index([entityType, entityId])
+  @@index([userId, entityType, entityId, channel, status])
+  @@index([createdAt, status])
+}
+
+model NotificationPreference {
+  id                       String   @id @default(uuid()) @db.Uuid
+  userId                   String   @unique @db.Uuid
+  taskEnabled              Boolean  @default(true)
+  reminderEnabled          Boolean  @default(true)
+  meetingEnabled           Boolean  @default(true)
+  aiEnabled                Boolean  @default(false)
+  telegramEnabled         Boolean  @default(false)
+  webPushEnabled           Boolean  @default(false)
+  defaultMeetingMinutesBefore Int    @default(15)
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+  user                     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
