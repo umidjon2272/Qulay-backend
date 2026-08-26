@@ -23,6 +23,7 @@ function mapTelegramError(error) {
             case 'CONNECTION_EXPIRED': return new common_1.BadRequestException('Telegram connection has expired');
             case 'PEER_NOT_FOUND': return new common_1.NotFoundException('Telegram peer was not found');
             case 'SEND_FAILED': return new common_1.BadRequestException('Telegram message could not be sent');
+            case 'NOT_CONFIGURED': return new common_1.ServiceUnavailableException('Telegram integratsiyasi hozir sozlanmagan');
             default: return new common_1.ServiceUnavailableException('Telegram is temporarily unavailable');
         }
     }

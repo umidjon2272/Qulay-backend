@@ -19,7 +19,8 @@ export type GoogleErrorCode =
   | 'EVENT_NOT_FOUND'
   | 'FILE_NOT_FOUND'
   | 'UNAVAILABLE'
-  | 'INVALID_REQUEST';
+  | 'INVALID_REQUEST'
+  | 'NOT_CONFIGURED';
 
 export class GoogleAdapterError extends Error {
   constructor(public readonly code: GoogleErrorCode, public readonly status?: number) {
@@ -39,6 +40,7 @@ export function mapGoogleError(error: unknown): HttpException {
       case 'EVENT_NOT_FOUND': return new NotFoundException('Event topilmadi');
       case 'FILE_NOT_FOUND': return new NotFoundException('File topilmadi');
       case 'INVALID_REQUEST': return new BadRequestException('Google so‘rovi yaroqsiz');
+      case 'NOT_CONFIGURED': return new ServiceUnavailableException('Google integratsiyasi hozir sozlanmagan');
       default: return new ServiceUnavailableException('Google vaqtincha unavailable');
     }
   }
@@ -61,4 +63,3 @@ export function isRetryableGoogleStatus(status: number): boolean {
 export function retryAfterMs(attempt: number): number {
   return Math.min(250 * 2 ** attempt, 2_000);
 }
-

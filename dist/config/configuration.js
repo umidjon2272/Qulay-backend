@@ -5,7 +5,7 @@ exports.default = () => ({
     trustProxy: process.env.TRUST_PROXY === 'true',
     requestBodyLimit: process.env.REQUEST_BODY_LIMIT ?? '1mb',
     port: Number.parseInt(process.env.PORT ?? '3000', 10),
-    frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:5173',
+    frontendUrl: process.env.FRONTEND_URL,
     jwt: {
         accessSecret: process.env.JWT_ACCESS_SECRET,
         refreshSecret: process.env.JWT_REFRESH_SECRET,
@@ -28,11 +28,13 @@ exports.default = () => ({
         },
     },
     telegram: {
-        apiId: Number.parseInt(process.env.TELEGRAM_API_ID ?? '0', 10),
+        configured: [process.env.TELEGRAM_API_ID, process.env.TELEGRAM_API_HASH, process.env.TELEGRAM_SESSION_ENCRYPTION_KEY].every(Boolean),
+        apiId: process.env.TELEGRAM_API_ID === undefined ? undefined : Number.parseInt(process.env.TELEGRAM_API_ID, 10),
         apiHash: process.env.TELEGRAM_API_HASH,
         sessionEncryptionKey: process.env.TELEGRAM_SESSION_ENCRYPTION_KEY,
     },
     google: {
+        configured: [process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, process.env.GOOGLE_REDIRECT_URI, process.env.GOOGLE_TOKEN_ENCRYPTION_KEY].every(Boolean),
         clientId: process.env.GOOGLE_CLIENT_ID,
         clientSecret: process.env.GOOGLE_CLIENT_SECRET,
         redirectUri: process.env.GOOGLE_REDIRECT_URI,

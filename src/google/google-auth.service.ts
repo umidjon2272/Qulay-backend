@@ -34,6 +34,7 @@ export class GoogleAuthService {
   ) {}
 
   connectUrl(userId: string): string {
+    this.assertConfigured();
     this.purgeStates();
     const state = this.signState({ userId, nonce: randomBytes(18).toString('base64url'), expiresAt: Date.now() + 10 * 60_000 });
     const params = new URLSearchParams({
@@ -50,6 +51,7 @@ export class GoogleAuthService {
   }
 
   async callback(code: string | undefined, stateValue: string | undefined, oauthError?: string): Promise<void> {
+    this.assertConfigured();
     if (oauthError) throw new GoogleAdapterError('OAUTH_CANCELLED');
     const state = this.verifyState(stateValue);
     if (!code) throw new GoogleAdapterError('INVALID_REQUEST');
@@ -89,6 +91,7 @@ export class GoogleAuthService {
   }
 
   async getAccessToken(userId: string): Promise<string> {
+    this.assertConfigured();
     const connection = await this.prisma.googleConnection.findUnique({ where: { userId } });
     if (!connection || connection.status === GoogleConnectionStatus.ERROR) {
       throw new GoogleAdapterError('TOKEN_REVOKED');
@@ -108,11 +111,23 @@ export class GoogleAuthService {
   }
 
   async status(userId: string) {
+    if (!this.isConfigured()) {
+      return {
+        connected: false,
+        status: 'not_configured',
+        email: null,
+        displayName: null,
+        connectedAt: null,
+        calendarEnabled: false,
+        driveEnabled: false,
+      };
+    }
     const connection = await this.prisma.googleConnection.findUnique({ where: { userId } });
     const connected = connection?.status === GoogleConnectionStatus.CONNECTED;
     const scopes = new Set(connection?.scopes ?? []);
     return {
       connected,
+      status: connection?.status ?? GoogleConnectionStatus.DISCONNECTED,
       email: connection?.email ?? null,
       displayName: connection?.displayName ?? null,
       connectedAt: connection?.connectedAt?.toISOString() ?? null,
@@ -122,6 +137,7 @@ export class GoogleAuthService {
   }
 
   async disconnect(userId: string): Promise<{ status: 'disconnected' }> {
+    this.assertConfigured();
     const connection = await this.prisma.googleConnection.findUnique({ where: { userId } });
     if (connection?.encryptedAccessToken) {
       try {
@@ -235,5 +251,13 @@ export class GoogleAuthService {
 
   private markError(userId: string): Promise<unknown> {
     return this.prisma.googleConnection.update({ where: { userId }, data: { status: GoogleConnectionStatus.ERROR } });
+  }
+
+  private isConfigured(): boolean {
+    return this.config.get<boolean>('google.configured', false);
+  }
+
+  private assertConfigured(): void {
+    if (!this.isConfigured()) throw new GoogleAdapterError('NOT_CONFIGURED');
   }
 }

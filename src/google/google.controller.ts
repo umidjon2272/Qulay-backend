@@ -17,7 +17,9 @@ export class GoogleController {
   constructor(private readonly auth: GoogleAuthService, private readonly calendar: GoogleCalendarService, private readonly drive: GoogleDriveService, private readonly config: ConfigService, private readonly rateLimiter: SecurityRateLimitService) {}
 
   @Get('connect-url') @UseGuards(JwtAuthGuard)
-  connectUrl(@CurrentUser() user: AuthenticatedUser) { return { url: this.auth.connectUrl(user.sub) }; }
+  connectUrl(@CurrentUser() user: AuthenticatedUser) {
+    try { return { url: this.auth.connectUrl(user.sub) }; } catch (error) { throw mapGoogleError(error); }
+  }
 
   @Get('callback')
   async callback(@Query() query: GoogleCallbackQueryDto, @Req() request: Request, @Res() response: Response) {
@@ -39,7 +41,9 @@ export class GoogleController {
   status(@CurrentUser() user: AuthenticatedUser) { return this.auth.status(user.sub); }
 
   @Delete('disconnect') @UseGuards(JwtAuthGuard)
-  disconnect(@CurrentUser() user: AuthenticatedUser) { return this.auth.disconnect(user.sub); }
+  async disconnect(@CurrentUser() user: AuthenticatedUser) {
+    try { return await this.auth.disconnect(user.sub); } catch (error) { throw mapGoogleError(error); }
+  }
 
   @Get('calendar/events') @UseGuards(JwtAuthGuard)
   listCalendar(@CurrentUser() user: AuthenticatedUser, @Query() query: CalendarEventsQueryDto) { return this.calendar.list(user.sub, query); }

@@ -32,7 +32,14 @@ let GoogleController = class GoogleController {
         this.config = config;
         this.rateLimiter = rateLimiter;
     }
-    connectUrl(user) { return { url: this.auth.connectUrl(user.sub) }; }
+    connectUrl(user) {
+        try {
+            return { url: this.auth.connectUrl(user.sub) };
+        }
+        catch (error) {
+            throw (0, google_errors_1.mapGoogleError)(error);
+        }
+    }
     async callback(query, request, response) {
         const frontend = this.config.getOrThrow('frontendUrl').split(',')[0].trim();
         if (!this.rateLimiter.isAllowed('google-callback-ip', request.ip ?? 'unknown', 30, 60 * 1000)) {
@@ -49,7 +56,14 @@ let GoogleController = class GoogleController {
         }
     }
     status(user) { return this.auth.status(user.sub); }
-    disconnect(user) { return this.auth.disconnect(user.sub); }
+    async disconnect(user) {
+        try {
+            return await this.auth.disconnect(user.sub);
+        }
+        catch (error) {
+            throw (0, google_errors_1.mapGoogleError)(error);
+        }
+    }
     listCalendar(user, query) { return this.calendar.list(user.sub, query); }
     createCalendar(user, dto) { return this.calendar.create(user.sub, dto); }
     updateCalendar(user, eventId, dto) { return this.calendar.update(user.sub, eventId, dto); }
@@ -89,7 +103,7 @@ __decorate([
     __param(0, (0, current_user_decorator_1.CurrentUser)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object]),
-    __metadata("design:returntype", void 0)
+    __metadata("design:returntype", Promise)
 ], GoogleController.prototype, "disconnect", null);
 __decorate([
     (0, common_1.Get)('calendar/events'),

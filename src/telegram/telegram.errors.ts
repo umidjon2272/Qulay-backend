@@ -1,6 +1,6 @@
 import { BadRequestException, HttpException, HttpStatus, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 
-export type TelegramErrorCode = 'INVALID_PHONE' | 'INVALID_CODE' | 'EXPIRED_CODE' | 'WRONG_PASSWORD' | 'FLOOD_WAIT' | 'CONNECTION_EXPIRED' | 'PEER_NOT_FOUND' | 'UNAVAILABLE' | 'SEND_FAILED';
+export type TelegramErrorCode = 'INVALID_PHONE' | 'INVALID_CODE' | 'EXPIRED_CODE' | 'WRONG_PASSWORD' | 'FLOOD_WAIT' | 'CONNECTION_EXPIRED' | 'PEER_NOT_FOUND' | 'UNAVAILABLE' | 'SEND_FAILED' | 'NOT_CONFIGURED';
 
 export class TelegramAdapterError extends Error {
   constructor(public readonly code: TelegramErrorCode, public readonly retryAfterSeconds?: number) {
@@ -19,6 +19,7 @@ export function mapTelegramError(error: unknown): HttpException {
       case 'CONNECTION_EXPIRED': return new BadRequestException('Telegram connection has expired');
       case 'PEER_NOT_FOUND': return new NotFoundException('Telegram peer was not found');
       case 'SEND_FAILED': return new BadRequestException('Telegram message could not be sent');
+      case 'NOT_CONFIGURED': return new ServiceUnavailableException('Telegram integratsiyasi hozir sozlanmagan');
       default: return new ServiceUnavailableException('Telegram is temporarily unavailable');
     }
   }

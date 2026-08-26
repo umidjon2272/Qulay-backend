@@ -1,5 +1,7 @@
 import { GoogleCalendarService, normalizeEvent } from '../src/google/google-calendar.service';
 import { GoogleDriveService } from '../src/google/google-drive.service';
+import { ConfigService } from '@nestjs/config';
+import { GoogleAuthService } from '../src/google/google-auth.service';
 
 describe('Google integration adapters', () => {
   it('normalizes Calendar events without changing timezone-bearing values', () => {
@@ -21,5 +23,17 @@ describe('Google integration adapters', () => {
     const calendar = new GoogleCalendarService(auth as any, api as any, activity as any);
     await expect(calendar.create('user-1', { title: 'Created', start: '2026-08-26T09:00:00Z', end: '2026-08-26T10:00:00Z' })).resolves.toMatchObject({ id: 'e1', title: 'Created' });
     expect(api.request).toHaveBeenCalledWith(expect.stringContaining('/calendars/primary/events'), 'access', expect.objectContaining({ method: 'POST' }));
+  });
+
+  it('reports not_configured and rejects the connect URL when Google credentials are absent', async () => {
+    const auth = new GoogleAuthService(
+      new ConfigService({ google: { configured: false } }),
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+    await expect(auth.status('user-1')).resolves.toEqual(expect.objectContaining({ connected: false, status: 'not_configured' }));
+    expect(() => auth.connectUrl('user-1')).toThrow('NOT_CONFIGURED');
   });
 });

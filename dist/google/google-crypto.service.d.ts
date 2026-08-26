@@ -4,4 +4,5 @@ export declare class GoogleCryptoService {
     constructor(config: ConfigService);
     encrypt(value: string): string;
     decrypt(payload: string): string;
+    private requiredKey;
 }

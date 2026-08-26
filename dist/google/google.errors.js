@@ -26,6 +26,7 @@ function mapGoogleError(error) {
             case 'EVENT_NOT_FOUND': return new common_1.NotFoundException('Event topilmadi');
             case 'FILE_NOT_FOUND': return new common_1.NotFoundException('File topilmadi');
             case 'INVALID_REQUEST': return new common_1.BadRequestException('Google so‘rovi yaroqsiz');
+            case 'NOT_CONFIGURED': return new common_1.ServiceUnavailableException('Google integratsiyasi hozir sozlanmagan');
             default: return new common_1.ServiceUnavailableException('Google vaqtincha unavailable');
         }
     }

@@ -22,14 +22,15 @@ exports.TelegramClientService = TelegramClientService;
 let TeleprotoTelegramClientService = class TeleprotoTelegramClientService extends TelegramClientService {
     constructor(config) {
         super();
-        this.apiId = config.getOrThrow('telegram.apiId');
-        this.apiHash = config.getOrThrow('telegram.apiHash');
+        this.apiId = config.get('telegram.apiId');
+        this.apiHash = config.get('telegram.apiHash');
     }
     async beginLogin(phoneNumber) {
+        const credentials = this.credentials();
         const client = this.client('');
         try {
             await client.connect();
-            const result = await client.sendCode({ apiId: this.apiId, apiHash: this.apiHash }, phoneNumber);
+            const result = await client.sendCode(credentials, phoneNumber);
             return { session: this.savedSession(client), phoneCodeHash: result.phoneCodeHash };
         }
         catch (error) {
@@ -64,10 +65,11 @@ let TeleprotoTelegramClientService = class TeleprotoTelegramClientService extend
         }
     }
     async verifyPassword(input) {
+        const credentials = this.credentials();
         const client = this.client(input.session);
         try {
             await client.connect();
-            await client.signInWithPassword({ apiId: this.apiId, apiHash: this.apiHash }, { password: async () => input.password, onError: async () => true });
+            await client.signInWithPassword(credentials, { password: async () => input.password, onError: async () => true });
             return { session: this.savedSession(client), account: await this.account(client) };
         }
         catch (error) {
@@ -133,9 +135,16 @@ let TeleprotoTelegramClientService = class TeleprotoTelegramClientService extend
         }
     }
     client(session) {
-        return new teleproto_1.TelegramClient(new sessions_1.StringSession(session), this.apiId, this.apiHash, {
+        const credentials = this.credentials();
+        return new teleproto_1.TelegramClient(new sessions_1.StringSession(session), credentials.apiId, credentials.apiHash, {
             connectionRetries: 3, reconnectRetries: 2, floodSleepThreshold: 0, deviceModel: 'Qulay AI', appVersion: '1.0',
         });
+    }
+    credentials() {
+        if (this.apiId === undefined || !this.apiHash) {
+            throw new telegram_errors_1.TelegramAdapterError('NOT_CONFIGURED');
+        }
+        return { apiId: this.apiId, apiHash: this.apiHash };
     }
     savedSession(client) {
         return client.session.save();

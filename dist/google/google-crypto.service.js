@@ -15,23 +15,29 @@ const config_1 = require("@nestjs/config");
 const node_crypto_1 = require("node:crypto");
 let GoogleCryptoService = class GoogleCryptoService {
     constructor(config) {
-        const encoded = config.getOrThrow('google.tokenEncryptionKey');
+        const encoded = config.get('google.tokenEncryptionKey');
+        if (!encoded) {
+            this.key = undefined;
+            return;
+        }
         this.key = Buffer.from(encoded, 'hex');
         if (this.key.length !== 32)
             throw new Error('GOOGLE_TOKEN_ENCRYPTION_KEY must be 32 bytes in hex');
     }
     encrypt(value) {
+        const key = this.requiredKey();
         const iv = (0, node_crypto_1.randomBytes)(12);
-        const cipher = (0, node_crypto_1.createCipheriv)('aes-256-gcm', this.key, iv);
+        const cipher = (0, node_crypto_1.createCipheriv)('aes-256-gcm', key, iv);
         const ciphertext = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
         return [iv, ciphertext, cipher.getAuthTag()].map((part) => part.toString('base64url')).join('.');
     }
     decrypt(payload) {
         try {
+            const key = this.requiredKey();
             const [ivEncoded, ciphertextEncoded, authTagEncoded] = payload.split('.');
             if (!ivEncoded || !ciphertextEncoded || !authTagEncoded)
                 throw new Error('Malformed encrypted payload');
-            const decipher = (0, node_crypto_1.createDecipheriv)('aes-256-gcm', this.key, Buffer.from(ivEncoded, 'base64url'));
+            const decipher = (0, node_crypto_1.createDecipheriv)('aes-256-gcm', key, Buffer.from(ivEncoded, 'base64url'));
             decipher.setAuthTag(Buffer.from(authTagEncoded, 'base64url'));
             return Buffer.concat([
                 decipher.update(Buffer.from(ciphertextEncoded, 'base64url')),
@@ -41,6 +47,11 @@ let GoogleCryptoService = class GoogleCryptoService {
         catch {
             throw new common_1.InternalServerErrorException('Google secure state is unavailable');
         }
+    }
+    requiredKey() {
+        if (!this.key)
+            throw new common_1.ServiceUnavailableException('Google integratsiyasi hozir sozlanmagan');
+        return this.key;
     }
 };
 exports.GoogleCryptoService = GoogleCryptoService;

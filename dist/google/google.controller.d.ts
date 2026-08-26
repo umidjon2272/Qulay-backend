@@ -19,6 +19,15 @@ export declare class GoogleController {
     callback(query: GoogleCallbackQueryDto, request: Request, response: Response): Promise<void>;
     status(user: AuthenticatedUser): Promise<{
         connected: boolean;
+        status: string;
+        email: null;
+        displayName: null;
+        connectedAt: null;
+        calendarEnabled: boolean;
+        driveEnabled: boolean;
+    } | {
+        connected: boolean;
+        status: import(".prisma/client").$Enums.GoogleConnectionStatus;
         email: string | null;
         displayName: string | null;
         connectedAt: string | null;

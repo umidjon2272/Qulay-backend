@@ -5,4 +5,5 @@ export declare class TelegramCryptoService {
     encrypt(value: string): string;
     decrypt(payload: string): string;
     maskPhone(payload: string | null): string | null;
+    private requiredKey;
 }

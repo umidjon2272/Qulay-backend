@@ -1,3 +1,4 @@
+import { ConfigService } from '@nestjs/config';
 import { ActivityLogService } from '../activity-log/activity-log.service';
 import { ContactsService } from '../contacts/contacts.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -10,7 +11,8 @@ export declare class TelegramIntegrationService {
     private readonly telegramClient;
     private readonly contactsService;
     private readonly activityLog;
-    constructor(prisma: PrismaService, crypto: TelegramCryptoService, telegramClient: TelegramClientService, contactsService: ContactsService, activityLog: ActivityLogService);
+    private readonly config;
+    constructor(prisma: PrismaService, crypto: TelegramCryptoService, telegramClient: TelegramClientService, contactsService: ContactsService, activityLog: ActivityLogService, config: ConfigService);
     connect(userId: string, phoneNumber: string): Promise<{
         status: 'code_required';
     }>;
@@ -21,6 +23,13 @@ export declare class TelegramIntegrationService {
         status: 'connected';
     }>;
     status(userId: string): Promise<{
+        connected: boolean;
+        status: string;
+        username: null;
+        displayName: null;
+        maskedPhone: null;
+        connectedAt: null;
+    } | {
         connected: boolean;
         status: import(".prisma/client").$Enums.TelegramConnectionStatus;
         username: string | null;
@@ -67,4 +76,6 @@ export declare class TelegramIntegrationService {
     private markError;
     private handleAuthError;
     private withContactMatches;
+    private isConfigured;
+    private assertConfigured;
 }

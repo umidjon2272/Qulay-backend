@@ -1,4 +1,5 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { TelegramConnection, TelegramConnectionStatus } from '@prisma/client';
 import { ActivityLogService, ACTIVITY_ACTIONS } from '../activity-log/activity-log.service';
 import { ContactsService } from '../contacts/contacts.service';
@@ -18,9 +19,11 @@ export class TelegramIntegrationService {
     private readonly telegramClient: TelegramClientService,
     private readonly contactsService: ContactsService,
     private readonly activityLog: ActivityLogService,
+    private readonly config: ConfigService,
   ) {}
 
   async connect(userId: string, phoneNumber: string): Promise<{ status: 'code_required' }> {
+    this.assertConfigured();
     try {
       const pending = await this.telegramClient.beginLogin(phoneNumber);
       await this.prisma.telegramConnection.upsert({
@@ -52,6 +55,7 @@ export class TelegramIntegrationService {
   }
 
   async verifyCode(userId: string, code: string): Promise<{ status: 'connected' | 'password_required' }> {
+    this.assertConfigured();
     const connection = await this.getPendingConnection(userId, TelegramConnectionStatus.AWAITING_CODE);
     try {
       const result = await this.telegramClient.verifyCode({
@@ -72,6 +76,7 @@ export class TelegramIntegrationService {
   }
 
   async verifyPassword(userId: string, password: string): Promise<{ status: 'connected' }> {
+    this.assertConfigured();
     const connection = await this.getPendingConnection(userId, TelegramConnectionStatus.AWAITING_PASSWORD);
     try {
       const result = await this.telegramClient.verifyPassword({ session: this.decryptRequired(connection.encryptedSession), password });
@@ -83,6 +88,7 @@ export class TelegramIntegrationService {
   }
 
   async status(userId: string) {
+    if (!this.isConfigured()) return { connected: false, status: 'not_configured', username: null, displayName: null, maskedPhone: null, connectedAt: null };
     const connection = await this.prisma.telegramConnection.findUnique({ where: { userId } });
     if (!connection) return { connected: false, status: TelegramConnectionStatus.DISCONNECTED, username: null, displayName: null, maskedPhone: null, connectedAt: null };
     return {
@@ -96,6 +102,7 @@ export class TelegramIntegrationService {
   }
 
   async disconnect(userId: string): Promise<{ status: 'disconnected' }> {
+    this.assertConfigured();
     const connection = await this.prisma.telegramConnection.findUnique({ where: { userId } });
     if (connection?.encryptedSession) {
       try {
@@ -115,6 +122,7 @@ export class TelegramIntegrationService {
   }
 
   async search(userId: string, query: TelegramSearchQueryDto) {
+    this.assertConfigured();
     const connection = await this.connected(userId);
     try {
       const peers = await this.telegramClient.search(connection.encryptedSession, query.q, query.limit);
@@ -125,6 +133,7 @@ export class TelegramIntegrationService {
   }
 
   async chats(userId: string, query: TelegramChatsQueryDto) {
+    this.assertConfigured();
     const connection = await this.connected(userId);
     try {
       const peers = await this.telegramClient.chats(connection.encryptedSession, query.search, query.limit);
@@ -135,6 +144,7 @@ export class TelegramIntegrationService {
   }
 
   async prepareTelegramMessage(userId: string, peerId: string, text: string) {
+    this.assertConfigured();
     const connection = await this.connected(userId);
     try {
       const recipient = await this.telegramClient.resolvePeer(connection.encryptedSession, peerId);
@@ -145,6 +155,7 @@ export class TelegramIntegrationService {
   }
 
   async sendMessage(userId: string, peerId: string, text: string): Promise<{ messageId: string; recipient: TelegramPeer }> {
+    this.assertConfigured();
     const connection = await this.connected(userId);
     try {
       const result = await this.telegramClient.sendMessage(connection.encryptedSession, peerId, text);
@@ -157,6 +168,7 @@ export class TelegramIntegrationService {
   }
 
   async sendSelfNotification(userId: string, text: string): Promise<{ messageId: string; recipient: TelegramPeer }> {
+    this.assertConfigured();
     const connection = await this.prisma.telegramConnection.findUnique({ where: { userId } });
     if (!connection?.telegramUserId) {
       throw new BadRequestException('Connected Telegram self-chat is unavailable');
@@ -218,5 +230,13 @@ export class TelegramIntegrationService {
       const exact = result.items.find((contact) => contact.telegramUsername?.replace(/^@/, '').toLocaleLowerCase() === username);
       return exact ? { ...peer, contactId: exact.id } : peer;
     }));
+  }
+
+  private isConfigured(): boolean {
+    return this.config.get<boolean>('telegram.configured', false);
+  }
+
+  private assertConfigured(): void {
+    if (!this.isConfigured()) throw new ServiceUnavailableException('Telegram integratsiyasi hozir sozlanmagan');
   }
 }

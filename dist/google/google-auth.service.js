@@ -38,6 +38,7 @@ let GoogleAuthService = GoogleAuthService_1 = class GoogleAuthService {
         this.usedStates = new Map();
     }
     connectUrl(userId) {
+        this.assertConfigured();
         this.purgeStates();
         const state = this.signState({ userId, nonce: (0, node_crypto_1.randomBytes)(18).toString('base64url'), expiresAt: Date.now() + 10 * 60_000 });
         const params = new URLSearchParams({
@@ -53,6 +54,7 @@ let GoogleAuthService = GoogleAuthService_1 = class GoogleAuthService {
         return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
     }
     async callback(code, stateValue, oauthError) {
+        this.assertConfigured();
         if (oauthError)
             throw new google_errors_1.GoogleAdapterError('OAUTH_CANCELLED');
         const state = this.verifyState(stateValue);
@@ -94,6 +96,7 @@ let GoogleAuthService = GoogleAuthService_1 = class GoogleAuthService {
         await this.activityLog.record({ userId: state.userId, action: activity_log_service_1.ACTIVITY_ACTIONS.GOOGLE_CONNECTED, entityType: 'GOOGLE_CONNECTION', metadata: { scopes } });
     }
     async getAccessToken(userId) {
+        this.assertConfigured();
         const connection = await this.prisma.googleConnection.findUnique({ where: { userId } });
         if (!connection || connection.status === client_1.GoogleConnectionStatus.ERROR) {
             throw new google_errors_1.GoogleAdapterError('TOKEN_REVOKED');
@@ -113,11 +116,23 @@ let GoogleAuthService = GoogleAuthService_1 = class GoogleAuthService {
         return refresh;
     }
     async status(userId) {
+        if (!this.isConfigured()) {
+            return {
+                connected: false,
+                status: 'not_configured',
+                email: null,
+                displayName: null,
+                connectedAt: null,
+                calendarEnabled: false,
+                driveEnabled: false,
+            };
+        }
         const connection = await this.prisma.googleConnection.findUnique({ where: { userId } });
         const connected = connection?.status === client_1.GoogleConnectionStatus.CONNECTED;
         const scopes = new Set(connection?.scopes ?? []);
         return {
             connected,
+            status: connection?.status ?? client_1.GoogleConnectionStatus.DISCONNECTED,
             email: connection?.email ?? null,
             displayName: connection?.displayName ?? null,
             connectedAt: connection?.connectedAt?.toISOString() ?? null,
@@ -126,6 +141,7 @@ let GoogleAuthService = GoogleAuthService_1 = class GoogleAuthService {
         };
     }
     async disconnect(userId) {
+        this.assertConfigured();
         const connection = await this.prisma.googleConnection.findUnique({ where: { userId } });
         if (connection?.encryptedAccessToken) {
             try {
@@ -246,6 +262,13 @@ let GoogleAuthService = GoogleAuthService_1 = class GoogleAuthService {
     }
     markError(userId) {
         return this.prisma.googleConnection.update({ where: { userId }, data: { status: client_1.GoogleConnectionStatus.ERROR } });
+    }
+    isConfigured() {
+        return this.config.get('google.configured', false);
+    }
+    assertConfigured() {
+        if (!this.isConfigured())
+            throw new google_errors_1.GoogleAdapterError('NOT_CONFIGURED');
     }
 };
 exports.GoogleAuthService = GoogleAuthService;

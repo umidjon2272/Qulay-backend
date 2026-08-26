@@ -9,8 +9,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.AppModule = void 0;
 const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
-const Joi = require("joi");
 const configuration_1 = require("./config/configuration");
+const env_validation_1 = require("./config/env-validation");
 const auth_module_1 = require("./auth/auth.module");
 const activity_log_module_1 = require("./activity-log/activity-log.module");
 const common_module_1 = require("./common/common.module");
@@ -44,42 +44,7 @@ exports.AppModule = AppModule = __decorate([
                 isGlobal: true,
                 cache: true,
                 load: [configuration_1.default],
-                validationSchema: Joi.object({
-                    DATABASE_URL: Joi.string().min(1).required(),
-                    NODE_ENV: Joi.string().valid('development', 'test', 'production').default('development'),
-                    TRUST_PROXY: Joi.boolean().truthy('true').falsy('false').default(false),
-                    REQUEST_BODY_LIMIT: Joi.string().pattern(/^\d+(kb|mb)$/i).default('1mb'),
-                    JWT_ACCESS_SECRET: Joi.string().min(64).pattern(/^[\x21-\x7e]+$/).required(),
-                    JWT_REFRESH_SECRET: Joi.string().min(64).pattern(/^[\x21-\x7e]+$/).required(),
-                    JWT_ACCESS_EXPIRES_IN: Joi.string().min(1).default('15m'),
-                    JWT_REFRESH_EXPIRES_IN: Joi.string().min(1).default('30d'),
-                    BCRYPT_SALT_ROUNDS: Joi.number().integer().min(10).max(14).default(12),
-                    AUTH_TIMING_LOGS: Joi.boolean().truthy('true').falsy('false').default(false),
-                    PASSWORD_RESET_EXPIRES_MINUTES: Joi.number().integer().min(15).max(30).default(30),
-                    PORT: Joi.number().integer().min(1).max(65535).default(3000),
-                    FRONTEND_URL: Joi.string().min(1).default('http://localhost:5173'),
-                    TELEGRAM_API_ID: Joi.number().integer().positive().required(),
-                    TELEGRAM_API_HASH: Joi.string().min(1).required(),
-                    TELEGRAM_SESSION_ENCRYPTION_KEY: Joi.string().pattern(/^[a-fA-F0-9]{64}$/).required(),
-                    GOOGLE_CLIENT_ID: Joi.string().min(1).required(),
-                    GOOGLE_CLIENT_SECRET: Joi.string().min(1).required(),
-                    GOOGLE_REDIRECT_URI: Joi.string().uri().required(),
-                    GOOGLE_TOKEN_ENCRYPTION_KEY: Joi.string().pattern(/^[a-fA-F0-9]{64}$/).required(),
-                    FILE_STORAGE_PROVIDER: Joi.string().lowercase().valid('local', 's3').default('local'),
-                    FILE_STORAGE_LOCAL_PATH: Joi.string().min(1).default('./uploads'),
-                    FILE_MAX_SIZE_MB: Joi.number().integer().min(1).max(1024).default(20),
-                    S3_ENDPOINT: Joi.string().uri().optional(),
-                    S3_REGION: Joi.string().optional(),
-                    S3_BUCKET: Joi.string().optional(),
-                    S3_ACCESS_KEY_ID: Joi.string().optional(),
-                    S3_SECRET_ACCESS_KEY: Joi.string().optional(),
-                }).custom((value, helpers) => {
-                    if (value.JWT_ACCESS_SECRET === value.JWT_REFRESH_SECRET)
-                        return helpers.error('any.invalid');
-                    if (value.NODE_ENV === 'production' && value.AUTH_TIMING_LOGS)
-                        return helpers.error('any.invalid');
-                    return value;
-                }),
+                validationSchema: env_validation_1.envValidationSchema,
             }),
             prisma_module_1.PrismaModule,
             common_module_1.CommonModule,

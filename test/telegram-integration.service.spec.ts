@@ -1,4 +1,5 @@
 import { TelegramConnectionStatus } from '@prisma/client';
+import { ConfigService } from '@nestjs/config';
 import { TelegramIntegrationService } from '../src/telegram/telegram-integration.service';
 
 describe('TelegramIntegrationService', () => {
@@ -22,7 +23,7 @@ describe('TelegramIntegrationService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    service = new TelegramIntegrationService(prisma, crypto, client, contacts, activityLog);
+    service = new TelegramIntegrationService(prisma, crypto, client, contacts, activityLog, new ConfigService({ telegram: { configured: true } }));
   });
 
   it('returns disconnected without exposing secure fields', async () => {
@@ -47,5 +48,12 @@ describe('TelegramIntegrationService', () => {
     expect(client.search).toHaveBeenCalledWith('session-string', 'aziz', 10);
     prisma.telegramConnection.findUnique.mockResolvedValue(null);
     await expect(service.search('user-b', { q: 'aziz', limit: 10 } as any)).rejects.toThrow('Telegram account is not connected');
+  });
+
+  it('reports not_configured and rejects connect when Telegram credentials are absent', async () => {
+    service = new TelegramIntegrationService(prisma, crypto, client, contacts, activityLog, new ConfigService({ telegram: { configured: false } }));
+    await expect(service.status('user-a')).resolves.toEqual(expect.objectContaining({ connected: false, status: 'not_configured' }));
+    await expect(service.connect('user-a', '+998901234567')).rejects.toMatchObject({ status: 503, response: expect.objectContaining({ message: 'Telegram integratsiyasi hozir sozlanmagan' }) });
+    expect(client.beginLogin).not.toHaveBeenCalled();
   });
 });

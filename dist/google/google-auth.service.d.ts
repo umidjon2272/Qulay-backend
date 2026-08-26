@@ -19,6 +19,15 @@ export declare class GoogleAuthService {
     getAccessToken(userId: string): Promise<string>;
     status(userId: string): Promise<{
         connected: boolean;
+        status: string;
+        email: null;
+        displayName: null;
+        connectedAt: null;
+        calendarEnabled: boolean;
+        driveEnabled: boolean;
+    } | {
+        connected: boolean;
+        status: import(".prisma/client").$Enums.GoogleConnectionStatus;
         email: string | null;
         displayName: string | null;
         connectedAt: string | null;
@@ -38,4 +47,6 @@ export declare class GoogleAuthService {
     private expiry;
     private touch;
     private markError;
+    private isConfigured;
+    private assertConfigured;
 }

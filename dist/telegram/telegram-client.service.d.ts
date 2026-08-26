@@ -81,6 +81,7 @@ export declare class TeleprotoTelegramClientService extends TelegramClientServic
         recipient: TelegramPeer;
     }>;
     private client;
+    private credentials;
     private savedSession;
     private account;
     private listPeers;

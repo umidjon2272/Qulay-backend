@@ -1,5 +1,5 @@
 import { HttpException } from '@nestjs/common';
-export type TelegramErrorCode = 'INVALID_PHONE' | 'INVALID_CODE' | 'EXPIRED_CODE' | 'WRONG_PASSWORD' | 'FLOOD_WAIT' | 'CONNECTION_EXPIRED' | 'PEER_NOT_FOUND' | 'UNAVAILABLE' | 'SEND_FAILED';
+export type TelegramErrorCode = 'INVALID_PHONE' | 'INVALID_CODE' | 'EXPIRED_CODE' | 'WRONG_PASSWORD' | 'FLOOD_WAIT' | 'CONNECTION_EXPIRED' | 'PEER_NOT_FOUND' | 'UNAVAILABLE' | 'SEND_FAILED' | 'NOT_CONFIGURED';
 export declare class TelegramAdapterError extends Error {
     readonly code: TelegramErrorCode;
     readonly retryAfterSeconds?: number | undefined;

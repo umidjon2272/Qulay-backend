@@ -22,20 +22,21 @@ export abstract class TelegramClientService {
 
 @Injectable()
 export class TeleprotoTelegramClientService extends TelegramClientService {
-  private readonly apiId: number;
-  private readonly apiHash: string;
+  private readonly apiId: number | undefined;
+  private readonly apiHash: string | undefined;
 
   constructor(config: ConfigService) {
     super();
-    this.apiId = config.getOrThrow<number>('telegram.apiId');
-    this.apiHash = config.getOrThrow<string>('telegram.apiHash');
+    this.apiId = config.get<number>('telegram.apiId');
+    this.apiHash = config.get<string>('telegram.apiHash');
   }
 
   async beginLogin(phoneNumber: string): Promise<{ session: string; phoneCodeHash: string }> {
+    const credentials = this.credentials();
     const client = this.client('');
     try {
       await client.connect();
-      const result = await client.sendCode({ apiId: this.apiId, apiHash: this.apiHash }, phoneNumber);
+      const result = await client.sendCode(credentials, phoneNumber);
       return { session: this.savedSession(client), phoneCodeHash: result.phoneCodeHash };
     } catch (error) {
       throw classifyTelegramError(error);
@@ -65,10 +66,11 @@ export class TeleprotoTelegramClientService extends TelegramClientService {
   }
 
   async verifyPassword(input: { session: string; password: string }): Promise<{ session: string; account: TelegramAccount }> {
+    const credentials = this.credentials();
     const client = this.client(input.session);
     try {
       await client.connect();
-      await client.signInWithPassword({ apiId: this.apiId, apiHash: this.apiHash }, { password: async () => input.password, onError: async () => true });
+      await client.signInWithPassword(credentials, { password: async () => input.password, onError: async () => true });
       return { session: this.savedSession(client), account: await this.account(client) };
     } catch (error) {
       if (error instanceof TelegramAdapterError) throw error;
@@ -129,9 +131,17 @@ export class TeleprotoTelegramClientService extends TelegramClientService {
   }
 
   private client(session: string): TelegramClient {
-    return new TelegramClient(new StringSession(session), this.apiId, this.apiHash, {
+    const credentials = this.credentials();
+    return new TelegramClient(new StringSession(session), credentials.apiId, credentials.apiHash, {
       connectionRetries: 3, reconnectRetries: 2, floodSleepThreshold: 0, deviceModel: 'Qulay AI', appVersion: '1.0',
     });
+  }
+
+  private credentials(): { apiId: number; apiHash: string } {
+    if (this.apiId === undefined || !this.apiHash) {
+      throw new TelegramAdapterError('NOT_CONFIGURED');
+    }
+    return { apiId: this.apiId, apiHash: this.apiHash };
   }
 
   private savedSession(client: TelegramClient): string {

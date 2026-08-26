@@ -17,6 +17,13 @@ export declare class TelegramController {
     }>;
     status(user: AuthenticatedUser): Promise<{
         connected: boolean;
+        status: string;
+        username: null;
+        displayName: null;
+        maskedPhone: null;
+        connectedAt: null;
+    } | {
+        connected: boolean;
         status: import(".prisma/client").$Enums.TelegramConnectionStatus;
         username: string | null;
         displayName: string | null;

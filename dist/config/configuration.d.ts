@@ -3,7 +3,7 @@ declare const _default: () => {
     trustProxy: boolean;
     requestBodyLimit: string;
     port: number;
-    frontendUrl: string;
+    frontendUrl: string | undefined;
     jwt: {
         accessSecret: string | undefined;
         refreshSecret: string | undefined;
@@ -26,11 +26,13 @@ declare const _default: () => {
         };
     };
     telegram: {
-        apiId: number;
+        configured: boolean;
+        apiId: number | undefined;
         apiHash: string | undefined;
         sessionEncryptionKey: string | undefined;
     };
     google: {
+        configured: boolean;
         clientId: string | undefined;
         clientSecret: string | undefined;
         redirectUri: string | undefined;

@@ -11,6 +11,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.TelegramIntegrationService = void 0;
 const common_1 = require("@nestjs/common");
+const config_1 = require("@nestjs/config");
 const client_1 = require("@prisma/client");
 const activity_log_service_1 = require("../activity-log/activity-log.service");
 const contacts_service_1 = require("../contacts/contacts.service");
@@ -19,14 +20,16 @@ const telegram_errors_1 = require("./telegram.errors");
 const telegram_client_service_1 = require("./telegram-client.service");
 const telegram_crypto_service_1 = require("./telegram-crypto.service");
 let TelegramIntegrationService = class TelegramIntegrationService {
-    constructor(prisma, crypto, telegramClient, contactsService, activityLog) {
+    constructor(prisma, crypto, telegramClient, contactsService, activityLog, config) {
         this.prisma = prisma;
         this.crypto = crypto;
         this.telegramClient = telegramClient;
         this.contactsService = contactsService;
         this.activityLog = activityLog;
+        this.config = config;
     }
     async connect(userId, phoneNumber) {
+        this.assertConfigured();
         try {
             const pending = await this.telegramClient.beginLogin(phoneNumber);
             await this.prisma.telegramConnection.upsert({
@@ -58,6 +61,7 @@ let TelegramIntegrationService = class TelegramIntegrationService {
         }
     }
     async verifyCode(userId, code) {
+        this.assertConfigured();
         const connection = await this.getPendingConnection(userId, client_1.TelegramConnectionStatus.AWAITING_CODE);
         try {
             const result = await this.telegramClient.verifyCode({
@@ -78,6 +82,7 @@ let TelegramIntegrationService = class TelegramIntegrationService {
         }
     }
     async verifyPassword(userId, password) {
+        this.assertConfigured();
         const connection = await this.getPendingConnection(userId, client_1.TelegramConnectionStatus.AWAITING_PASSWORD);
         try {
             const result = await this.telegramClient.verifyPassword({ session: this.decryptRequired(connection.encryptedSession), password });
@@ -89,6 +94,8 @@ let TelegramIntegrationService = class TelegramIntegrationService {
         }
     }
     async status(userId) {
+        if (!this.isConfigured())
+            return { connected: false, status: 'not_configured', username: null, displayName: null, maskedPhone: null, connectedAt: null };
         const connection = await this.prisma.telegramConnection.findUnique({ where: { userId } });
         if (!connection)
             return { connected: false, status: client_1.TelegramConnectionStatus.DISCONNECTED, username: null, displayName: null, maskedPhone: null, connectedAt: null };
@@ -102,6 +109,7 @@ let TelegramIntegrationService = class TelegramIntegrationService {
         };
     }
     async disconnect(userId) {
+        this.assertConfigured();
         const connection = await this.prisma.telegramConnection.findUnique({ where: { userId } });
         if (connection?.encryptedSession) {
             try {
@@ -120,6 +128,7 @@ let TelegramIntegrationService = class TelegramIntegrationService {
         return { status: 'disconnected' };
     }
     async search(userId, query) {
+        this.assertConfigured();
         const connection = await this.connected(userId);
         try {
             const peers = await this.telegramClient.search(connection.encryptedSession, query.q, query.limit);
@@ -130,6 +139,7 @@ let TelegramIntegrationService = class TelegramIntegrationService {
         }
     }
     async chats(userId, query) {
+        this.assertConfigured();
         const connection = await this.connected(userId);
         try {
             const peers = await this.telegramClient.chats(connection.encryptedSession, query.search, query.limit);
@@ -140,6 +150,7 @@ let TelegramIntegrationService = class TelegramIntegrationService {
         }
     }
     async prepareTelegramMessage(userId, peerId, text) {
+        this.assertConfigured();
         const connection = await this.connected(userId);
         try {
             const recipient = await this.telegramClient.resolvePeer(connection.encryptedSession, peerId);
@@ -150,6 +161,7 @@ let TelegramIntegrationService = class TelegramIntegrationService {
         }
     }
     async sendMessage(userId, peerId, text) {
+        this.assertConfigured();
         const connection = await this.connected(userId);
         try {
             const result = await this.telegramClient.sendMessage(connection.encryptedSession, peerId, text);
@@ -162,6 +174,7 @@ let TelegramIntegrationService = class TelegramIntegrationService {
         }
     }
     async sendSelfNotification(userId, text) {
+        this.assertConfigured();
         const connection = await this.prisma.telegramConnection.findUnique({ where: { userId } });
         if (!connection?.telegramUserId) {
             throw new common_1.BadRequestException('Connected Telegram self-chat is unavailable');
@@ -223,6 +236,13 @@ let TelegramIntegrationService = class TelegramIntegrationService {
             return exact ? { ...peer, contactId: exact.id } : peer;
         }));
     }
+    isConfigured() {
+        return this.config.get('telegram.configured', false);
+    }
+    assertConfigured() {
+        if (!this.isConfigured())
+            throw new common_1.ServiceUnavailableException('Telegram integratsiyasi hozir sozlanmagan');
+    }
 };
 exports.TelegramIntegrationService = TelegramIntegrationService;
 exports.TelegramIntegrationService = TelegramIntegrationService = __decorate([
@@ -231,6 +251,7 @@ exports.TelegramIntegrationService = TelegramIntegrationService = __decorate([
         telegram_crypto_service_1.TelegramCryptoService,
         telegram_client_service_1.TelegramClientService,
         contacts_service_1.ContactsService,
-        activity_log_service_1.ActivityLogService])
+        activity_log_service_1.ActivityLogService,
+        config_1.ConfigService])
 ], TelegramIntegrationService);
 //# sourceMappingURL=telegram-integration.service.js.map
