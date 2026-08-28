@@ -2,6 +2,7 @@ import { GoogleCalendarService, normalizeEvent } from '../src/google/google-cale
 import { GoogleDriveService } from '../src/google/google-drive.service';
 import { ConfigService } from '@nestjs/config';
 import { GoogleAuthService } from '../src/google/google-auth.service';
+import { GoogleConnectionStatus } from '@prisma/client';
 
 describe('Google integration adapters', () => {
   it('normalizes Calendar events without changing timezone-bearing values', () => {
@@ -46,5 +47,47 @@ describe('Google integration adapters', () => {
       {} as never, {} as never, {} as never, {} as never,
     );
     await expect(auth.callback('oauth-code', state)).rejects.toMatchObject({ code: 'INVALID_STATE' });
+  });
+
+  it('persists the callback for the signed-state owner and preserves an existing refresh token', async () => {
+    const prisma = {
+      user: { findUnique: jest.fn().mockResolvedValue({ id: 'user-1' }) },
+      googleConnection: {
+        findUnique: jest.fn().mockResolvedValue({ encryptedRefreshToken: 'encrypted:old-refresh' }),
+        upsert: jest.fn().mockResolvedValue({}),
+      },
+    } as any;
+    const crypto = { encrypt: jest.fn((value: string) => `encrypted:${value}`) } as any;
+    const api = { request: jest.fn().mockResolvedValue({ sub: 'google-1', email: 'user@example.com', name: 'User' }) } as any;
+    const activity = { record: jest.fn().mockResolvedValue(undefined) } as any;
+    const auth = new GoogleAuthService(new ConfigService({
+      google: { configured: true, clientId: 'client-id', clientSecret: 'client-secret', redirectUri: 'https://qulay-backend-y98j.onrender.com/api/integrations/google/callback' },
+      jwt: { accessSecret: 'jwt-secret' },
+    }), prisma, crypto, api, activity);
+    const url = new URL(auth.connectUrl('user-1'));
+    expect(url.searchParams.get('scope')).toContain('openid');
+    expect(url.searchParams.get('redirect_uri')).toBe('https://qulay-backend-y98j.onrender.com/api/integrations/google/callback');
+    const state = url.searchParams.get('state')!;
+    const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue({ ok: true, status: 200, json: async () => ({ access_token: 'access-token', expires_in: 3600, scope: 'openid email https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.metadata.readonly' }) } as Response);
+
+    await auth.callback('one-use-code', state);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(prisma.user.findUnique).toHaveBeenCalledWith({ where: { id: 'user-1' }, select: { id: true } });
+    expect(prisma.googleConnection.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      where: { userId: 'user-1' },
+      update: expect.objectContaining({ encryptedAccessToken: 'encrypted:access-token', encryptedRefreshToken: 'encrypted:old-refresh', status: GoogleConnectionStatus.CONNECTED }),
+    }));
+    await expect(auth.callback('second-code', state)).rejects.toMatchObject({ code: 'INVALID_STATE' });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    fetchSpy.mockRestore();
+  });
+
+  it('returns a secret-free connected status for the JWT user', async () => {
+    const prisma = { googleConnection: { findUnique: jest.fn().mockResolvedValue({ status: GoogleConnectionStatus.CONNECTED, email: 'user@example.com', displayName: 'User', connectedAt: new Date('2026-08-28T00:00:00Z'), scopes: ['https://www.googleapis.com/auth/calendar.readonly', 'https://www.googleapis.com/auth/calendar.events', 'https://www.googleapis.com/auth/drive.metadata.readonly', 'https://www.googleapis.com/auth/drive.readonly'], encryptedAccessToken: 'secret' }) } } as any;
+    const auth = new GoogleAuthService(new ConfigService({ google: { configured: true } }), prisma, {} as any, {} as any, {} as any);
+    const status = await auth.status('user-1');
+    expect(status).toMatchObject({ configured: true, connected: true, status: GoogleConnectionStatus.CONNECTED, email: 'user@example.com', calendarEnabled: true, driveEnabled: true });
+    expect(JSON.stringify(status)).not.toContain('secret');
   });
 });

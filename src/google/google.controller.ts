@@ -1,4 +1,4 @@
-import { Controller, Delete, Get, Param, Patch, Post, Query, Req, Res, UseGuards, Body } from '@nestjs/common';
+import { Controller, Delete, Get, Logger, Param, Patch, Post, Query, Req, Res, UseGuards, Body } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { AuthenticatedUser } from '../auth/types/jwt-payload.type';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -14,6 +14,7 @@ import { RateLimitException } from '../common/security/rate-limit.exception';
 
 @Controller('integrations/google')
 export class GoogleController {
+  private readonly logger = new Logger(GoogleController.name);
   constructor(private readonly auth: GoogleAuthService, private readonly calendar: GoogleCalendarService, private readonly drive: GoogleDriveService, private readonly config: ConfigService, private readonly rateLimiter: SecurityRateLimitService) {}
 
   @Get('connect-url') @UseGuards(JwtAuthGuard)
@@ -29,11 +30,15 @@ export class GoogleController {
     }
     try {
       await this.auth.callback(query.code, query.state, query.error);
-      return response.redirect(`${frontend}/settings?tab=integrations&google=connected`);
+      const target = `${frontend}/settings?tab=integrations&integration=google&status=connected`;
+      this.logger.log({ event: 'google_oauth_redirect', success: true, target });
+      return response.redirect(target);
     } catch (error) {
       const mapped = mapGoogleError(error);
       const reason = query.error === 'access_denied' ? 'cancelled' : mapped.getStatus() === 400 ? 'invalid' : 'unavailable';
-      return response.redirect(`${frontend}/settings?tab=integrations&google=error&reason=${reason}`);
+      const target = `${frontend}/settings?tab=integrations&integration=google&status=error&reason=${reason}`;
+      this.logger.warn({ event: 'google_oauth_redirect', success: false, target, reason });
+      return response.redirect(target);
     }
   }
 

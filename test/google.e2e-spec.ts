@@ -41,7 +41,7 @@ describe('Google integration API security', () => {
       .get('/api/integrations/google/callback')
       .query({ code: 'oauth-code', state: 'valid-signed-state', scope: 'openid email calendar', iss: 'https://accounts.google.com' })
       .expect(302)
-      .expect('Location', 'http://localhost:5173/settings?tab=integrations&google=connected');
+      .expect('Location', 'http://localhost:5173/settings?tab=integrations&integration=google&status=connected');
 
     expect(googleAuth.callback).toHaveBeenLastCalledWith('oauth-code', 'valid-signed-state', undefined);
   });
@@ -52,7 +52,7 @@ describe('Google integration API security', () => {
     await request(app.getHttpServer())
       .get('/api/integrations/google/callback').query(query)
       .expect(302)
-      .expect('Location', 'http://localhost:5173/settings?tab=integrations&google=error&reason=invalid');
+      .expect('Location', 'http://localhost:5173/settings?tab=integrations&integration=google&status=error&reason=invalid');
   });
 
   it('handles a Google error callback cleanly, including error_description metadata', async () => {
@@ -60,7 +60,7 @@ describe('Google integration API security', () => {
       .get('/api/integrations/google/callback')
       .query({ error: 'access_denied', error_description: 'The user denied access', state: 'valid-signed-state' })
       .expect(302)
-      .expect('Location', 'http://localhost:5173/settings?tab=integrations&google=error&reason=cancelled');
+      .expect('Location', 'http://localhost:5173/settings?tab=integrations&integration=google&status=error&reason=cancelled');
   });
 
   it('continues to reject unknown callback fields under strict global validation', async () => {

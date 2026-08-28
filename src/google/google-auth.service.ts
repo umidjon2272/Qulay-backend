@@ -9,6 +9,9 @@ import { GoogleCryptoService } from './google-crypto.service';
 import { GoogleAdapterError, isRetryableGoogleStatus, retryAfterMs } from './google.errors';
 
 export const GOOGLE_SCOPES = [
+  'openid',
+  'email',
+  'profile',
   'https://www.googleapis.com/auth/calendar.readonly',
   'https://www.googleapis.com/auth/calendar.events',
   'https://www.googleapis.com/auth/drive.metadata.readonly',
@@ -52,15 +55,26 @@ export class GoogleAuthService {
 
   async callback(code: string | undefined, stateValue: string | undefined, oauthError?: string): Promise<void> {
     this.assertConfigured();
-    if (oauthError) throw new GoogleAdapterError('OAUTH_CANCELLED');
-    const state = this.verifyState(stateValue);
-    if (!code) throw new GoogleAdapterError('INVALID_REQUEST');
-    const token = await this.exchangeCode(code);
-    const profile = await this.api.request<GoogleProfile>('https://www.googleapis.com/oauth2/v3/userinfo', token.access_token, { resource: 'oauth' });
-    if (!profile.sub) throw new GoogleAdapterError('INVALID_REQUEST');
-    const existing = await this.prisma.googleConnection.findUnique({ where: { userId: state.userId } });
-    const scopes = token.scope?.split(' ').filter(Boolean) ?? [...GOOGLE_SCOPES];
-    await this.prisma.googleConnection.upsert({
+    let stateValid = false;
+    let userResolved = false;
+    let exchangeSucceeded = false;
+    let dbUpsertSucceeded = false;
+    try {
+      const state = this.verifyState(stateValue);
+      stateValid = true;
+      const owner = await this.prisma.user.findUnique({ where: { id: state.userId }, select: { id: true } });
+      if (!owner) throw new GoogleAdapterError('INVALID_STATE');
+      userResolved = true;
+      if (oauthError) throw new GoogleAdapterError('OAUTH_CANCELLED');
+      if (!code) throw new GoogleAdapterError('INVALID_REQUEST');
+      const token = await this.exchangeCode(code);
+      exchangeSucceeded = true;
+      this.logger.log({ event: 'google_oauth_code_exchange', success: true, accessTokenPresent: Boolean(token.access_token), refreshTokenPresent: Boolean(token.refresh_token) });
+      const profile = await this.api.request<GoogleProfile>('https://www.googleapis.com/oauth2/v3/userinfo', token.access_token, { resource: 'oauth' });
+      if (!profile.sub) throw new GoogleAdapterError('INVALID_REQUEST');
+      const existing = await this.prisma.googleConnection.findUnique({ where: { userId: state.userId } });
+      const scopes = token.scope?.split(' ').filter(Boolean) ?? [...GOOGLE_SCOPES];
+      await this.prisma.googleConnection.upsert({
       where: { userId: state.userId },
       create: {
         userId: state.userId,
@@ -86,8 +100,14 @@ export class GoogleAuthService {
         status: GoogleConnectionStatus.CONNECTED,
         connectedAt: new Date(),
       },
-    });
-    await this.activityLog.record({ userId: state.userId, action: ACTIVITY_ACTIONS.GOOGLE_CONNECTED, entityType: 'GOOGLE_CONNECTION', metadata: { scopes } });
+      });
+      dbUpsertSucceeded = true;
+      this.logger.log({ event: 'google_oauth_connection_persisted', success: true, finalStatus: GoogleConnectionStatus.CONNECTED });
+      await this.activityLog.record({ userId: state.userId, action: ACTIVITY_ACTIONS.GOOGLE_CONNECTED, entityType: 'GOOGLE_CONNECTION', metadata: { scopes } });
+    } catch (error) {
+      this.logger.warn({ event: 'google_oauth_callback_failed', stateValid, userResolved, exchangeSucceeded, dbUpsertSucceeded, errorCode: error instanceof GoogleAdapterError ? error.code : 'UNAVAILABLE' });
+      throw error;
+    }
   }
 
   async getAccessToken(userId: string): Promise<string> {
@@ -113,6 +133,7 @@ export class GoogleAuthService {
   async status(userId: string) {
     if (!this.isConfigured()) {
       return {
+        configured: false,
         connected: false,
         status: 'not_configured',
         email: null,
@@ -126,6 +147,7 @@ export class GoogleAuthService {
     const connected = connection?.status === GoogleConnectionStatus.CONNECTED;
     const scopes = new Set(connection?.scopes ?? []);
     return {
+      configured: true,
       connected,
       status: connection?.status ?? GoogleConnectionStatus.DISCONNECTED,
       email: connection?.email ?? null,
