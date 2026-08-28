@@ -8,6 +8,7 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
+var TelegramIntegrationService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.TelegramIntegrationService = void 0;
 const common_1 = require("@nestjs/common");
@@ -19,7 +20,7 @@ const prisma_service_1 = require("../prisma/prisma.service");
 const telegram_errors_1 = require("./telegram.errors");
 const telegram_client_service_1 = require("./telegram-client.service");
 const telegram_crypto_service_1 = require("./telegram-crypto.service");
-let TelegramIntegrationService = class TelegramIntegrationService {
+let TelegramIntegrationService = TelegramIntegrationService_1 = class TelegramIntegrationService {
     constructor(prisma, crypto, telegramClient, contactsService, activityLog, config) {
         this.prisma = prisma;
         this.crypto = crypto;
@@ -27,11 +28,13 @@ let TelegramIntegrationService = class TelegramIntegrationService {
         this.contactsService = contactsService;
         this.activityLog = activityLog;
         this.config = config;
+        this.logger = new common_1.Logger(TelegramIntegrationService_1.name);
     }
     async connect(userId, phoneNumber) {
         this.assertConfigured();
         try {
             const pending = await this.telegramClient.beginLogin(phoneNumber);
+            const now = new Date();
             await this.prisma.telegramConnection.upsert({
                 where: { userId },
                 create: {
@@ -39,35 +42,86 @@ let TelegramIntegrationService = class TelegramIntegrationService {
                     phoneNumber: this.crypto.encrypt(phoneNumber),
                     encryptedSession: this.crypto.encrypt(pending.session),
                     encryptedPhoneCodeHash: this.crypto.encrypt(pending.phoneCodeHash),
+                    codeSentAt: now,
+                    codeResendAfterSeconds: pending.timeoutSeconds,
                     status: client_1.TelegramConnectionStatus.AWAITING_CODE,
                 },
                 update: {
                     phoneNumber: this.crypto.encrypt(phoneNumber),
                     encryptedSession: this.crypto.encrypt(pending.session),
                     encryptedPhoneCodeHash: this.crypto.encrypt(pending.phoneCodeHash),
+                    codeSentAt: now,
+                    codeResendAfterSeconds: pending.timeoutSeconds,
                     telegramUserId: null,
                     username: null,
                     displayName: null,
                     status: client_1.TelegramConnectionStatus.AWAITING_CODE,
                     connectedAt: null,
-                    lastUsedAt: new Date(),
+                    lastUsedAt: now,
                 },
             });
-            return { status: 'code_required' };
+            this.logCodeRequested('connect', pending);
+            return { status: 'code_required', delivery: pending.delivery, nextDelivery: pending.nextDelivery, timeoutSeconds: pending.timeoutSeconds };
         }
         catch (error) {
             await this.markError(userId);
             throw (0, telegram_errors_1.mapTelegramError)(error);
         }
     }
+    async resendCode(userId) {
+        this.assertConfigured();
+        const connection = await this.getPendingConnection(userId, client_1.TelegramConnectionStatus.AWAITING_CODE);
+        this.assertResendAllowed(connection);
+        try {
+            const pending = await this.telegramClient.resendCode({
+                session: this.decryptPendingSession(connection),
+                phoneNumber: this.crypto.decrypt(this.requireStored(connection.phoneNumber)),
+                phoneCodeHash: this.crypto.decrypt(this.requireStored(connection.encryptedPhoneCodeHash)),
+            });
+            await this.prisma.telegramConnection.update({
+                where: { userId },
+                data: {
+                    encryptedSession: this.crypto.encrypt(pending.session),
+                    encryptedPhoneCodeHash: this.crypto.encrypt(pending.phoneCodeHash),
+                    codeSentAt: new Date(),
+                    codeResendAfterSeconds: pending.timeoutSeconds,
+                    lastUsedAt: new Date(),
+                },
+            });
+            this.logCodeRequested('resend', pending);
+            return { status: 'code_required', delivery: pending.delivery, nextDelivery: pending.nextDelivery, timeoutSeconds: pending.timeoutSeconds };
+        }
+        catch (error) {
+            throw this.handleAuthError(userId, error);
+        }
+    }
+    assertResendAllowed(connection) {
+        if (!connection.codeSentAt || !connection.codeResendAfterSeconds)
+            return;
+        const elapsedSeconds = (Date.now() - connection.codeSentAt.getTime()) / 1000;
+        const remaining = connection.codeResendAfterSeconds - elapsedSeconds;
+        if (remaining > 0)
+            throw (0, telegram_errors_1.mapTelegramError)(new telegram_errors_1.TelegramAdapterError('FLOOD_WAIT', Math.ceil(remaining)));
+    }
+    logCodeRequested(source, pending) {
+        this.logger.log({
+            event: 'telegram_code_requested',
+            source,
+            delivery: pending.delivery,
+            nextDelivery: pending.nextDelivery,
+            timeoutSeconds: pending.timeoutSeconds,
+            rawType: pending.rawType,
+            rawNextType: pending.rawNextType,
+        });
+    }
     async verifyCode(userId, code) {
         this.assertConfigured();
         const connection = await this.getPendingConnection(userId, client_1.TelegramConnectionStatus.AWAITING_CODE);
         try {
             const result = await this.telegramClient.verifyCode({
-                session: this.decryptRequired(connection.encryptedSession),
-                phoneNumber: this.crypto.decrypt(this.decryptRequired(connection.phoneNumber)),
-                phoneCodeHash: this.crypto.decrypt(this.decryptRequired(connection.encryptedPhoneCodeHash)),
+                session: this.decryptPendingSession(connection),
+                phoneNumber: this.crypto.decrypt(this.requireStored(connection.phoneNumber)),
+                phoneCodeHash: this.crypto.decrypt(this.requireStored(connection.encryptedPhoneCodeHash)),
                 code,
             });
             if (result.status === 'password_required') {
@@ -85,7 +139,7 @@ let TelegramIntegrationService = class TelegramIntegrationService {
         this.assertConfigured();
         const connection = await this.getPendingConnection(userId, client_1.TelegramConnectionStatus.AWAITING_PASSWORD);
         try {
-            const result = await this.telegramClient.verifyPassword({ session: this.decryptRequired(connection.encryptedSession), password });
+            const result = await this.telegramClient.verifyPassword({ session: this.decryptPendingSession(connection), password });
             await this.finalizeConnection(userId, connection, result.session, result.account);
             return { status: 'connected' };
         }
@@ -121,7 +175,7 @@ let TelegramIntegrationService = class TelegramIntegrationService {
         if (connection) {
             await this.prisma.telegramConnection.update({
                 where: { userId },
-                data: { telegramUserId: null, phoneNumber: null, username: null, displayName: null, encryptedSession: null, encryptedPhoneCodeHash: null, status: client_1.TelegramConnectionStatus.DISCONNECTED, connectedAt: null, lastUsedAt: new Date() },
+                data: { telegramUserId: null, phoneNumber: null, username: null, displayName: null, encryptedSession: null, encryptedPhoneCodeHash: null, codeSentAt: null, codeResendAfterSeconds: null, status: client_1.TelegramConnectionStatus.DISCONNECTED, connectedAt: null, lastUsedAt: new Date() },
             });
         }
         await this.activityLog.record({ userId, action: activity_log_service_1.ACTIVITY_ACTIONS.TELEGRAM_DISCONNECTED, entityType: 'TELEGRAM_CONNECTION', metadata: { source: 'TELEGRAM' } });
@@ -189,6 +243,8 @@ let TelegramIntegrationService = class TelegramIntegrationService {
             data: {
                 encryptedSession: this.crypto.encrypt(session),
                 encryptedPhoneCodeHash: null,
+                codeSentAt: null,
+                codeResendAfterSeconds: null,
                 phoneNumber: connection.phoneNumber,
                 telegramUserId: account.telegramUserId,
                 username: account.username,
@@ -212,10 +268,13 @@ let TelegramIntegrationService = class TelegramIntegrationService {
             throw new common_1.BadRequestException('Telegram login state is unavailable');
         return connection;
     }
-    decryptRequired(value) {
+    requireStored(value) {
         if (!value)
             throw new common_1.BadRequestException('Telegram login state is unavailable');
         return value;
+    }
+    decryptPendingSession(connection) {
+        return this.crypto.decrypt(this.requireStored(connection.encryptedSession));
     }
     async markError(userId) {
         await this.prisma.telegramConnection.updateMany({ where: { userId }, data: { status: client_1.TelegramConnectionStatus.ERROR } });
@@ -245,7 +304,7 @@ let TelegramIntegrationService = class TelegramIntegrationService {
     }
 };
 exports.TelegramIntegrationService = TelegramIntegrationService;
-exports.TelegramIntegrationService = TelegramIntegrationService = __decorate([
+exports.TelegramIntegrationService = TelegramIntegrationService = TelegramIntegrationService_1 = __decorate([
     (0, common_1.Injectable)(),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         telegram_crypto_service_1.TelegramCryptoService,

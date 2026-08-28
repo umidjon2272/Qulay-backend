@@ -29,6 +29,10 @@ let TelegramController = class TelegramController {
         this.assertAllowed('telegram-connect', user.sub, 10);
         return this.telegram.connect(user.sub, dto.phoneNumber);
     }
+    resendCode(user) {
+        this.assertAllowed('telegram-resend-code', user.sub, 5);
+        return this.telegram.resendCode(user.sub);
+    }
     verifyCode(user, dto) {
         this.assertAllowed('telegram-verify-code', user.sub, 10);
         return this.telegram.verifyCode(user.sub, dto.code);
@@ -71,6 +75,13 @@ __decorate([
     __metadata("design:paramtypes", [Object, telegram_dto_1.ConnectTelegramDto]),
     __metadata("design:returntype", void 0)
 ], TelegramController.prototype, "connect", null);
+__decorate([
+    (0, common_1.Post)('resend-code'),
+    __param(0, (0, current_user_decorator_1.CurrentUser)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", void 0)
+], TelegramController.prototype, "resendCode", null);
 __decorate([
     (0, common_1.Post)('verify-code'),
     __param(0, (0, current_user_decorator_1.CurrentUser)()),

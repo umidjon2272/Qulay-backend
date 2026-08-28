@@ -8,6 +8,15 @@ export declare class TelegramController {
     constructor(telegram: TelegramIntegrationService, rateLimiter: SecurityRateLimitService);
     connect(user: AuthenticatedUser, dto: ConnectTelegramDto): Promise<{
         status: "code_required";
+        delivery: import("./telegram-client.service").TelegramSentCode["delivery"];
+        nextDelivery: import("./telegram-client.service").TelegramSentCode["nextDelivery"];
+        timeoutSeconds: import("./telegram-client.service").TelegramSentCode["timeoutSeconds"];
+    }>;
+    resendCode(user: AuthenticatedUser): Promise<{
+        status: "code_required";
+        delivery: import("./telegram-client.service").TelegramSentCode["delivery"];
+        nextDelivery: import("./telegram-client.service").TelegramSentCode["nextDelivery"];
+        timeoutSeconds: import("./telegram-client.service").TelegramSentCode["timeoutSeconds"];
     }>;
     verifyCode(user: AuthenticatedUser, dto: VerifyTelegramCodeDto): Promise<{
         status: "connected" | "password_required";

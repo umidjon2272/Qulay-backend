@@ -9,8 +9,23 @@ export type TelegramAccount = { telegramUserId: string; username: string | null;
 export type TelegramPeer = { peerId: string; type: 'USER' | 'GROUP' | 'CHANNEL'; displayName: string; username: string | null; lastActivity: string | null };
 export type TelegramPendingLogin = { encryptedSessionSource: string; phoneCodeHash: string };
 
+/** Normalized delivery channel derived from Telegram's real `auth.SentCodeType`/`auth.CodeType` constructor. */
+export type TelegramDeliveryType = 'telegram_app' | 'sms' | 'call' | 'email' | 'fragment' | 'firebase_sms' | 'unknown';
+
+export type TelegramSentCodeMeta = {
+  delivery: TelegramDeliveryType;
+  nextDelivery: TelegramDeliveryType | null;
+  timeoutSeconds: number | null;
+  /** Raw teleproto/MTProto constructor name (e.g. "auth.SentCodeTypeApp") for safe, non-PII logging. */
+  rawType: string;
+  rawNextType: string | null;
+};
+
+export type TelegramSentCode = { session: string; phoneCodeHash: string } & TelegramSentCodeMeta;
+
 export abstract class TelegramClientService {
-  abstract beginLogin(phoneNumber: string): Promise<{ session: string; phoneCodeHash: string }>;
+  abstract beginLogin(phoneNumber: string): Promise<TelegramSentCode>;
+  abstract resendCode(input: { session: string; phoneNumber: string; phoneCodeHash: string }): Promise<TelegramSentCode>;
   abstract verifyCode(input: { session: string; phoneNumber: string; phoneCodeHash: string; code: string }): Promise<{ status: 'connected' | 'password_required'; session: string; account?: TelegramAccount }>;
   abstract verifyPassword(input: { session: string; password: string }): Promise<{ session: string; account: TelegramAccount }>;
   abstract logout(session: string): Promise<void>;
@@ -31,18 +46,80 @@ export class TeleprotoTelegramClientService extends TelegramClientService {
     this.apiHash = config.get<string>('telegram.apiHash');
   }
 
-  async beginLogin(phoneNumber: string): Promise<{ session: string; phoneCodeHash: string }> {
-    const credentials = this.credentials();
+  async beginLogin(phoneNumber: string): Promise<TelegramSentCode> {
     const client = this.client('');
     try {
       await client.connect();
-      const result = await client.sendCode(credentials, phoneNumber);
-      return { session: this.savedSession(client), phoneCodeHash: result.phoneCodeHash };
+      const sentCode = await this.requestSentCode(client, phoneNumber);
+      return { session: this.savedSession(client), ...this.describeSentCode(sentCode) };
     } catch (error) {
+      if (error instanceof TelegramAdapterError) throw error;
       throw classifyTelegramError(error);
     } finally {
       await client.disconnect().catch(() => undefined);
     }
+  }
+
+  async resendCode(input: { session: string; phoneNumber: string; phoneCodeHash: string }): Promise<TelegramSentCode> {
+    const client = this.client(input.session);
+    try {
+      await client.connect();
+      const result = await client.invoke(new Api.auth.ResendCode({ phoneNumber: input.phoneNumber, phoneCodeHash: input.phoneCodeHash }));
+      if (!(result instanceof Api.auth.SentCode)) throw new TelegramAdapterError('UNAVAILABLE');
+      return { session: this.savedSession(client), ...this.describeSentCode(result) };
+    } catch (error) {
+      if (error instanceof TelegramAdapterError) throw error;
+      throw classifyTelegramError(error);
+    } finally {
+      await client.disconnect().catch(() => undefined);
+    }
+  }
+
+  /** Raw `auth.SendCode` invocation (bypasses the high-level `sendCode()` helper, which discards delivery metadata). */
+  private async requestSentCode(client: TelegramClient, phoneNumber: string): Promise<Api.auth.SentCode> {
+    const credentials = this.credentials();
+    let result: Api.auth.TypeSentCode;
+    try {
+      result = await client.invoke(new Api.auth.SendCode({
+        phoneNumber,
+        apiId: credentials.apiId,
+        apiHash: credentials.apiHash,
+        settings: new Api.CodeSettings({}),
+      }));
+    } catch (error) {
+      if ((error as { errorMessage?: string }).errorMessage === 'AUTH_RESTART') return this.requestSentCode(client, phoneNumber);
+      throw error;
+    }
+    if (!(result instanceof Api.auth.SentCode)) throw new TelegramAdapterError('UNAVAILABLE');
+    return result;
+  }
+
+  private describeSentCode(sentCode: Api.auth.SentCode): { phoneCodeHash: string } & TelegramSentCodeMeta {
+    return {
+      phoneCodeHash: sentCode.phoneCodeHash,
+      delivery: this.mapDeliveryType(sentCode.type),
+      nextDelivery: sentCode.nextType ? this.mapNextDeliveryType(sentCode.nextType) : null,
+      timeoutSeconds: sentCode.timeout ?? null,
+      rawType: sentCode.type?.className ?? 'unknown',
+      rawNextType: sentCode.nextType?.className ?? null,
+    };
+  }
+
+  private mapDeliveryType(type: Api.auth.TypeSentCodeType): TelegramDeliveryType {
+    if (type instanceof Api.auth.SentCodeTypeApp) return 'telegram_app';
+    if (type instanceof Api.auth.SentCodeTypeSms || type instanceof Api.auth.SentCodeTypeSmsWord || type instanceof Api.auth.SentCodeTypeSmsPhrase) return 'sms';
+    if (type instanceof Api.auth.SentCodeTypeCall || type instanceof Api.auth.SentCodeTypeFlashCall || type instanceof Api.auth.SentCodeTypeMissedCall) return 'call';
+    if (type instanceof Api.auth.SentCodeTypeFragmentSms) return 'fragment';
+    if (type instanceof Api.auth.SentCodeTypeFirebaseSms) return 'firebase_sms';
+    if (type instanceof Api.auth.SentCodeTypeEmailCode || type instanceof Api.auth.SentCodeTypeSetUpEmailRequired) return 'email';
+    return 'unknown';
+  }
+
+  private mapNextDeliveryType(type: Api.auth.TypeCodeType): TelegramDeliveryType {
+    if (type instanceof Api.auth.CodeTypeSms) return 'sms';
+    if (type instanceof Api.auth.CodeTypeCall || type instanceof Api.auth.CodeTypeFlashCall || type instanceof Api.auth.CodeTypeMissedCall) return 'call';
+    if (type instanceof Api.auth.CodeTypeFragmentSms) return 'fragment';
+    return 'unknown';
   }
 
   async verifyCode(input: { session: string; phoneNumber: string; phoneCodeHash: string; code: string }): Promise<{ status: 'connected' | 'password_required'; session: string; account?: TelegramAccount }> {

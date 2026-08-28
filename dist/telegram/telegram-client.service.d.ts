@@ -16,11 +16,25 @@ export type TelegramPendingLogin = {
     encryptedSessionSource: string;
     phoneCodeHash: string;
 };
+export type TelegramDeliveryType = 'telegram_app' | 'sms' | 'call' | 'email' | 'fragment' | 'firebase_sms' | 'unknown';
+export type TelegramSentCodeMeta = {
+    delivery: TelegramDeliveryType;
+    nextDelivery: TelegramDeliveryType | null;
+    timeoutSeconds: number | null;
+    rawType: string;
+    rawNextType: string | null;
+};
+export type TelegramSentCode = {
+    session: string;
+    phoneCodeHash: string;
+} & TelegramSentCodeMeta;
 export declare abstract class TelegramClientService {
-    abstract beginLogin(phoneNumber: string): Promise<{
+    abstract beginLogin(phoneNumber: string): Promise<TelegramSentCode>;
+    abstract resendCode(input: {
         session: string;
+        phoneNumber: string;
         phoneCodeHash: string;
-    }>;
+    }): Promise<TelegramSentCode>;
     abstract verifyCode(input: {
         session: string;
         phoneNumber: string;
@@ -51,10 +65,16 @@ export declare class TeleprotoTelegramClientService extends TelegramClientServic
     private readonly apiId;
     private readonly apiHash;
     constructor(config: ConfigService);
-    beginLogin(phoneNumber: string): Promise<{
+    beginLogin(phoneNumber: string): Promise<TelegramSentCode>;
+    resendCode(input: {
         session: string;
+        phoneNumber: string;
         phoneCodeHash: string;
-    }>;
+    }): Promise<TelegramSentCode>;
+    private requestSentCode;
+    private describeSentCode;
+    private mapDeliveryType;
+    private mapNextDeliveryType;
     verifyCode(input: {
         session: string;
         phoneNumber: string;

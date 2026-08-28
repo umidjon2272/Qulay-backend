@@ -18,6 +18,12 @@ export class TelegramController {
     return this.telegram.connect(user.sub, dto.phoneNumber);
   }
 
+  @Post('resend-code')
+  resendCode(@CurrentUser() user: AuthenticatedUser) {
+    this.assertAllowed('telegram-resend-code', user.sub, 5);
+    return this.telegram.resendCode(user.sub);
+  }
+
   @Post('verify-code')
   verifyCode(@CurrentUser() user: AuthenticatedUser, @Body() dto: VerifyTelegramCodeDto) {
     this.assertAllowed('telegram-verify-code', user.sub, 10);

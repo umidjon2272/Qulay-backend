@@ -26,19 +26,92 @@ let TeleprotoTelegramClientService = class TeleprotoTelegramClientService extend
         this.apiHash = config.get('telegram.apiHash');
     }
     async beginLogin(phoneNumber) {
-        const credentials = this.credentials();
         const client = this.client('');
         try {
             await client.connect();
-            const result = await client.sendCode(credentials, phoneNumber);
-            return { session: this.savedSession(client), phoneCodeHash: result.phoneCodeHash };
+            const sentCode = await this.requestSentCode(client, phoneNumber);
+            return { session: this.savedSession(client), ...this.describeSentCode(sentCode) };
         }
         catch (error) {
+            if (error instanceof telegram_errors_1.TelegramAdapterError)
+                throw error;
             throw (0, telegram_errors_1.classifyTelegramError)(error);
         }
         finally {
             await client.disconnect().catch(() => undefined);
         }
+    }
+    async resendCode(input) {
+        const client = this.client(input.session);
+        try {
+            await client.connect();
+            const result = await client.invoke(new teleproto_1.Api.auth.ResendCode({ phoneNumber: input.phoneNumber, phoneCodeHash: input.phoneCodeHash }));
+            if (!(result instanceof teleproto_1.Api.auth.SentCode))
+                throw new telegram_errors_1.TelegramAdapterError('UNAVAILABLE');
+            return { session: this.savedSession(client), ...this.describeSentCode(result) };
+        }
+        catch (error) {
+            if (error instanceof telegram_errors_1.TelegramAdapterError)
+                throw error;
+            throw (0, telegram_errors_1.classifyTelegramError)(error);
+        }
+        finally {
+            await client.disconnect().catch(() => undefined);
+        }
+    }
+    async requestSentCode(client, phoneNumber) {
+        const credentials = this.credentials();
+        let result;
+        try {
+            result = await client.invoke(new teleproto_1.Api.auth.SendCode({
+                phoneNumber,
+                apiId: credentials.apiId,
+                apiHash: credentials.apiHash,
+                settings: new teleproto_1.Api.CodeSettings({}),
+            }));
+        }
+        catch (error) {
+            if (error.errorMessage === 'AUTH_RESTART')
+                return this.requestSentCode(client, phoneNumber);
+            throw error;
+        }
+        if (!(result instanceof teleproto_1.Api.auth.SentCode))
+            throw new telegram_errors_1.TelegramAdapterError('UNAVAILABLE');
+        return result;
+    }
+    describeSentCode(sentCode) {
+        return {
+            phoneCodeHash: sentCode.phoneCodeHash,
+            delivery: this.mapDeliveryType(sentCode.type),
+            nextDelivery: sentCode.nextType ? this.mapNextDeliveryType(sentCode.nextType) : null,
+            timeoutSeconds: sentCode.timeout ?? null,
+            rawType: sentCode.type?.className ?? 'unknown',
+            rawNextType: sentCode.nextType?.className ?? null,
+        };
+    }
+    mapDeliveryType(type) {
+        if (type instanceof teleproto_1.Api.auth.SentCodeTypeApp)
+            return 'telegram_app';
+        if (type instanceof teleproto_1.Api.auth.SentCodeTypeSms || type instanceof teleproto_1.Api.auth.SentCodeTypeSmsWord || type instanceof teleproto_1.Api.auth.SentCodeTypeSmsPhrase)
+            return 'sms';
+        if (type instanceof teleproto_1.Api.auth.SentCodeTypeCall || type instanceof teleproto_1.Api.auth.SentCodeTypeFlashCall || type instanceof teleproto_1.Api.auth.SentCodeTypeMissedCall)
+            return 'call';
+        if (type instanceof teleproto_1.Api.auth.SentCodeTypeFragmentSms)
+            return 'fragment';
+        if (type instanceof teleproto_1.Api.auth.SentCodeTypeFirebaseSms)
+            return 'firebase_sms';
+        if (type instanceof teleproto_1.Api.auth.SentCodeTypeEmailCode || type instanceof teleproto_1.Api.auth.SentCodeTypeSetUpEmailRequired)
+            return 'email';
+        return 'unknown';
+    }
+    mapNextDeliveryType(type) {
+        if (type instanceof teleproto_1.Api.auth.CodeTypeSms)
+            return 'sms';
+        if (type instanceof teleproto_1.Api.auth.CodeTypeCall || type instanceof teleproto_1.Api.auth.CodeTypeFlashCall || type instanceof teleproto_1.Api.auth.CodeTypeMissedCall)
+            return 'call';
+        if (type instanceof teleproto_1.Api.auth.CodeTypeFragmentSms)
+            return 'fragment';
+        return 'unknown';
     }
     async verifyCode(input) {
         const client = this.client(input.session);
