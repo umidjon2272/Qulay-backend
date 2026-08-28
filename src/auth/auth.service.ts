@@ -15,6 +15,7 @@ import { JwtPayload } from './types/jwt-payload.type';
 import { LoginBruteForceService } from './login-brute-force.service';
 import { AuthSecurityAuditService } from './auth-security-audit.service';
 import { RateLimitException } from '../common/security/rate-limit.exception';
+import { hashPassword } from './password-hash';
 
 type TokenPair = {
   accessToken: string;
@@ -383,7 +384,7 @@ export class AuthService {
   }
 
   private async hashPassword(password: string): Promise<string> {
-    return bcrypt.hash(password, this.saltRounds());
+    return hashPassword(password, this.saltRounds());
   }
 
   private refreshTokenFingerprint(token: string): string {

@@ -23,6 +23,7 @@ const public_user_type_1 = require("../users/types/public-user.type");
 const login_brute_force_service_1 = require("./login-brute-force.service");
 const auth_security_audit_service_1 = require("./auth-security-audit.service");
 const rate_limit_exception_1 = require("../common/security/rate-limit.exception");
+const password_hash_1 = require("./password-hash");
 let AuthService = AuthService_1 = class AuthService {
     constructor(usersService, prisma, jwtService, configService, bruteForce, securityAudit) {
         this.usersService = usersService;
@@ -328,7 +329,7 @@ let AuthService = AuthService_1 = class AuthService {
         return null;
     }
     async hashPassword(password) {
-        return bcrypt.hash(password, this.saltRounds());
+        return (0, password_hash_1.hashPassword)(password, this.saltRounds());
     }
     refreshTokenFingerprint(token) {
         return (0, node_crypto_1.createHash)('sha256').update(token).digest('hex');
