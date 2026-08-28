@@ -1,12 +1,13 @@
 import { Injectable } from '@nestjs/common';
+import { SECURITY_LIMITS } from '../../common/security/security-limits.constants';
 
 type Bucket = { count: number; resetAt: number };
 
 /** Small in-memory foundation. Replace with a shared store/rate-limit guard in production. */
 @Injectable()
 export class PasswordResetRateLimiterService {
-  private readonly windowMs = 15 * 60 * 1000;
-  private readonly maxAttempts = 5;
+  private readonly windowMs = SECURITY_LIMITS.passwordReset.windowMs;
+  private readonly maxAttempts = SECURITY_LIMITS.passwordReset.max;
   private readonly buckets = new Map<string, Bucket>();
 
   isAllowed(ip: string, normalizedEmail: string): boolean {
@@ -15,8 +16,8 @@ export class PasswordResetRateLimiterService {
   }
 
   isResetAllowed(ip: string, tokenFingerprint: string): boolean {
-    return this.consume(`reset-ip:${ip || 'unknown'}`, 20)
-      && this.consume(`reset-token:${tokenFingerprint}`, this.maxAttempts);
+    return this.consume(`reset-ip:${ip || 'unknown'}`, SECURITY_LIMITS.passwordResetIpToken.max)
+      && this.consume(`reset-token:${tokenFingerprint}`, SECURITY_LIMITS.passwordResetToken.max);
   }
 
   private consume(key: string, maxAttempts: number): boolean {

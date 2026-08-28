@@ -26,6 +26,7 @@ const refresh_token_dto_1 = require("./dto/refresh-token.dto");
 const register_dto_1 = require("./dto/register.dto");
 const security_rate_limit_service_1 = require("../common/security/security-rate-limit.service");
 const rate_limit_exception_1 = require("../common/security/rate-limit.exception");
+const security_limits_constants_1 = require("../common/security/security-limits.constants");
 let AuthController = class AuthController {
     constructor(authService, passwordResetService, rateLimiter) {
         this.authService = authService;
@@ -40,16 +41,16 @@ let AuthController = class AuthController {
     }
     register(dto, request) {
         const ip = request.ip ?? 'unknown';
-        if (!this.rateLimiter.isAllowed('register-ip', ip, 10, 10 * 60 * 1000)
-            || !this.rateLimiter.isAllowed('register-email', dto.email.trim().toLowerCase(), 3, 60 * 60 * 1000)) {
+        if (!this.rateLimiter.isAllowed('register-ip', ip, security_limits_constants_1.SECURITY_LIMITS.registerPerIp.max, security_limits_constants_1.SECURITY_LIMITS.registerPerIp.windowMs)
+            || !this.rateLimiter.isAllowed('register-email', dto.email.trim().toLowerCase(), security_limits_constants_1.SECURITY_LIMITS.registerPerEmail.max, security_limits_constants_1.SECURITY_LIMITS.registerPerEmail.windowMs)) {
             throw new rate_limit_exception_1.RateLimitException('Too many registration attempts. Try again later.');
         }
         return this.authService.register(dto);
     }
     login(dto, request) {
         const ip = request.ip ?? 'unknown';
-        if (!this.rateLimiter.isAllowed('login-ip', ip, 30, 15 * 60 * 1000)
-            || !this.rateLimiter.isAllowed('login-email', dto.email.trim().toLowerCase(), 15, 15 * 60 * 1000)) {
+        if (!this.rateLimiter.isAllowed('login-ip', ip, security_limits_constants_1.SECURITY_LIMITS.loginPerIp.max, security_limits_constants_1.SECURITY_LIMITS.loginPerIp.windowMs)
+            || !this.rateLimiter.isAllowed('login-email', dto.email.trim().toLowerCase(), security_limits_constants_1.SECURITY_LIMITS.loginPerEmail.max, security_limits_constants_1.SECURITY_LIMITS.loginPerEmail.windowMs)) {
             throw new rate_limit_exception_1.RateLimitException('Too many login attempts. Try again later.');
         }
         return this.authService.login(dto, ip);

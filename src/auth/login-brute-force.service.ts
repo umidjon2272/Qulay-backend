@@ -1,12 +1,13 @@
 import { Injectable } from '@nestjs/common';
+import { SECURITY_LIMITS } from '../common/security/security-limits.constants';
 
 type FailureBucket = { failures: number; firstFailureAt: number; lockedUntil: number };
 
 @Injectable()
 export class LoginBruteForceService {
-  private readonly maxFailures = 5;
-  private readonly failureWindowMs = 10 * 60 * 1000;
-  private readonly lockMs = 15 * 60 * 1000;
+  private readonly maxFailures = SECURITY_LIMITS.loginBruteForce.maxFailures;
+  private readonly failureWindowMs = SECURITY_LIMITS.loginBruteForce.failureWindowMs;
+  private readonly lockMs = SECURITY_LIMITS.loginBruteForce.lockMs;
   private readonly buckets = new Map<string, FailureBucket>();
 
   isBlocked(ip: string, normalizedEmail: string): boolean {

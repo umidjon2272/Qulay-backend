@@ -9,6 +9,7 @@ const express_1 = require("express");
 const app_module_1 = require("./app.module");
 const production_exception_filter_1 = require("./common/security/production-exception.filter");
 const security_rate_limit_service_1 = require("./common/security/security-rate-limit.service");
+const security_limits_constants_1 = require("./common/security/security-limits.constants");
 const prisma_service_1 = require("./prisma/prisma.service");
 function configureApp(app) {
     const configService = app.get(config_1.ConfigService);
@@ -44,7 +45,7 @@ function configureApp(app) {
     const rateLimiter = app.get(security_rate_limit_service_1.SecurityRateLimitService);
     app.use((request, response, next) => {
         const ip = request.ip ?? request.socket.remoteAddress ?? 'unknown';
-        if (!rateLimiter.isAllowed('global-ip', ip, 240, 60 * 1000)) {
+        if (!rateLimiter.isAllowed('global-ip', ip, security_limits_constants_1.SECURITY_LIMITS.globalPerIp.max, security_limits_constants_1.SECURITY_LIMITS.globalPerIp.windowMs)) {
             response.status(429).json({ statusCode: 429, message: 'Too many requests. Try again later.' });
             return;
         }

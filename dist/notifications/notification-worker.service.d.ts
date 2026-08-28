@@ -12,11 +12,18 @@ export declare class NotificationWorkerService implements OnModuleInit, OnModule
     private readonly batchSize;
     private readonly intervalMs;
     private readonly leaseMs;
+    private readonly maxRetries;
     constructor(prisma: PrismaService, delivery: NotificationDeliveryService, activityLog: ActivityLogService);
     onModuleInit(): void;
     onModuleDestroy(): void;
     health(): {
         status: 'running' | 'stopped';
+    };
+    config(): {
+        intervalMs: number;
+        batchSize: number;
+        retryLimit: number;
+        leaseMs: number;
     };
     processDueNotifications(now?: Date): Promise<number>;
 }

@@ -13,6 +13,7 @@ export class NotificationWorkerService implements OnModuleInit, OnModuleDestroy 
   private readonly batchSize = 50;
   private readonly intervalMs = 45_000;
   private readonly leaseMs = 120_000;
+  private readonly maxRetries = 3;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -31,6 +32,10 @@ export class NotificationWorkerService implements OnModuleInit, OnModuleDestroy 
 
   health(): { status: 'running' | 'stopped' } {
     return { status: this.timer ? 'running' : 'stopped' };
+  }
+
+  config(): { intervalMs: number; batchSize: number; retryLimit: number; leaseMs: number } {
+    return { intervalMs: this.intervalMs, batchSize: this.batchSize, retryLimit: this.maxRetries, leaseMs: this.leaseMs };
   }
 
   async processDueNotifications(now = new Date()): Promise<number> {
@@ -60,7 +65,7 @@ export class NotificationWorkerService implements OnModuleInit, OnModuleDestroy 
           await this.activityLog.record({ userId: candidate.userId, action: ACTIVITY_ACTIONS.NOTIFICATION_SENT, entityType: 'NOTIFICATION', entityId: candidate.id, metadata: { channel: candidate.channel } });
         } catch (error) {
           const retryCount = candidate.retryCount + 1;
-          const exhausted = retryCount >= 3;
+          const exhausted = retryCount >= this.maxRetries;
           await this.prisma.notification.updateMany({ where: { id: candidate.id, status: NotificationStatus.PENDING, claimToken }, data: { retryCount, status: exhausted ? NotificationStatus.FAILED : NotificationStatus.PENDING, nextRetryAt: exhausted ? null : new Date(now.getTime() + retryCount * 60_000), failedAt: exhausted ? new Date() : null, claimedAt: null, claimToken: null } });
           if (exhausted) await this.activityLog.record({ userId: candidate.userId, action: ACTIVITY_ACTIONS.NOTIFICATION_FAILED, entityType: 'NOTIFICATION', entityId: candidate.id, metadata: { channel: candidate.channel } });
           this.logger.warn(`Notification ${candidate.id} delivery failed${error instanceof Error ? `: ${error.message}` : ''}`);

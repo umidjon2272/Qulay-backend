@@ -4,6 +4,7 @@ import { ActivityLog, FileSource, FileStatus, GoogleConnectionStatus, Notificati
 import { ActivityLogService } from '../activity-log/activity-log.service';
 import { paginationMeta, paginationSkip } from '../common/dto/pagination-query.dto';
 import { NotificationWorkerService } from '../notifications/notification-worker.service';
+import { SECURITY_LIMITS } from '../common/security/security-limits.constants';
 import { PrismaService } from '../prisma/prisma.service';
 import { AdminActivityQueryDto, AdminUsersQueryDto } from './dto/admin-query.dto';
 
@@ -155,7 +156,44 @@ export class AdminService {
     return { api: { status: 'ok' }, database: db, notificationWorker: this.worker.health(), uptimeSeconds: Math.floor(process.uptime()), environment: this.config.get<string>('nodeEnv', 'development'), version: process.env.npm_package_version ?? null, migrations: { status: 'managed_by_prisma' }, integrations: await this.getIntegrations() };
   }
 
-  getSettings() { return { defaultUserStatus: UserStatus.ACTIVE, notificationWorker: this.worker.health(), environment: this.config.get<string>('nodeEnv', 'development'), aiDefaults: { status: 'placeholder', message: 'AI provider defaults are not configured in the admin console.' } }; }
+  async getSettings() {
+    const storage = this.config.get<{ provider: string; maxSizeBytes: number }>('storage')!;
+    const telegram = this.config.get<{ configured: boolean }>('telegram')!;
+    const google = this.config.get<{ configured: boolean }>('google')!;
+    const jwt = this.config.get<{ accessExpiresIn: string; refreshExpiresIn: string }>('jwt')!;
+    const worker = this.worker.config();
+    const health = await this.getSystemHealth();
+    const toMinutes = (ms: number) => Math.round(ms / 60_000);
+    return {
+      platform: {
+        name: 'Qulay AI',
+        defaultUserStatus: UserStatus.ACTIVE,
+        registrationEnabled: true,
+        maintenanceMode: false,
+      },
+      security: {
+        accessTokenExpiresIn: jwt.accessExpiresIn,
+        refreshTokenExpiresIn: jwt.refreshExpiresIn,
+        loginBruteForce: { maxFailures: SECURITY_LIMITS.loginBruteForce.maxFailures, lockMinutes: toMinutes(SECURITY_LIMITS.loginBruteForce.lockMs) },
+        rateLimits: {
+          loginPerIp: { max: SECURITY_LIMITS.loginPerIp.max, windowMinutes: toMinutes(SECURITY_LIMITS.loginPerIp.windowMs) },
+          loginPerEmail: { max: SECURITY_LIMITS.loginPerEmail.max, windowMinutes: toMinutes(SECURITY_LIMITS.loginPerEmail.windowMs) },
+          registerPerIp: { max: SECURITY_LIMITS.registerPerIp.max, windowMinutes: toMinutes(SECURITY_LIMITS.registerPerIp.windowMs) },
+          registerPerEmail: { max: SECURITY_LIMITS.registerPerEmail.max, windowMinutes: toMinutes(SECURITY_LIMITS.registerPerEmail.windowMs) },
+          passwordReset: { max: SECURITY_LIMITS.passwordReset.max, windowMinutes: toMinutes(SECURITY_LIMITS.passwordReset.windowMs) },
+          globalPerIp: { max: SECURITY_LIMITS.globalPerIp.max, windowSeconds: Math.round(SECURITY_LIMITS.globalPerIp.windowMs / 1000) },
+        },
+      },
+      notifications: { workerStatus: this.worker.health().status, intervalSeconds: Math.round(worker.intervalMs / 1000), batchSize: worker.batchSize, retryLimit: worker.retryLimit },
+      integrations: { telegram: { configured: telegram.configured }, google: { configured: google.configured }, openai: { configured: Boolean(process.env.OPENAI_API_KEY) } },
+      storage: {
+        provider: storage.provider,
+        maxFileSizeBytes: storage.maxSizeBytes,
+        localWarning: storage.provider === 'LOCAL' ? 'Lokal disk saqlash joyi qayta joylashtirishlar (redeploy) orasida saqlanmaydi — production uchun S3 ulanishi tavsiya etiladi.' : null,
+      },
+      system: { environment: health.environment, version: health.version, api: health.api, database: health.database },
+    };
+  }
 
   private daysAgo(days: number) { return new Date(Date.now() - Math.max(1, Math.min(days, 90)) * 86_400_000); }
   private async getTrend(entity: 'User', start: Date, end: Date) { const rows = await this.prisma.$queryRaw<TrendRow[]>(Prisma.sql`SELECT date_trunc('day', "createdAt") AS date, COUNT(*)::bigint AS count FROM "User" WHERE "createdAt" >= ${start} AND "createdAt" < ${end} GROUP BY 1 ORDER BY 1`); return rows.map((row) => ({ date: new Date(row.date).toISOString().slice(0, 10), count: Number(row.count) })); }

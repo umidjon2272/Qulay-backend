@@ -13,6 +13,7 @@ import { RegisterDto } from './dto/register.dto';
 import { JwtPayload } from './types/jwt-payload.type';
 import { SecurityRateLimitService } from '../common/security/security-rate-limit.service';
 import { RateLimitException } from '../common/security/rate-limit.exception';
+import { SECURITY_LIMITS } from '../common/security/security-limits.constants';
 
 @Controller('auth')
 export class AuthController {
@@ -38,8 +39,8 @@ export class AuthController {
   @HttpCode(HttpStatus.CREATED)
   register(@Body() dto: RegisterDto, @Req() request: Request) {
     const ip = request.ip ?? 'unknown';
-    if (!this.rateLimiter.isAllowed('register-ip', ip, 10, 10 * 60 * 1000)
-      || !this.rateLimiter.isAllowed('register-email', dto.email.trim().toLowerCase(), 3, 60 * 60 * 1000)) {
+    if (!this.rateLimiter.isAllowed('register-ip', ip, SECURITY_LIMITS.registerPerIp.max, SECURITY_LIMITS.registerPerIp.windowMs)
+      || !this.rateLimiter.isAllowed('register-email', dto.email.trim().toLowerCase(), SECURITY_LIMITS.registerPerEmail.max, SECURITY_LIMITS.registerPerEmail.windowMs)) {
       throw new RateLimitException('Too many registration attempts. Try again later.');
     }
     return this.authService.register(dto);
@@ -49,8 +50,8 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   login(@Body() dto: LoginDto, @Req() request: Request) {
     const ip = request.ip ?? 'unknown';
-    if (!this.rateLimiter.isAllowed('login-ip', ip, 30, 15 * 60 * 1000)
-      || !this.rateLimiter.isAllowed('login-email', dto.email.trim().toLowerCase(), 15, 15 * 60 * 1000)) {
+    if (!this.rateLimiter.isAllowed('login-ip', ip, SECURITY_LIMITS.loginPerIp.max, SECURITY_LIMITS.loginPerIp.windowMs)
+      || !this.rateLimiter.isAllowed('login-email', dto.email.trim().toLowerCase(), SECURITY_LIMITS.loginPerEmail.max, SECURITY_LIMITS.loginPerEmail.windowMs)) {
       throw new RateLimitException('Too many login attempts. Try again later.');
     }
     return this.authService.login(dto, ip);

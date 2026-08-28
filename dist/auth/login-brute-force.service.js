@@ -8,11 +8,12 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.LoginBruteForceService = void 0;
 const common_1 = require("@nestjs/common");
+const security_limits_constants_1 = require("../common/security/security-limits.constants");
 let LoginBruteForceService = class LoginBruteForceService {
     constructor() {
-        this.maxFailures = 5;
-        this.failureWindowMs = 10 * 60 * 1000;
-        this.lockMs = 15 * 60 * 1000;
+        this.maxFailures = security_limits_constants_1.SECURITY_LIMITS.loginBruteForce.maxFailures;
+        this.failureWindowMs = security_limits_constants_1.SECURITY_LIMITS.loginBruteForce.failureWindowMs;
+        this.lockMs = security_limits_constants_1.SECURITY_LIMITS.loginBruteForce.lockMs;
         this.buckets = new Map();
     }
     isBlocked(ip, normalizedEmail) {

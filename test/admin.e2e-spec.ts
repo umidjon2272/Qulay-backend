@@ -66,6 +66,23 @@ describe('Admin console API', () => {
     await request(app.getHttpServer()).patch(`/api/admin/users/${adminId}/role`).set('Authorization', `Bearer ${adminToken}`).send({ role: 'USER' }).expect(403);
   });
 
+  it('rejects a normal user and returns real, secret-free settings for an admin', async () => {
+    await request(app.getHttpServer()).get('/api/admin/settings').set('Authorization', `Bearer ${userToken}`).expect(403);
+    await request(app.getHttpServer()).get('/api/admin/settings').set('Authorization', `Bearer ${adminToken}`).expect(200).expect((response) => {
+      const body = response.body;
+      expect(body.platform).toEqual(expect.objectContaining({ name: 'Qulay AI', defaultUserStatus: 'ACTIVE' }));
+      expect(body.security.rateLimits.loginPerIp).toEqual({ max: 30, windowMinutes: 15 });
+      expect(body.notifications.workerStatus).toBeDefined();
+      expect(body.integrations).toEqual(expect.objectContaining({ telegram: expect.any(Object), google: expect.any(Object), openai: expect.any(Object) }));
+      expect(body.storage.provider).toEqual(expect.any(String));
+      expect(body.system.environment).toEqual(expect.any(String));
+      const raw = JSON.stringify(body);
+      expect(raw).not.toContain('SecretKey');
+      expect(raw).not.toContain('secret');
+      expect(raw).not.toContain('passwordHash');
+    });
+  });
+
   async function register(label: string) {
     return (await request(app.getHttpServer()).post('/api/auth/register').send({ email: `admin-test-${label}-${Date.now()}-${Math.random().toString(16).slice(2)}@example.com`, password, firstName: label, lastName: 'Test' }).expect(201)).body as { user: { id: string; email: string }; accessToken: string; refreshToken: string };
   }

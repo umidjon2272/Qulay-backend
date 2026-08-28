@@ -27,6 +27,7 @@ let NotificationWorkerService = NotificationWorkerService_1 = class Notification
         this.batchSize = 50;
         this.intervalMs = 45_000;
         this.leaseMs = 120_000;
+        this.maxRetries = 3;
     }
     onModuleInit() {
         this.timer = setInterval(() => void this.processDueNotifications(), this.intervalMs);
@@ -38,6 +39,9 @@ let NotificationWorkerService = NotificationWorkerService_1 = class Notification
     }
     health() {
         return { status: this.timer ? 'running' : 'stopped' };
+    }
+    config() {
+        return { intervalMs: this.intervalMs, batchSize: this.batchSize, retryLimit: this.maxRetries, leaseMs: this.leaseMs };
     }
     async processDueNotifications(now = new Date()) {
         if (this.running)
@@ -69,7 +73,7 @@ let NotificationWorkerService = NotificationWorkerService_1 = class Notification
                 }
                 catch (error) {
                     const retryCount = candidate.retryCount + 1;
-                    const exhausted = retryCount >= 3;
+                    const exhausted = retryCount >= this.maxRetries;
                     await this.prisma.notification.updateMany({ where: { id: candidate.id, status: client_1.NotificationStatus.PENDING, claimToken }, data: { retryCount, status: exhausted ? client_1.NotificationStatus.FAILED : client_1.NotificationStatus.PENDING, nextRetryAt: exhausted ? null : new Date(now.getTime() + retryCount * 60_000), failedAt: exhausted ? new Date() : null, claimedAt: null, claimToken: null } });
                     if (exhausted)
                         await this.activityLog.record({ userId: candidate.userId, action: activity_log_service_1.ACTIVITY_ACTIONS.NOTIFICATION_FAILED, entityType: 'NOTIFICATION', entityId: candidate.id, metadata: { channel: candidate.channel } });

@@ -6,6 +6,7 @@ import { json, Request, Response, urlencoded } from 'express';
 import { AppModule } from './app.module';
 import { ProductionExceptionFilter } from './common/security/production-exception.filter';
 import { SecurityRateLimitService } from './common/security/security-rate-limit.service';
+import { SECURITY_LIMITS } from './common/security/security-limits.constants';
 import { PrismaService } from './prisma/prisma.service';
 
 export function configureApp(app: INestApplication): void {
@@ -49,7 +50,7 @@ export function configureApp(app: INestApplication): void {
   const rateLimiter = app.get(SecurityRateLimitService);
   app.use((request: Request, response: Response, next: () => void) => {
     const ip = request.ip ?? request.socket.remoteAddress ?? 'unknown';
-    if (!rateLimiter.isAllowed('global-ip', ip, 240, 60 * 1000)) {
+    if (!rateLimiter.isAllowed('global-ip', ip, SECURITY_LIMITS.globalPerIp.max, SECURITY_LIMITS.globalPerIp.windowMs)) {
       response.status(429).json({ statusCode: 429, message: 'Too many requests. Try again later.' });
       return;
     }

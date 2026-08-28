@@ -8,10 +8,11 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.PasswordResetRateLimiterService = void 0;
 const common_1 = require("@nestjs/common");
+const security_limits_constants_1 = require("../../common/security/security-limits.constants");
 let PasswordResetRateLimiterService = class PasswordResetRateLimiterService {
     constructor() {
-        this.windowMs = 15 * 60 * 1000;
-        this.maxAttempts = 5;
+        this.windowMs = security_limits_constants_1.SECURITY_LIMITS.passwordReset.windowMs;
+        this.maxAttempts = security_limits_constants_1.SECURITY_LIMITS.passwordReset.max;
         this.buckets = new Map();
     }
     isAllowed(ip, normalizedEmail) {
@@ -19,8 +20,8 @@ let PasswordResetRateLimiterService = class PasswordResetRateLimiterService {
             && this.consume(`email:${normalizedEmail}`, this.maxAttempts);
     }
     isResetAllowed(ip, tokenFingerprint) {
-        return this.consume(`reset-ip:${ip || 'unknown'}`, 20)
-            && this.consume(`reset-token:${tokenFingerprint}`, this.maxAttempts);
+        return this.consume(`reset-ip:${ip || 'unknown'}`, security_limits_constants_1.SECURITY_LIMITS.passwordResetIpToken.max)
+            && this.consume(`reset-token:${tokenFingerprint}`, security_limits_constants_1.SECURITY_LIMITS.passwordResetToken.max);
     }
     consume(key, maxAttempts) {
         const now = Date.now();

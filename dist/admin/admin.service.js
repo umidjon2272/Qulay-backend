@@ -16,6 +16,7 @@ const client_1 = require("@prisma/client");
 const activity_log_service_1 = require("../activity-log/activity-log.service");
 const pagination_query_dto_1 = require("../common/dto/pagination-query.dto");
 const notification_worker_service_1 = require("../notifications/notification-worker.service");
+const security_limits_constants_1 = require("../common/security/security-limits.constants");
 const prisma_service_1 = require("../prisma/prisma.service");
 let AdminService = class AdminService {
     constructor(prisma, activityLog, config, worker) {
@@ -165,7 +166,44 @@ let AdminService = class AdminService {
         }
         return { api: { status: 'ok' }, database: db, notificationWorker: this.worker.health(), uptimeSeconds: Math.floor(process.uptime()), environment: this.config.get('nodeEnv', 'development'), version: process.env.npm_package_version ?? null, migrations: { status: 'managed_by_prisma' }, integrations: await this.getIntegrations() };
     }
-    getSettings() { return { defaultUserStatus: client_1.UserStatus.ACTIVE, notificationWorker: this.worker.health(), environment: this.config.get('nodeEnv', 'development'), aiDefaults: { status: 'placeholder', message: 'AI provider defaults are not configured in the admin console.' } }; }
+    async getSettings() {
+        const storage = this.config.get('storage');
+        const telegram = this.config.get('telegram');
+        const google = this.config.get('google');
+        const jwt = this.config.get('jwt');
+        const worker = this.worker.config();
+        const health = await this.getSystemHealth();
+        const toMinutes = (ms) => Math.round(ms / 60_000);
+        return {
+            platform: {
+                name: 'Qulay AI',
+                defaultUserStatus: client_1.UserStatus.ACTIVE,
+                registrationEnabled: true,
+                maintenanceMode: false,
+            },
+            security: {
+                accessTokenExpiresIn: jwt.accessExpiresIn,
+                refreshTokenExpiresIn: jwt.refreshExpiresIn,
+                loginBruteForce: { maxFailures: security_limits_constants_1.SECURITY_LIMITS.loginBruteForce.maxFailures, lockMinutes: toMinutes(security_limits_constants_1.SECURITY_LIMITS.loginBruteForce.lockMs) },
+                rateLimits: {
+                    loginPerIp: { max: security_limits_constants_1.SECURITY_LIMITS.loginPerIp.max, windowMinutes: toMinutes(security_limits_constants_1.SECURITY_LIMITS.loginPerIp.windowMs) },
+                    loginPerEmail: { max: security_limits_constants_1.SECURITY_LIMITS.loginPerEmail.max, windowMinutes: toMinutes(security_limits_constants_1.SECURITY_LIMITS.loginPerEmail.windowMs) },
+                    registerPerIp: { max: security_limits_constants_1.SECURITY_LIMITS.registerPerIp.max, windowMinutes: toMinutes(security_limits_constants_1.SECURITY_LIMITS.registerPerIp.windowMs) },
+                    registerPerEmail: { max: security_limits_constants_1.SECURITY_LIMITS.registerPerEmail.max, windowMinutes: toMinutes(security_limits_constants_1.SECURITY_LIMITS.registerPerEmail.windowMs) },
+                    passwordReset: { max: security_limits_constants_1.SECURITY_LIMITS.passwordReset.max, windowMinutes: toMinutes(security_limits_constants_1.SECURITY_LIMITS.passwordReset.windowMs) },
+                    globalPerIp: { max: security_limits_constants_1.SECURITY_LIMITS.globalPerIp.max, windowSeconds: Math.round(security_limits_constants_1.SECURITY_LIMITS.globalPerIp.windowMs / 1000) },
+                },
+            },
+            notifications: { workerStatus: this.worker.health().status, intervalSeconds: Math.round(worker.intervalMs / 1000), batchSize: worker.batchSize, retryLimit: worker.retryLimit },
+            integrations: { telegram: { configured: telegram.configured }, google: { configured: google.configured }, openai: { configured: Boolean(process.env.OPENAI_API_KEY) } },
+            storage: {
+                provider: storage.provider,
+                maxFileSizeBytes: storage.maxSizeBytes,
+                localWarning: storage.provider === 'LOCAL' ? 'Lokal disk saqlash joyi qayta joylashtirishlar (redeploy) orasida saqlanmaydi — production uchun S3 ulanishi tavsiya etiladi.' : null,
+            },
+            system: { environment: health.environment, version: health.version, api: health.api, database: health.database },
+        };
+    }
     daysAgo(days) { return new Date(Date.now() - Math.max(1, Math.min(days, 90)) * 86_400_000); }
     async getTrend(entity, start, end) { const rows = await this.prisma.$queryRaw(client_1.Prisma.sql `SELECT date_trunc('day', "createdAt") AS date, COUNT(*)::bigint AS count FROM "User" WHERE "createdAt" >= ${start} AND "createdAt" < ${end} GROUP BY 1 ORDER BY 1`); return rows.map((row) => ({ date: new Date(row.date).toISOString().slice(0, 10), count: Number(row.count) })); }
     async getActivityTrend(start, end) { const rows = await this.prisma.$queryRaw(client_1.Prisma.sql `SELECT date_trunc('day', "createdAt") AS date, COUNT(*)::bigint AS count FROM "ActivityLog" WHERE "createdAt" >= ${start} AND "createdAt" < ${end} GROUP BY 1 ORDER BY 1`); return rows.map((row) => ({ date: new Date(row.date).toISOString().slice(0, 10), count: Number(row.count) })); }

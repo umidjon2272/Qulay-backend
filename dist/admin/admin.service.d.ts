@@ -296,17 +296,81 @@ export declare class AdminService {
             };
         };
     }>;
-    getSettings(): {
-        defaultUserStatus: "ACTIVE";
-        notificationWorker: {
-            status: "running" | "stopped";
+    getSettings(): Promise<{
+        platform: {
+            name: string;
+            defaultUserStatus: "ACTIVE";
+            registrationEnabled: boolean;
+            maintenanceMode: boolean;
         };
-        environment: string;
-        aiDefaults: {
-            status: string;
-            message: string;
+        security: {
+            accessTokenExpiresIn: string;
+            refreshTokenExpiresIn: string;
+            loginBruteForce: {
+                maxFailures: 5;
+                lockMinutes: number;
+            };
+            rateLimits: {
+                loginPerIp: {
+                    max: 30;
+                    windowMinutes: number;
+                };
+                loginPerEmail: {
+                    max: 15;
+                    windowMinutes: number;
+                };
+                registerPerIp: {
+                    max: 10;
+                    windowMinutes: number;
+                };
+                registerPerEmail: {
+                    max: 3;
+                    windowMinutes: number;
+                };
+                passwordReset: {
+                    max: 5;
+                    windowMinutes: number;
+                };
+                globalPerIp: {
+                    max: 240;
+                    windowSeconds: number;
+                };
+            };
         };
-    };
+        notifications: {
+            workerStatus: "running" | "stopped";
+            intervalSeconds: number;
+            batchSize: number;
+            retryLimit: number;
+        };
+        integrations: {
+            telegram: {
+                configured: boolean;
+            };
+            google: {
+                configured: boolean;
+            };
+            openai: {
+                configured: boolean;
+            };
+        };
+        storage: {
+            provider: string;
+            maxFileSizeBytes: number;
+            localWarning: string | null;
+        };
+        system: {
+            environment: string;
+            version: string | null;
+            api: {
+                status: string;
+            };
+            database: {
+                status: string;
+                latencyMs: number;
+            };
+        };
+    }>;
     private daysAgo;
     private getTrend;
     private getActivityTrend;
