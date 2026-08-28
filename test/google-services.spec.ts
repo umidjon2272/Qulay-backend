@@ -36,4 +36,15 @@ describe('Google integration adapters', () => {
     await expect(auth.status('user-1')).resolves.toEqual(expect.objectContaining({ connected: false, status: 'not_configured' }));
     expect(() => auth.connectUrl('user-1')).toThrow('NOT_CONFIGURED');
   });
+
+  it.each([undefined, 'malformed-state'] as const)('rejects a missing or invalid signed OAuth state: %s', async (state) => {
+    const auth = new GoogleAuthService(
+      new ConfigService({
+        google: { configured: true, clientSecret: 'server-google-secret' },
+        jwt: { accessSecret: 'server-jwt-secret' },
+      }),
+      {} as never, {} as never, {} as never, {} as never,
+    );
+    await expect(auth.callback('oauth-code', state)).rejects.toMatchObject({ code: 'INVALID_STATE' });
+  });
 });

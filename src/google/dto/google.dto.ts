@@ -7,9 +7,14 @@ const dateTimeWithTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/;
 const trim = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value);
 
 export class GoogleCallbackQueryDto {
-  @IsOptional() @IsString() code?: string;
-  @IsOptional() @IsString() state?: string;
-  @IsOptional() @IsString() error?: string;
+  @IsOptional() @IsString() @MaxLength(4096) code?: string;
+  @IsOptional() @IsString() @MaxLength(4096) state?: string;
+  @IsOptional() @IsString() @MaxLength(200) error?: string;
+  @IsOptional() @IsString() @MaxLength(2000) error_description?: string;
+  /** Provider metadata only. Never used for authorization or token exchange. */
+  @IsOptional() @IsString() @MaxLength(4096) scope?: string;
+  /** Provider metadata only. The configured OAuth endpoints remain authoritative. */
+  @IsOptional() @IsString() @MaxLength(2048) iss?: string;
 }
 
 export class CalendarEventsQueryDto {
@@ -49,4 +54,3 @@ export class DriveFilesQueryDto {
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) limit?: number;
   @IsOptional() @IsString() @MaxLength(2000) pageToken?: string;
 }
-
