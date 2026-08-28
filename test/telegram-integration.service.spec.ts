@@ -16,7 +16,7 @@ describe('TelegramIntegrationService', () => {
   } as any;
   const client = {
     beginLogin: jest.fn(), resendCode: jest.fn(), verifyCode: jest.fn(), verifyPassword: jest.fn(), logout: jest.fn(),
-    search: jest.fn(), chats: jest.fn(), resolvePeer: jest.fn(), sendMessage: jest.fn(),
+    validateSession: jest.fn(), search: jest.fn(), chats: jest.fn(), resolvePeer: jest.fn(), sendMessage: jest.fn(),
   } as any;
   const contacts = { listForUser: jest.fn().mockResolvedValue({ items: [] }) } as any;
   const activityLog = { record: jest.fn().mockResolvedValue(undefined) } as any;
@@ -24,6 +24,7 @@ describe('TelegramIntegrationService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    client.validateSession.mockResolvedValue({ telegramUserId: '1', username: 'aziz', displayName: 'Aziz', phoneNumber: null });
     service = new TelegramIntegrationService(prisma, crypto, client, contacts, activityLog, new ConfigService({ telegram: { configured: true } }));
   });
 
@@ -85,6 +86,49 @@ describe('TelegramIntegrationService', () => {
     expect(client.search).toHaveBeenCalledWith('session-string', 'aziz', 10);
     prisma.telegramConnection.findUnique.mockResolvedValue(null);
     await expect(service.search('user-b', { q: 'aziz', limit: 10 } as any)).rejects.toThrow('Telegram account is not connected');
+  });
+
+  it.each([
+    ['timeout', new TelegramAdapterError('UNAVAILABLE')],
+    ['peer not found', new TelegramAdapterError('PEER_NOT_FOUND')],
+    ['flood wait', new TelegramAdapterError('FLOOD_WAIT', 30)],
+  ])('keeps CONNECTED on temporary %s errors', async (_label, error) => {
+    prisma.telegramConnection.findUnique.mockResolvedValue({ userId: 'user-a', status: TelegramConnectionStatus.CONNECTED, encryptedSession: 'encrypted:session-string' });
+    client.search.mockRejectedValue(error);
+    await expect(service.search('user-a', { q: 'aziz', limit: 10 } as any)).rejects.toBeDefined();
+    expect(prisma.telegramConnection.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { userId: 'user-a', status: TelegramConnectionStatus.CONNECTED },
+      data: expect.not.objectContaining({ status: TelegramConnectionStatus.DISCONNECTED }),
+    }));
+  });
+
+  it('clears the stored session only when Telegram rejects the auth key', async () => {
+    prisma.telegramConnection.findUnique.mockResolvedValue({ userId: 'user-a', status: TelegramConnectionStatus.CONNECTED, encryptedSession: 'encrypted:session-string' });
+    client.validateSession.mockRejectedValue(new TelegramAdapterError('CONNECTION_EXPIRED'));
+    await expect(service.search('user-a', { q: 'aziz', limit: 10 } as any)).rejects.toBeDefined();
+    expect(prisma.telegramConnection.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: TelegramConnectionStatus.DISCONNECTED, encryptedSession: null }),
+    }));
+  });
+
+  it('restores CONNECTED from the encrypted DB session during status validation', async () => {
+    prisma.telegramConnection.findUnique.mockResolvedValue({ userId: 'user-a', status: TelegramConnectionStatus.CONNECTED, encryptedSession: 'encrypted:persistent-session', username: 'old', displayName: 'Old' });
+    await expect(service.status('user-a')).resolves.toMatchObject({ connected: true, status: TelegramConnectionStatus.CONNECTED, temporaryError: false });
+    expect(client.validateSession).toHaveBeenCalledWith('persistent-session');
+  });
+
+  it('reports a temporary status error without changing CONNECTED', async () => {
+    prisma.telegramConnection.findUnique.mockResolvedValue({ userId: 'user-a', status: TelegramConnectionStatus.CONNECTED, encryptedSession: 'encrypted:persistent-session' });
+    client.validateSession.mockRejectedValue(new TelegramAdapterError('UNAVAILABLE'));
+    await expect(service.status('user-a')).resolves.toMatchObject({ connected: true, status: TelegramConnectionStatus.CONNECTED, temporaryError: true });
+    expect(prisma.telegramConnection.updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: { userId: 'user-a', status: TelegramConnectionStatus.CONNECTED } }));
+  });
+
+  it('manual disconnect revokes best effort and clears all auth state', async () => {
+    prisma.telegramConnection.findUnique.mockResolvedValue({ userId: 'user-a', encryptedSession: 'encrypted:persistent-session' });
+    client.logout.mockRejectedValue(new TelegramAdapterError('UNAVAILABLE'));
+    await expect(service.disconnect('user-a')).resolves.toEqual({ status: 'disconnected' });
+    expect(prisma.telegramConnection.update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ encryptedSession: null, encryptedPhoneCodeHash: null, status: TelegramConnectionStatus.DISCONNECTED }) }));
   });
 
   it('reports not_configured and rejects connect when Telegram credentials are absent', async () => {

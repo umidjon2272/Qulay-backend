@@ -29,6 +29,7 @@ export abstract class TelegramClientService {
   abstract resendCode(input: { session: string; phoneNumber: string; phoneCodeHash: string }): Promise<TelegramSentCode>;
   abstract verifyCode(input: { session: string; phoneNumber: string; phoneCodeHash: string; code: string }): Promise<{ status: 'connected' | 'password_required'; session: string; account?: TelegramAccount }>;
   abstract verifyPassword(input: { session: string; password: string }): Promise<{ session: string; account: TelegramAccount }>;
+  abstract validateSession(session: string): Promise<TelegramAccount>;
   abstract logout(session: string): Promise<void>;
   abstract search(session: string, query: string, limit: number): Promise<TelegramPeer[]>;
   abstract chats(session: string, search: string | undefined, limit: number): Promise<TelegramPeer[]>;
@@ -199,6 +200,19 @@ export class TeleprotoTelegramClientService extends TelegramClientService {
       await client.connect();
       await client.logOut();
     } catch (error) {
+      throw classifyTelegramError(error);
+    } finally {
+      await client.disconnect().catch(() => undefined);
+    }
+  }
+
+  async validateSession(session: string): Promise<TelegramAccount> {
+    const client = this.client(session);
+    try {
+      await client.connect();
+      return await this.account(client);
+    } catch (error) {
+      if (error instanceof TelegramAdapterError) throw error;
       throw classifyTelegramError(error);
     } finally {
       await client.disconnect().catch(() => undefined);

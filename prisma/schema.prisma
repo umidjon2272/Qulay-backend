@@ -254,6 +254,9 @@ model TelegramConnection {
   codeResendAfterSeconds Int?
   status                TelegramConnectionStatus @default(DISCONNECTED)
   connectedAt           DateTime?
+  lastValidatedAt       DateTime?
+  lastErrorAt           DateTime?
+  lastErrorCode         String?                  @db.VarChar(100)
   lastUsedAt            DateTime?
   createdAt             DateTime                 @default(now())
   updatedAt             DateTime                 @updatedAt

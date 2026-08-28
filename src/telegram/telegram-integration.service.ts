@@ -5,7 +5,7 @@ import { ActivityLogService, ACTIVITY_ACTIONS } from '../activity-log/activity-l
 import { ContactsService } from '../contacts/contacts.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { TelegramChatsQueryDto, TelegramSearchQueryDto } from './dto/telegram.dto';
-import { mapTelegramError, TelegramAdapterError } from './telegram.errors';
+import { isTelegramAuthInvalid, mapTelegramError, TelegramAdapterError, telegramErrorCode } from './telegram.errors';
 import { TelegramClientService, TelegramPeer, TelegramSentCode } from './telegram-client.service';
 import { TelegramCryptoService } from './telegram-crypto.service';
 
@@ -147,6 +147,20 @@ export class TelegramIntegrationService {
     if (!this.isConfigured()) return { connected: false, status: 'not_configured', username: null, displayName: null, maskedPhone: null, connectedAt: null };
     const connection = await this.prisma.telegramConnection.findUnique({ where: { userId } });
     if (!connection) return { connected: false, status: TelegramConnectionStatus.DISCONNECTED, username: null, displayName: null, maskedPhone: null, connectedAt: null };
+    let temporaryError = false;
+    if (connection.status === TelegramConnectionStatus.CONNECTED && connection.encryptedSession) {
+      try {
+        const account = await this.telegramClient.validateSession(this.crypto.decrypt(connection.encryptedSession));
+        await this.prisma.telegramConnection.update({ where: { userId }, data: { lastValidatedAt: new Date(), lastErrorAt: null, lastErrorCode: null, telegramUserId: account.telegramUserId, username: account.username, displayName: account.displayName } });
+      } catch (error) {
+        if (isTelegramAuthInvalid(error)) {
+          await this.revokeConnection(userId, telegramErrorCode(error));
+          return { connected: false, status: TelegramConnectionStatus.DISCONNECTED, username: null, displayName: null, maskedPhone: null, connectedAt: null, temporaryError: false };
+        }
+        temporaryError = true;
+        await this.recordConnectionError(userId, error);
+      }
+    }
     return {
       connected: connection.status === TelegramConnectionStatus.CONNECTED,
       status: connection.status,
@@ -154,6 +168,7 @@ export class TelegramIntegrationService {
       displayName: connection.displayName,
       maskedPhone: this.crypto.maskPhone(connection.phoneNumber),
       connectedAt: connection.connectedAt,
+      temporaryError,
     };
   }
 
@@ -170,7 +185,7 @@ export class TelegramIntegrationService {
     if (connection) {
       await this.prisma.telegramConnection.update({
         where: { userId },
-        data: { telegramUserId: null, phoneNumber: null, username: null, displayName: null, encryptedSession: null, encryptedPhoneCodeHash: null, codeSentAt: null, codeResendAfterSeconds: null, status: TelegramConnectionStatus.DISCONNECTED, connectedAt: null, lastUsedAt: new Date() },
+        data: { telegramUserId: null, phoneNumber: null, username: null, displayName: null, encryptedSession: null, encryptedPhoneCodeHash: null, codeSentAt: null, codeResendAfterSeconds: null, status: TelegramConnectionStatus.DISCONNECTED, connectedAt: null, lastValidatedAt: null, lastErrorAt: null, lastErrorCode: null, lastUsedAt: new Date() },
       });
     }
     await this.activityLog.record({ userId, action: ACTIVITY_ACTIONS.TELEGRAM_DISCONNECTED, entityType: 'TELEGRAM_CONNECTION', metadata: { source: 'TELEGRAM' } });
@@ -184,7 +199,7 @@ export class TelegramIntegrationService {
       const peers = await this.telegramClient.search(connection.encryptedSession, query.q, query.limit);
       return this.withContactMatches(userId, peers);
     } catch (error) {
-      throw mapTelegramError(error);
+      throw await this.handleConnectedError(userId, error);
     }
   }
 
@@ -195,7 +210,7 @@ export class TelegramIntegrationService {
       const peers = await this.telegramClient.chats(connection.encryptedSession, query.search, query.limit);
       return this.withContactMatches(userId, peers);
     } catch (error) {
-      throw mapTelegramError(error);
+      throw await this.handleConnectedError(userId, error);
     }
   }
 
@@ -206,7 +221,7 @@ export class TelegramIntegrationService {
       const recipient = await this.telegramClient.resolvePeer(connection.encryptedSession, peerId);
       return { recipient, text, confirmationRequired: true };
     } catch (error) {
-      throw mapTelegramError(error);
+      throw await this.handleConnectedError(userId, error);
     }
   }
 
@@ -219,7 +234,7 @@ export class TelegramIntegrationService {
       await this.activityLog.record({ userId, action: ACTIVITY_ACTIONS.TELEGRAM_MESSAGE_SENT, entityType: 'TELEGRAM_MESSAGE', metadata: { source: 'TELEGRAM', peerId, recipientType: result.recipient.type, recipientName: result.recipient.displayName } });
       return result;
     } catch (error) {
-      throw mapTelegramError(error);
+      throw await this.handleConnectedError(userId, error);
     }
   }
 
@@ -247,6 +262,9 @@ export class TelegramIntegrationService {
         displayName: account.displayName,
         status: TelegramConnectionStatus.CONNECTED,
         connectedAt: new Date(),
+        lastValidatedAt: new Date(),
+        lastErrorAt: null,
+        lastErrorCode: null,
         lastUsedAt: new Date(),
       },
     });
@@ -256,7 +274,28 @@ export class TelegramIntegrationService {
   private async connected(userId: string): Promise<ConnectedConnection> {
     const connection = await this.prisma.telegramConnection.findUnique({ where: { userId } });
     if (!connection || connection.status !== TelegramConnectionStatus.CONNECTED || !connection.encryptedSession) throw new BadRequestException('Telegram account is not connected');
-    return { ...connection, encryptedSession: this.crypto.decrypt(connection.encryptedSession) };
+    const session = this.crypto.decrypt(connection.encryptedSession);
+    try {
+      await this.telegramClient.validateSession(session);
+      await this.prisma.telegramConnection.update({ where: { userId }, data: { lastValidatedAt: new Date(), lastErrorAt: null, lastErrorCode: null } });
+    } catch (error) {
+      throw await this.handleConnectedError(userId, error);
+    }
+    return { ...connection, encryptedSession: session };
+  }
+
+  private async handleConnectedError(userId: string, error: unknown) {
+    if (isTelegramAuthInvalid(error)) await this.revokeConnection(userId, telegramErrorCode(error));
+    else await this.recordConnectionError(userId, error);
+    return mapTelegramError(error);
+  }
+
+  private async recordConnectionError(userId: string, error: unknown): Promise<void> {
+    await this.prisma.telegramConnection.updateMany({ where: { userId, status: TelegramConnectionStatus.CONNECTED }, data: { lastErrorAt: new Date(), lastErrorCode: telegramErrorCode(error) } });
+  }
+
+  private async revokeConnection(userId: string, errorCode: string): Promise<void> {
+    await this.prisma.telegramConnection.updateMany({ where: { userId }, data: { encryptedSession: null, encryptedPhoneCodeHash: null, codeSentAt: null, codeResendAfterSeconds: null, status: TelegramConnectionStatus.DISCONNECTED, lastErrorAt: new Date(), lastErrorCode: errorCode } });
   }
 
   /** Returns the row as stored — `encryptedSession`/`encryptedPhoneCodeHash` are still ciphertext. Use `decryptPendingSession()` before handing the session to the Telegram client. */

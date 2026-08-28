@@ -47,3 +47,13 @@ export function classifyTelegramError(error: unknown): TelegramAdapterError {
   if (message.includes('PEER_ID_INVALID') || message.includes('USERNAME_NOT_OCCUPIED')) return new TelegramAdapterError('PEER_NOT_FOUND');
   return new TelegramAdapterError('UNAVAILABLE');
 }
+
+export function isTelegramAuthInvalid(error: unknown): boolean {
+  return error instanceof TelegramAdapterError
+    ? error.code === 'CONNECTION_EXPIRED'
+    : classifyTelegramError(error).code === 'CONNECTION_EXPIRED';
+}
+
+export function telegramErrorCode(error: unknown): TelegramErrorCode {
+  return error instanceof TelegramAdapterError ? error.code : classifyTelegramError(error).code;
+}
