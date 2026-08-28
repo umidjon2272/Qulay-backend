@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Api, TelegramClient } from 'teleproto';
 import { getPeerId } from 'teleproto/Utils';
@@ -37,6 +37,7 @@ export abstract class TelegramClientService {
 
 @Injectable()
 export class TeleprotoTelegramClientService extends TelegramClientService {
+  private readonly logger = new Logger(TeleprotoTelegramClientService.name);
   private readonly apiId: number | undefined;
   private readonly apiHash: string | undefined;
 
@@ -65,6 +66,7 @@ export class TeleprotoTelegramClientService extends TelegramClientService {
     try {
       await client.connect();
       const result = await client.invoke(new Api.auth.ResendCode({ phoneNumber: input.phoneNumber, phoneCodeHash: input.phoneCodeHash }));
+      this.logSentCodeDiagnostic('resend_code', result);
       if (!(result instanceof Api.auth.SentCode)) throw new TelegramAdapterError('UNAVAILABLE');
       return { session: this.savedSession(client), ...this.describeSentCode(result) };
     } catch (error) {
@@ -90,8 +92,41 @@ export class TeleprotoTelegramClientService extends TelegramClientService {
       if ((error as { errorMessage?: string }).errorMessage === 'AUTH_RESTART') return this.requestSentCode(client, phoneNumber);
       throw error;
     }
+    this.logSentCodeDiagnostic('send_code', result);
     if (!(result instanceof Api.auth.SentCode)) throw new TelegramAdapterError('UNAVAILABLE');
     return result;
+  }
+
+  /**
+   * TEMPORARY production diagnostic (safe fields only — no phone number, phoneCodeHash, code, API credentials, or session).
+   * Logs the raw Telegram response verbatim so we can see exactly what Telegram sent, without inferring or forcing anything.
+   * Remove once the "code never arrives" investigation is closed.
+   */
+  private logSentCodeDiagnostic(source: 'send_code' | 'resend_code', result: Api.auth.TypeSentCode): void {
+    const responseKind = result instanceof Api.auth.SentCode
+      ? 'auth.SentCode'
+      : result instanceof Api.auth.SentCodeSuccess
+        ? 'auth.SentCodeSuccess'
+        : result instanceof Api.auth.SentCodePaymentRequired
+          ? 'auth.SentCodePaymentRequired'
+          : 'other';
+    const sentCode = result instanceof Api.auth.SentCode ? result : null;
+    this.logger.log({
+      event: 'telegram_sent_code_diagnostic',
+      source,
+      responseKind,
+      rawType: sentCode?.type?.className ?? null,
+      delivery: sentCode ? this.mapDeliveryType(sentCode.type) : null,
+      codeLength: sentCode ? this.sentCodeLength(sentCode.type) : null,
+      rawNextType: sentCode?.nextType?.className ?? null,
+      nextDelivery: sentCode?.nextType ? this.mapNextDeliveryType(sentCode.nextType) : null,
+      timeoutSeconds: sentCode?.timeout ?? null,
+    });
+  }
+
+  private sentCodeLength(type: Api.auth.TypeSentCodeType): number | null {
+    const withLength = type as { length?: number };
+    return typeof withLength.length === 'number' ? withLength.length : null;
   }
 
   private describeSentCode(sentCode: Api.auth.SentCode): { phoneCodeHash: string } & TelegramSentCodeMeta {

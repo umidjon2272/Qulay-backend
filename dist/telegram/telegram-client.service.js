@@ -8,6 +8,7 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
+var TeleprotoTelegramClientService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.TeleprotoTelegramClientService = exports.TelegramClientService = void 0;
 const common_1 = require("@nestjs/common");
@@ -19,9 +20,10 @@ const telegram_errors_1 = require("./telegram.errors");
 class TelegramClientService {
 }
 exports.TelegramClientService = TelegramClientService;
-let TeleprotoTelegramClientService = class TeleprotoTelegramClientService extends TelegramClientService {
+let TeleprotoTelegramClientService = TeleprotoTelegramClientService_1 = class TeleprotoTelegramClientService extends TelegramClientService {
     constructor(config) {
         super();
+        this.logger = new common_1.Logger(TeleprotoTelegramClientService_1.name);
         this.apiId = config.get('telegram.apiId');
         this.apiHash = config.get('telegram.apiHash');
     }
@@ -46,6 +48,7 @@ let TeleprotoTelegramClientService = class TeleprotoTelegramClientService extend
         try {
             await client.connect();
             const result = await client.invoke(new teleproto_1.Api.auth.ResendCode({ phoneNumber: input.phoneNumber, phoneCodeHash: input.phoneCodeHash }));
+            this.logSentCodeDiagnostic('resend_code', result);
             if (!(result instanceof teleproto_1.Api.auth.SentCode))
                 throw new telegram_errors_1.TelegramAdapterError('UNAVAILABLE');
             return { session: this.savedSession(client), ...this.describeSentCode(result) };
@@ -75,9 +78,35 @@ let TeleprotoTelegramClientService = class TeleprotoTelegramClientService extend
                 return this.requestSentCode(client, phoneNumber);
             throw error;
         }
+        this.logSentCodeDiagnostic('send_code', result);
         if (!(result instanceof teleproto_1.Api.auth.SentCode))
             throw new telegram_errors_1.TelegramAdapterError('UNAVAILABLE');
         return result;
+    }
+    logSentCodeDiagnostic(source, result) {
+        const responseKind = result instanceof teleproto_1.Api.auth.SentCode
+            ? 'auth.SentCode'
+            : result instanceof teleproto_1.Api.auth.SentCodeSuccess
+                ? 'auth.SentCodeSuccess'
+                : result instanceof teleproto_1.Api.auth.SentCodePaymentRequired
+                    ? 'auth.SentCodePaymentRequired'
+                    : 'other';
+        const sentCode = result instanceof teleproto_1.Api.auth.SentCode ? result : null;
+        this.logger.log({
+            event: 'telegram_sent_code_diagnostic',
+            source,
+            responseKind,
+            rawType: sentCode?.type?.className ?? null,
+            delivery: sentCode ? this.mapDeliveryType(sentCode.type) : null,
+            codeLength: sentCode ? this.sentCodeLength(sentCode.type) : null,
+            rawNextType: sentCode?.nextType?.className ?? null,
+            nextDelivery: sentCode?.nextType ? this.mapNextDeliveryType(sentCode.nextType) : null,
+            timeoutSeconds: sentCode?.timeout ?? null,
+        });
+    }
+    sentCodeLength(type) {
+        const withLength = type;
+        return typeof withLength.length === 'number' ? withLength.length : null;
     }
     describeSentCode(sentCode) {
         return {
@@ -258,7 +287,7 @@ let TeleprotoTelegramClientService = class TeleprotoTelegramClientService extend
     }
 };
 exports.TeleprotoTelegramClientService = TeleprotoTelegramClientService;
-exports.TeleprotoTelegramClientService = TeleprotoTelegramClientService = __decorate([
+exports.TeleprotoTelegramClientService = TeleprotoTelegramClientService = TeleprotoTelegramClientService_1 = __decorate([
     (0, common_1.Injectable)(),
     __metadata("design:paramtypes", [config_1.ConfigService])
 ], TeleprotoTelegramClientService);

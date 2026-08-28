@@ -82,6 +82,53 @@ describe('TeleprotoTelegramClientService', () => {
     await expect(service.beginLogin('+998901234567')).rejects.toMatchObject({ code: 'FLOOD_WAIT', retryAfterSeconds: 30 });
   });
 
+  describe('production diagnostics', () => {
+    let logSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      logSpy = jest.spyOn((service as unknown as { logger: { log: (...args: unknown[]) => void } }).logger, 'log');
+    });
+
+    it('logs safe diagnostic fields for a normal SentCode response, without any PII', async () => {
+      invokeSpy.mockResolvedValueOnce(new Api.auth.SentCode({
+        type: new Api.auth.SentCodeTypeApp({ length: 5 }),
+        phoneCodeHash: 'app-hash',
+        nextType: new Api.auth.CodeTypeSms(),
+        timeout: 60,
+      }));
+      await service.beginLogin('+998901234567');
+      expect(logSpy).toHaveBeenCalledWith(expect.objectContaining({
+        event: 'telegram_sent_code_diagnostic',
+        source: 'send_code',
+        responseKind: 'auth.SentCode',
+        rawType: 'auth.SentCodeTypeApp',
+        delivery: 'telegram_app',
+        codeLength: 5,
+        rawNextType: 'auth.CodeTypeSms',
+        nextDelivery: 'sms',
+        timeoutSeconds: 60,
+      }));
+      const loggedText = JSON.stringify(logSpy.mock.calls);
+      expect(loggedText).not.toContain('app-hash');
+      expect(loggedText).not.toContain('+998901234567');
+      expect(loggedText).not.toContain('test-hash');
+    });
+
+    it('logs SentCodeSuccess and SentCodePaymentRequired as their real response kind instead of silently swallowing them', async () => {
+      invokeSpy.mockResolvedValueOnce(new Api.auth.SentCodeSuccess({
+        authorization: new Api.auth.Authorization({ user: {} as never }),
+      }));
+      await expect(service.beginLogin('+998901234567')).rejects.toMatchObject({ code: 'UNAVAILABLE' });
+      expect(logSpy).toHaveBeenCalledWith(expect.objectContaining({ responseKind: 'auth.SentCodeSuccess', rawType: null, delivery: null }));
+
+      invokeSpy.mockResolvedValueOnce(new Api.auth.SentCodePaymentRequired({
+        storeProduct: 'x', phoneCodeHash: 'hash', supportEmailAddress: 'a@b.com', supportEmailSubject: 's', premiumDays: 1, currency: 'USD', amount: 100n as never,
+      }));
+      await expect(service.beginLogin('+998901234567')).rejects.toMatchObject({ code: 'UNAVAILABLE' });
+      expect(logSpy).toHaveBeenCalledWith(expect.objectContaining({ responseKind: 'auth.SentCodePaymentRequired', rawType: null }));
+    });
+  });
+
   describe('verifyCode', () => {
     it('signs in and returns the connected account on a correct code', async () => {
       invokeSpy.mockResolvedValueOnce(undefined);

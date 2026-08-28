@@ -62,6 +62,7 @@ export declare abstract class TelegramClientService {
     }>;
 }
 export declare class TeleprotoTelegramClientService extends TelegramClientService {
+    private readonly logger;
     private readonly apiId;
     private readonly apiHash;
     constructor(config: ConfigService);
@@ -72,6 +73,8 @@ export declare class TeleprotoTelegramClientService extends TelegramClientServic
         phoneCodeHash: string;
     }): Promise<TelegramSentCode>;
     private requestSentCode;
+    private logSentCodeDiagnostic;
+    private sentCodeLength;
     private describeSentCode;
     private mapDeliveryType;
     private mapNextDeliveryType;
