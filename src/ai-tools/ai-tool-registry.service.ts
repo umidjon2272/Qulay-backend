@@ -340,7 +340,9 @@ export class AIToolRegistryService {
     this.register(this.base<SendTelegramMessageToolInput, unknown>({
       name: 'send_telegram_message', description: 'Send a Telegram message after explicit user confirmation.', category: AIToolCategory.SYSTEM,
       sideEffect: 'WRITE', validate: SendTelegramMessageToolInput, inputSchema: schema({ peerId: { type: 'string' }, text: { type: 'string' } }, ['peerId', 'text']),
-      authorize: async (context, input) => { await this.telegramIntegrationService.prepareTelegramMessage(context.userId, input.peerId, input.text); },
+      // Preview itself resolves/validates the recipient. Confirmed execution also
+      // resolves the peer inside sendMessage(), so a separate authorize hook here
+      // would open a second Telegram client and resolve the same peer twice.
       preview: (context, input) => this.telegramIntegrationService.prepareTelegramMessage(context.userId, input.peerId, input.text),
       execute: (context, input) => this.telegramIntegrationService.sendMessage(context.userId, input.peerId, input.text),
     }));

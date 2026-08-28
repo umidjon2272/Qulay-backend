@@ -91,15 +91,19 @@ describe('AI tool registry and execution', () => {
     })).rejects.toThrow('Invalid tool input');
   });
 
-  it('registers Telegram search as read-only and send as confirmation-aware write', async () => {
-    telegramIntegrationService.search.mockResolvedValue([{ peerId: 'user:1' }]);
-    telegramIntegrationService.prepareTelegramMessage.mockResolvedValue({ recipient: { displayName: 'Aziz' }, text: 'Hello', confirmationRequired: true });
-    telegramIntegrationService.sendMessage.mockResolvedValue({ messageId: '7', recipient: { displayName: 'Aziz', type: 'USER' } });
+  it('registers Telegram search as read-only and send as confirmation-aware write without duplicate preview resolution', async () => {
+    telegramIntegrationService.search.mockResolvedValue([{ peerId: '-1001234567890' }]);
+    telegramIntegrationService.prepareTelegramMessage.mockResolvedValue({ recipient: { peerId: '-1001234567890', displayName: 'Aziz' }, text: 'Hello', confirmationRequired: true });
+    telegramIntegrationService.sendMessage.mockResolvedValue({ messageId: '7', recipient: { peerId: '-1001234567890', displayName: 'Aziz', type: 'USER' } });
 
     expect(registry.get('search_telegram_chats')).toMatchObject({ sideEffect: 'READ', requiresConfirmation: false });
-    await expect(execution.execute('user-a', { tool: 'send_telegram_message', input: { peerId: 'user:1', text: 'Hello' }, confirmed: false })).resolves.toMatchObject({ status: 'confirmation_required' });
+    await expect(execution.execute('user-a', { tool: 'send_telegram_message', input: { peerId: '-1001234567890', text: 'Hello' }, confirmed: false })).resolves.toMatchObject({ status: 'confirmation_required' });
+    expect(telegramIntegrationService.prepareTelegramMessage).toHaveBeenCalledTimes(1);
     expect(telegramIntegrationService.sendMessage).not.toHaveBeenCalled();
-    await expect(execution.execute('user-a', { tool: 'send_telegram_message', input: { peerId: 'user:1', text: 'Hello' }, confirmed: true })).resolves.toMatchObject({ status: 'success', data: { messageId: '7' } });
+
+    await expect(execution.execute('user-a', { tool: 'send_telegram_message', input: { peerId: '-1001234567890', text: 'Hello' }, confirmed: true })).resolves.toMatchObject({ status: 'success', data: { messageId: '7' } });
+    expect(telegramIntegrationService.prepareTelegramMessage).toHaveBeenCalledTimes(1);
+    expect(telegramIntegrationService.sendMessage).toHaveBeenCalledWith('user-a', '-1001234567890', 'Hello');
   });
 
   it('registers Google reads without confirmation and Calendar writes with confirmation', async () => {
