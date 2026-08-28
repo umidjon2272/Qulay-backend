@@ -3,7 +3,7 @@ import { Request, Response } from 'express';
 import { AuthenticatedUser } from '../auth/types/jwt-payload.type';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
-import { CalendarEventsQueryDto, CreateCalendarEventDto, DriveFilesQueryDto, GoogleCallbackQueryDto, UpdateCalendarEventDto } from './dto/google.dto';
+import { CalendarEventsQueryDto, CreateCalendarEventDto, DriveFilesQueryDto, UpdateCalendarEventDto } from './dto/google.dto';
 import { GoogleAuthService } from './google-auth.service';
 import { GoogleCalendarService } from './google-calendar.service';
 import { GoogleDriveService } from './google-drive.service';
@@ -23,23 +23,40 @@ export class GoogleController {
   }
 
   @Get('callback')
-  async callback(@Query() query: GoogleCallbackQueryDto, @Req() request: Request, @Res() response: Response) {
+  async callback(
+    @Query('code') rawCode: unknown,
+    @Query('state') rawState: unknown,
+    @Query('error') rawError: unknown,
+    @Query('error_description') rawErrorDescription: unknown,
+    @Req() request: Request,
+    @Res() response: Response,
+  ) {
     const frontend = this.config.getOrThrow<string>('frontendUrl').split(',')[0].trim();
+    const code = this.providerQueryValue(rawCode, 4096);
+    const state = this.providerQueryValue(rawState, 4096);
+    const oauthError = this.providerQueryValue(rawError, 200);
+    const errorDescriptionPresent = Boolean(this.providerQueryValue(rawErrorDescription, 2000));
     if (!this.rateLimiter.isAllowed('google-callback-ip', request.ip ?? 'unknown', 30, 60 * 1000)) {
       throw new RateLimitException('Too many OAuth callback attempts. Try again later.');
     }
     try {
-      await this.auth.callback(query.code, query.state, query.error);
+      await this.auth.callback(code, state, oauthError);
       const target = `${frontend}/settings?tab=integrations&integration=google&status=connected`;
       this.logger.log({ event: 'google_oauth_redirect', success: true, target });
       return response.redirect(target);
     } catch (error) {
       const mapped = mapGoogleError(error);
-      const reason = query.error === 'access_denied' ? 'cancelled' : mapped.getStatus() === 400 ? 'invalid' : 'unavailable';
+      const reason = oauthError === 'access_denied' ? 'cancelled' : mapped.getStatus() === 400 ? 'invalid' : 'unavailable';
       const target = `${frontend}/settings?tab=integrations&integration=google&status=error&reason=${reason}`;
-      this.logger.warn({ event: 'google_oauth_redirect', success: false, target, reason });
+      this.logger.warn({ event: 'google_oauth_redirect', success: false, target, reason, errorDescriptionPresent });
       return response.redirect(target);
     }
+  }
+
+  /** Picks only scalar provider values used by the callback. Every other Google query field is ignored. */
+  private providerQueryValue(value: unknown, maxLength: number): string | undefined {
+    if (typeof value !== 'string' || value.length === 0 || value.length > maxLength) return undefined;
+    return value;
   }
 
   @Get('status') @UseGuards(JwtAuthGuard)

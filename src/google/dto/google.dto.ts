@@ -6,17 +6,6 @@ import {
 const dateTimeWithTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/;
 const trim = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value);
 
-export class GoogleCallbackQueryDto {
-  @IsOptional() @IsString() @MaxLength(4096) code?: string;
-  @IsOptional() @IsString() @MaxLength(4096) state?: string;
-  @IsOptional() @IsString() @MaxLength(200) error?: string;
-  @IsOptional() @IsString() @MaxLength(2000) error_description?: string;
-  /** Provider metadata only. Never used for authorization or token exchange. */
-  @IsOptional() @IsString() @MaxLength(4096) scope?: string;
-  /** Provider metadata only. The configured OAuth endpoints remain authoritative. */
-  @IsOptional() @IsString() @MaxLength(2048) iss?: string;
-}
-
 export class CalendarEventsQueryDto {
   @IsISO8601({ strict: true, strictSeparator: true }) @Matches(dateTimeWithTimezone) from!: string;
   @IsISO8601({ strict: true, strictSeparator: true }) @Matches(dateTimeWithTimezone) to!: string;

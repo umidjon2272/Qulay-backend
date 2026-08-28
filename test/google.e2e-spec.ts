@@ -39,7 +39,7 @@ describe('Google integration API security', () => {
   it('accepts Google callback metadata but passes only trusted callback inputs to auth handling', async () => {
     await request(app.getHttpServer())
       .get('/api/integrations/google/callback')
-      .query({ code: 'oauth-code', state: 'valid-signed-state', scope: 'openid email calendar', iss: 'https://accounts.google.com' })
+      .query({ code: 'oauth-code', state: 'valid-signed-state', scope: 'openid email calendar', iss: 'https://accounts.google.com', authuser: '0', prompt: 'consent' })
       .expect(302)
       .expect('Location', 'http://localhost:5173/settings?tab=integrations&integration=google&status=connected');
 
@@ -63,15 +63,22 @@ describe('Google integration API security', () => {
       .expect('Location', 'http://localhost:5173/settings?tab=integrations&integration=google&status=error&reason=cancelled');
   });
 
-  it('continues to reject unknown callback fields under strict global validation', async () => {
-    const callsBefore = googleAuth.callback.mock.calls.length;
+  it('ignores arbitrary provider metadata without treating it as callback application input', async () => {
     await request(app.getHttpServer())
       .get('/api/integrations/google/callback')
-      .query({ code: 'oauth-code', state: 'valid-signed-state', redirect_uri: 'https://evil.example/callback' })
-      .expect(400)
-      .expect(({ body }: { body: { message: string[] } }) => {
-        expect(body.message).toContain('property redirect_uri should not exist');
-      });
-    expect(googleAuth.callback).toHaveBeenCalledTimes(callsBefore);
+      .query({ code: 'oauth-code', state: 'valid-signed-state', random_google_metadata: 'ignored', hd: 'example.com', redirect_uri: 'https://evil.example/callback' })
+      .expect(302)
+      .expect('Location', 'http://localhost:5173/settings?tab=integrations&integration=google&status=connected');
+    expect(googleAuth.callback).toHaveBeenLastCalledWith('oauth-code', 'valid-signed-state', undefined);
+  });
+
+  it('handles a missing authorization code through the safe callback error redirect', async () => {
+    googleAuth.callback.mockRejectedValueOnce(new GoogleAdapterError('INVALID_REQUEST'));
+    await request(app.getHttpServer())
+      .get('/api/integrations/google/callback')
+      .query({ state: 'valid-signed-state', authuser: '0', prompt: 'none' })
+      .expect(302)
+      .expect('Location', 'http://localhost:5173/settings?tab=integrations&integration=google&status=error&reason=invalid');
+    expect(googleAuth.callback).toHaveBeenLastCalledWith(undefined, 'valid-signed-state', undefined);
   });
 });

@@ -68,11 +68,16 @@ describe('Google integration adapters', () => {
     expect(url.searchParams.get('scope')).toContain('openid');
     expect(url.searchParams.get('redirect_uri')).toBe('https://qulay-backend-y98j.onrender.com/api/integrations/google/callback');
     const state = url.searchParams.get('state')!;
+    const logSpy = jest.spyOn((auth as unknown as { logger: { log: (...args: unknown[]) => void } }).logger, 'log');
+    const warnSpy = jest.spyOn((auth as unknown as { logger: { warn: (...args: unknown[]) => void } }).logger, 'warn');
     const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue({ ok: true, status: 200, json: async () => ({ access_token: 'access-token', expires_in: 3600, scope: 'openid email https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.metadata.readonly' }) } as Response);
 
     await auth.callback('one-use-code', state);
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify([...logSpy.mock.calls, ...warnSpy.mock.calls])).not.toContain('one-use-code');
+    expect(JSON.stringify([...logSpy.mock.calls, ...warnSpy.mock.calls])).not.toContain('access-token');
+    expect(JSON.stringify([...logSpy.mock.calls, ...warnSpy.mock.calls])).not.toContain('old-refresh');
     expect(prisma.user.findUnique).toHaveBeenCalledWith({ where: { id: 'user-1' }, select: { id: true } });
     expect(prisma.googleConnection.upsert).toHaveBeenCalledWith(expect.objectContaining({
       where: { userId: 'user-1' },
