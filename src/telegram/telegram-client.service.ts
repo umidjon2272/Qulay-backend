@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Api, TelegramClient } from 'teleproto';
 import { getPeerId } from 'teleproto/Utils';
+import { returnBigInt } from 'teleproto/Helpers';
 import { StringSession } from 'teleproto/sessions';
 import { classifyTelegramError, TelegramAdapterError } from './telegram.errors';
 
@@ -205,9 +206,41 @@ export class TeleprotoTelegramClientService extends TelegramClientService {
   }
 
   async search(session: string, query: string, limit: number): Promise<TelegramPeer[]> {
-    const peers = await this.listPeers(session, Math.min(100, Math.max(20, limit * 4)));
-    const normalized = query.replace(/^@/, '').toLocaleLowerCase();
-    return peers.filter((peer) => `${peer.displayName} ${peer.username ?? ''}`.toLocaleLowerCase().includes(normalized)).slice(0, limit);
+    const client = this.client(session);
+    const normalized = this.normalizeQuery(query);
+    if (!normalized) return [];
+    try {
+      await client.connect();
+      await client.getMe();
+
+      const candidates: TelegramPeer[] = [];
+      const dialogs = await client.getDialogs({ limit: Math.min(100, Math.max(20, limit * 4)) });
+      candidates.push(...dialogs.filter((dialog) => Boolean(dialog.entity)).map((dialog) => this.toPeer(dialog)));
+
+      const contacts = await client.invoke(new Api.contacts.GetContacts({ hash: returnBigInt(0) }));
+      if ('users' in contacts) candidates.push(...contacts.users.map((entity) => this.entityToPeer(entity)));
+
+      if (this.isUsernameLike(normalized)) {
+        try {
+          const resolved = await client.invoke(new Api.contacts.ResolveUsername({ username: normalized }));
+          candidates.push(...resolved.users.map((entity) => this.entityToPeer(entity)));
+          candidates.push(...resolved.chats.map((entity) => this.entityToPeer(entity)));
+        } catch (error) {
+          const classified = classifyTelegramError(error);
+          if (classified.code !== 'PEER_NOT_FOUND') throw classified;
+        }
+        const global = await client.invoke(new Api.contacts.Search({ q: normalized, limit }));
+        candidates.push(...global.users.map((entity) => this.entityToPeer(entity)));
+        candidates.push(...global.chats.map((entity) => this.entityToPeer(entity)));
+      }
+
+      return this.rankAndDeduplicate(candidates, normalized).slice(0, limit);
+    } catch (error) {
+      if (error instanceof TelegramAdapterError) throw error;
+      throw classifyTelegramError(error);
+    } finally {
+      await client.disconnect().catch(() => undefined);
+    }
   }
 
   async chats(session: string, search: string | undefined, limit: number): Promise<TelegramPeer[]> {
@@ -292,5 +325,36 @@ export class TeleprotoTelegramClientService extends TelegramClientService {
       username: entity.username ? `@${entity.username}` : null,
       lastActivity: dialog.date ? new Date(dialog.date * 1000).toISOString() : null,
     };
+  }
+
+  private entityToPeer(entity: Api.TypeUser | Api.TypeChat): TelegramPeer {
+    const value = entity as unknown as { firstName?: string; lastName?: string; title?: string; username?: string; className?: string };
+    const className = value.className ?? '';
+    const type: TelegramPeer['type'] = className.includes('User') ? 'USER' : className.includes('Channel') ? 'CHANNEL' : 'GROUP';
+    return {
+      peerId: getPeerId(entity as any, true),
+      type,
+      displayName: value.title ?? ([value.firstName, value.lastName].filter(Boolean).join(' ') || 'Telegram chat'),
+      username: value.username ? `@${value.username}` : null,
+      lastActivity: null,
+    };
+  }
+
+  private normalizeQuery(query: string): string {
+    return query.trim().replace(/^@+/, '').normalize('NFKC').toLocaleLowerCase();
+  }
+
+  private isUsernameLike(query: string): boolean {
+    return /^[a-z0-9_]{5,32}$/i.test(query);
+  }
+
+  private rankAndDeduplicate(peers: TelegramPeer[], query: string): TelegramPeer[] {
+    const matches = peers.filter((peer) => {
+      const name = peer.displayName.trim().normalize('NFKC').toLocaleLowerCase();
+      const username = this.normalizeQuery(peer.username ?? '');
+      return name.includes(query) || username.includes(query);
+    });
+    matches.sort((left, right) => Number(this.normalizeQuery(right.username ?? '') === query) - Number(this.normalizeQuery(left.username ?? '') === query));
+    return [...new Map(matches.map((peer) => [peer.peerId, peer])).values()];
   }
 }

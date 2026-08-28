@@ -1,5 +1,6 @@
 import { ConfigService } from '@nestjs/config';
 import { Api, TelegramClient } from 'teleproto';
+import { returnBigInt } from 'teleproto/Helpers';
 import { TeleprotoTelegramClientService } from '../src/telegram/telegram-client.service';
 
 describe('TeleprotoTelegramClientService', () => {
@@ -154,6 +155,96 @@ describe('TeleprotoTelegramClientService', () => {
     it('classifies an expired code as PHONE_CODE_EXPIRED -> EXPIRED_CODE', async () => {
       invokeSpy.mockRejectedValueOnce(Object.assign(new Error('PHONE_CODE_EXPIRED'), { errorMessage: 'PHONE_CODE_EXPIRED' }));
       await expect(service.verifyCode({ session: '', phoneNumber: '+998901234567', phoneCodeHash: 'hash-1', code: '11111' })).rejects.toMatchObject({ code: 'EXPIRED_CODE' });
+    });
+  });
+
+  describe('search', () => {
+    const user = (id: number, firstName: string, username?: string) => new Api.User({
+      id: returnBigInt(id), firstName, username,
+    });
+    const dialog = (entity: Api.User) => ({ entity, isUser: true, isChannel: false, name: entity.firstName });
+
+    beforeEach(() => {
+      jest.spyOn(TelegramClient.prototype, 'getMe').mockResolvedValue(user(999, 'Owner') as never);
+      jest.spyOn(TelegramClient.prototype, 'getDialogs').mockResolvedValue([] as never);
+      invokeSpy.mockImplementation(async (request: unknown) => {
+        if (request instanceof Api.contacts.GetContacts) return { users: [] };
+        if (request instanceof Api.contacts.ResolveUsername) throw Object.assign(new Error('USERNAME_NOT_OCCUPIED'), { errorMessage: 'USERNAME_NOT_OCCUPIED' });
+        if (request instanceof Api.contacts.Search) return { users: [], chats: [] };
+        throw new Error('Unexpected request');
+      });
+    });
+
+    it.each(['Aziz', 'aziz'])('finds a Telegram contact by case-insensitive display name: %s', async (query) => {
+      invokeSpy.mockImplementation(async (request: unknown) => {
+        if (request instanceof Api.contacts.GetContacts) return { users: [user(1, 'Aziz')] };
+        throw new Error('Unexpected request');
+      });
+      await expect(service.search('', query, 10)).resolves.toEqual([
+        expect.objectContaining({ peerId: '1', displayName: 'Aziz', username: null, type: 'USER' }),
+      ]);
+    });
+
+    it('supports partial names and returns multiple candidates', async () => {
+      jest.spyOn(TelegramClient.prototype, 'getDialogs').mockResolvedValue([
+        dialog(user(1, 'Azizbek')), dialog(user(2, 'Aziz Aka')),
+      ] as never);
+      const result = await service.search('', 'Aziz', 10);
+      expect(result.map((peer) => peer.displayName)).toEqual(['Azizbek', 'Aziz Aka']);
+    });
+
+    it('falls back from dialogs to contacts', async () => {
+      invokeSpy.mockImplementation(async (request: unknown) => {
+        if (request instanceof Api.contacts.GetContacts) return { users: [user(3, 'Aziz Contact')] };
+        throw new Error('Unexpected request');
+      });
+      await expect(service.search('', 'Aziz', 10)).resolves.toEqual([
+        expect.objectContaining({ peerId: '3', displayName: 'Aziz Contact' }),
+      ]);
+    });
+
+    it.each(['@umidwwu', 'umidwwu'])('resolves an exact username with or without @: %s', async (query) => {
+      invokeSpy.mockImplementation(async (request: unknown) => {
+        if (request instanceof Api.contacts.GetContacts) return { users: [] };
+        if (request instanceof Api.contacts.ResolveUsername) return { users: [user(4, 'Aziz', 'UmidWwu')], chats: [] };
+        if (request instanceof Api.contacts.Search) return { users: [], chats: [] };
+        throw new Error('Unexpected request');
+      });
+      await expect(service.search('', query, 10)).resolves.toEqual([
+        expect.objectContaining({ peerId: '4', username: '@UmidWwu' }),
+      ]);
+    });
+
+    it('falls back from contacts and resolve to Telegram global search', async () => {
+      invokeSpy.mockImplementation(async (request: unknown) => {
+        if (request instanceof Api.contacts.GetContacts) return { users: [] };
+        if (request instanceof Api.contacts.ResolveUsername) throw Object.assign(new Error('USERNAME_NOT_OCCUPIED'), { errorMessage: 'USERNAME_NOT_OCCUPIED' });
+        if (request instanceof Api.contacts.Search) return { users: [user(5, 'Umid', 'umidwwu')], chats: [] };
+        throw new Error('Unexpected request');
+      });
+      await expect(service.search('', 'umidwwu', 10)).resolves.toEqual([
+        expect.objectContaining({ peerId: '5', username: '@umidwwu' }),
+      ]);
+    });
+
+    it('deduplicates the same peerId across dialogs and contacts', async () => {
+      const aziz = user(6, 'Aziz', 'aziz_user');
+      jest.spyOn(TelegramClient.prototype, 'getDialogs').mockResolvedValue([dialog(aziz)] as never);
+      invokeSpy.mockImplementation(async (request: unknown) => {
+        if (request instanceof Api.contacts.GetContacts) return { users: [aziz] };
+        throw new Error('Unexpected request');
+      });
+      await expect(service.search('', 'Aziz', 10)).resolves.toHaveLength(1);
+    });
+
+    it('does not classify a transient RPC failure as an expired session', async () => {
+      jest.spyOn(TelegramClient.prototype, 'getDialogs').mockRejectedValue(Object.assign(new Error('TIMEOUT'), { errorMessage: 'TIMEOUT' }));
+      await expect(service.search('', 'Aziz', 10)).rejects.toMatchObject({ code: 'UNAVAILABLE' });
+    });
+
+    it('classifies AUTH_KEY_UNREGISTERED as an expired session', async () => {
+      jest.spyOn(TelegramClient.prototype, 'getMe').mockRejectedValue(Object.assign(new Error('AUTH_KEY_UNREGISTERED'), { errorMessage: 'AUTH_KEY_UNREGISTERED' }));
+      await expect(service.search('', 'Aziz', 10)).rejects.toMatchObject({ code: 'CONNECTION_EXPIRED' });
     });
   });
 });

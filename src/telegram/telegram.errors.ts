@@ -41,7 +41,9 @@ export function classifyTelegramError(error: unknown): TelegramAdapterError {
   if (message.includes('PHONE_CODE_EXPIRED') || message.includes('PHONE_CODE_HASH_EMPTY')) return new TelegramAdapterError('EXPIRED_CODE');
   if (message.includes('PHONE_CODE_INVALID') || message.includes('PHONE_CODE_EMPTY')) return new TelegramAdapterError('INVALID_CODE');
   if (message.includes('PASSWORD_HASH_INVALID')) return new TelegramAdapterError('WRONG_PASSWORD');
-  if (message.includes('AUTH_KEY_UNREGISTERED') || message.includes('SESSION_REVOKED')) return new TelegramAdapterError('CONNECTION_EXPIRED');
+  if (['AUTH_KEY_UNREGISTERED', 'SESSION_REVOKED', 'USER_DEACTIVATED', 'AUTH_KEY_INVALID'].some((code) => message.includes(code))) {
+    return new TelegramAdapterError('CONNECTION_EXPIRED');
+  }
   if (message.includes('PEER_ID_INVALID') || message.includes('USERNAME_NOT_OCCUPIED')) return new TelegramAdapterError('PEER_NOT_FOUND');
   return new TelegramAdapterError('UNAVAILABLE');
 }

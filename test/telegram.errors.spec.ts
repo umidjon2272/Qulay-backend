@@ -27,4 +27,14 @@ describe('Telegram error mapping', () => {
     expect(classifyTelegramError({ errorMessage: 'FLOOD_WAIT_30' })).toMatchObject({ code: 'FLOOD_WAIT', retryAfterSeconds: 30 });
     expect(classifyTelegramError({ errorMessage: 'PHONE_CODE_EXPIRED' }).code).toBe('EXPIRED_CODE');
   });
+
+  it.each(['AUTH_KEY_UNREGISTERED', 'SESSION_REVOKED', 'USER_DEACTIVATED', 'AUTH_KEY_INVALID'])(
+    'treats %s as confirmed session invalidation',
+    (errorMessage) => expect(classifyTelegramError({ errorMessage }).code).toBe('CONNECTION_EXPIRED'),
+  );
+
+  it.each(['TIMEOUT', 'NETWORK_ERROR', 'RPC_CALL_FAIL', 'PEER_ID_INVALID', 'FLOOD_WAIT_12'])(
+    'does not treat %s as session invalidation',
+    (errorMessage) => expect(classifyTelegramError({ errorMessage }).code).not.toBe('CONNECTION_EXPIRED'),
+  );
 });
