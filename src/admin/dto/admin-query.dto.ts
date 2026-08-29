@@ -1,6 +1,6 @@
 import { Type } from 'class-transformer';
-import { IsDateString, IsEnum, IsIn, IsInt, IsOptional, IsString, IsUUID, Max, Min } from 'class-validator';
-import { UserRole, UserStatus } from '@prisma/client';
+import { IsBoolean, IsDateString, IsEnum, IsIn, IsInt, IsOptional, IsString, IsUUID, Max, MaxLength, Min, MinLength } from 'class-validator';
+import { FileSource, FileStorageProvider, UserRole, UserStatus } from '@prisma/client';
 
 export class AdminRangeQueryDto {
   @IsOptional()
@@ -38,4 +38,20 @@ export class AdminStatusDto {
 export class AdminRoleDto {
   @IsEnum(UserRole)
   role!: UserRole;
+}
+
+
+export class UpdateAdminPlatformSettingsDto {
+  @IsOptional() @IsString() @MinLength(2) @MaxLength(100) name?: string;
+  @IsOptional() @IsBoolean() registrationEnabled?: boolean;
+}
+
+
+export class AdminFilesQueryDto {
+  @IsOptional() @IsString() search?: string;
+  @IsOptional() @IsEnum(FileSource) source?: FileSource;
+  @IsOptional() @IsEnum(FileStorageProvider) storageProvider?: FileStorageProvider;
+  @IsOptional() @IsIn(['image', 'pdf', 'document']) type?: 'image' | 'pdf' | 'document';
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) page = 1;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) limit = 20;
 }

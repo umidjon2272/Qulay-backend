@@ -83,6 +83,48 @@ describe('Admin console API', () => {
     });
   });
 
+  it('updates platform settings, audits them, and enforces registration availability', async () => {
+    await request(app.getHttpServer())
+      .patch('/api/admin/settings/platform')
+      .set('Authorization', `Bearer ${userToken}`)
+      .send({ registrationEnabled: false })
+      .expect(403);
+
+    await request(app.getHttpServer())
+      .patch('/api/admin/settings/platform')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ name: 'Qulay AI Test', registrationEnabled: false })
+      .expect(200)
+      .expect((response) => {
+        expect(response.body).toEqual(expect.objectContaining({ name: 'Qulay AI Test', registrationEnabled: false }));
+      });
+
+    await request(app.getHttpServer())
+      .get('/api/admin/settings')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(200)
+      .expect((response) => {
+        expect(response.body.platform).toEqual(expect.objectContaining({ name: 'Qulay AI Test', registrationEnabled: false }));
+      });
+
+    await request(app.getHttpServer())
+      .post('/api/auth/register')
+      .send({ email: `admin-test-disabled-${Date.now()}@example.com`, password, firstName: 'Blocked', lastName: 'Signup' })
+      .expect(403);
+
+    const audit = await prisma.activityLog.findFirst({
+      where: { userId: adminId, action: 'ADMIN_SETTINGS_UPDATED', entityType: 'PLATFORM_SETTINGS' },
+      orderBy: { createdAt: 'desc' },
+    });
+    expect(audit).toBeTruthy();
+
+    await request(app.getHttpServer())
+      .patch('/api/admin/settings/platform')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ name: 'Qulay AI', registrationEnabled: true })
+      .expect(200);
+  });
+
   async function register(label: string) {
     return (await request(app.getHttpServer()).post('/api/auth/register').send({ email: `admin-test-${label}-${Date.now()}-${Math.random().toString(16).slice(2)}@example.com`, password, firstName: label, lastName: 'Test' }).expect(201)).body as { user: { id: string; email: string }; accessToken: string; refreshToken: string };
   }

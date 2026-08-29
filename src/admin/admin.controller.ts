@@ -5,7 +5,7 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
-import { AdminActivityQueryDto, AdminRangeQueryDto, AdminRoleDto, AdminStatusDto, AdminUsersQueryDto } from './dto/admin-query.dto';
+import { AdminActivityQueryDto, AdminFilesQueryDto, AdminRangeQueryDto, AdminRoleDto, AdminStatusDto, AdminUsersQueryDto, UpdateAdminPlatformSettingsDto } from './dto/admin-query.dto';
 import { AdminService } from './admin.service';
 
 @Controller('admin')
@@ -22,8 +22,10 @@ export class AdminController {
   @Get('usage') usage(@Query() query: AdminRangeQueryDto) { return this.admin.getUsage(query.range); }
   @Get('integrations') integrations() { return this.admin.getIntegrations(); }
   @Get('notifications') notifications(@Query() query: AdminRangeQueryDto) { return this.admin.getNotifications(query.range); }
-  @Get('files') files(@Query() query: AdminUsersQueryDto) { return this.admin.getFiles(query.page, query.limit); }
+  @Patch('notifications/:id/retry') retryNotification(@CurrentUser() actor: AuthenticatedUser, @Param('id', new ParseUUIDPipe({ version: '4' })) id: string) { return this.admin.retryNotification(actor.sub, id); }
+  @Get('files') files(@Query() query: AdminFilesQueryDto) { return this.admin.getFiles(query); }
   @Get('activity') activity(@Query() query: AdminActivityQueryDto) { return this.admin.getActivity(query); }
   @Get('system') system() { return this.admin.getSystemHealth(); }
   @Get('settings') settings() { return this.admin.getSettings(); }
+  @Patch('settings/platform') platformSettings(@CurrentUser() actor: AuthenticatedUser, @Body() dto: UpdateAdminPlatformSettingsDto) { return this.admin.updatePlatformSettings(actor.sub, dto); }
 }

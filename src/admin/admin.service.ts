@@ -6,7 +6,7 @@ import { paginationMeta, paginationSkip } from '../common/dto/pagination-query.d
 import { NotificationWorkerService } from '../notifications/notification-worker.service';
 import { SECURITY_LIMITS } from '../common/security/security-limits.constants';
 import { PrismaService } from '../prisma/prisma.service';
-import { AdminActivityQueryDto, AdminUsersQueryDto } from './dto/admin-query.dto';
+import { AdminActivityQueryDto, AdminFilesQueryDto, AdminUsersQueryDto, UpdateAdminPlatformSettingsDto } from './dto/admin-query.dto';
 
 type CountRow = { status: string; _count: { _all: number } };
 type TrendRow = { date: Date; count: bigint };
@@ -127,8 +127,46 @@ export class AdminService {
   }
 
   async getIntegrations() {
-    const [telegram, google] = await Promise.all([this.prisma.telegramConnection.groupBy({ by: ['status'], _count: { _all: true } }), this.prisma.googleConnection.groupBy({ by: ['status'], _count: { _all: true } })]);
-    return { telegram: this.integrationSummary(telegram, ['CONNECTED', 'DISCONNECTED', 'ERROR']), google: this.integrationSummary(google, ['CONNECTED', 'DISCONNECTED', 'ERROR']) };
+    const warningSince = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const [telegram, google, telegramRecent, googleRecent, telegramLastValidated, googleConnected] = await Promise.all([
+      this.prisma.telegramConnection.groupBy({ by: ['status'], _count: { _all: true } }),
+      this.prisma.googleConnection.groupBy({ by: ['status'], _count: { _all: true } }),
+      this.prisma.telegramConnection.findMany({
+        where: { OR: [{ status: TelegramConnectionStatus.ERROR }, { lastErrorAt: { gte: warningSince } }] },
+        orderBy: { lastErrorAt: 'desc' },
+        take: 10,
+        select: { userId: true, status: true, lastErrorAt: true, lastErrorCode: true, user: { select: { email: true } } },
+      }),
+      this.prisma.googleConnection.findMany({
+        where: { status: GoogleConnectionStatus.ERROR },
+        orderBy: { updatedAt: 'desc' },
+        take: 10,
+        select: { userId: true, status: true, updatedAt: true, user: { select: { email: true } } },
+      }),
+      this.prisma.telegramConnection.aggregate({ _max: { lastValidatedAt: true } }),
+      this.prisma.googleConnection.findMany({ where: { status: GoogleConnectionStatus.CONNECTED }, select: { scopes: true } }),
+    ]);
+
+    const calendarScopes = ['https://www.googleapis.com/auth/calendar.readonly', 'https://www.googleapis.com/auth/calendar.events'];
+    const driveScopes = ['https://www.googleapis.com/auth/drive.metadata.readonly', 'https://www.googleapis.com/auth/drive.readonly'];
+    const hasAll = (scopes: string[], required: string[]) => required.every((scope) => scopes.includes(scope));
+
+    return {
+      telegram: this.integrationSummary(telegram, ['CONNECTED', 'DISCONNECTED', 'ERROR']),
+      google: this.integrationSummary(google, ['CONNECTED', 'DISCONNECTED', 'ERROR']),
+      health: {
+        telegram: { lastValidatedAt: telegramLastValidated._max.lastValidatedAt?.toISOString() ?? null, recentErrors: telegramRecent.length },
+        google: {
+          calendarEnabledUsers: googleConnected.filter((row) => hasAll(row.scopes, calendarScopes)).length,
+          driveEnabledUsers: googleConnected.filter((row) => hasAll(row.scopes, driveScopes)).length,
+          recentErrors: googleRecent.length,
+        },
+      },
+      warnings: [
+        ...telegramRecent.map((row) => ({ provider: 'telegram' as const, userId: row.userId, email: row.user.email, code: row.lastErrorCode ?? row.status, at: row.lastErrorAt?.toISOString() ?? null })),
+        ...googleRecent.map((row) => ({ provider: 'google' as const, userId: row.userId, email: row.user.email, code: row.status, at: row.updatedAt.toISOString() })),
+      ].sort((a, b) => String(b.at ?? '').localeCompare(String(a.at ?? ''))).slice(0, 10),
+    };
   }
 
   async getNotifications(range = 30) {
@@ -138,10 +176,43 @@ export class AdminService {
     return { range, totals: { total: Object.values(counts).reduce((a, b) => a + (b as number), 0), pending: counts.pending ?? 0, sent: counts.sent ?? 0, failed: counts.failed ?? 0, read: counts.read ?? 0 }, failed: failed.map(({ user, ...row }) => ({ ...row, user: { id: user.id, email: user.email } })) };
   }
 
-  async getFiles(page = 1, limit = 20) {
-    const where: Prisma.UserFileWhereInput = { status: { not: FileStatus.DELETED } };
-    const [rows, total, size, byMime, byProvider, bySource] = await Promise.all([this.prisma.userFile.findMany({ where, orderBy: { createdAt: 'desc' }, skip: paginationSkip(page, limit), take: Math.min(limit, 100), select: { id: true, originalName: true, mimeType: true, extension: true, sizeBytes: true, source: true, storageProvider: true, createdAt: true, user: { select: { id: true, email: true, firstName: true, lastName: true } } } }), this.prisma.userFile.count({ where }), this.prisma.userFile.aggregate({ where, _sum: { sizeBytes: true } }), this.prisma.userFile.groupBy({ by: ['mimeType'], where, _count: { _all: true } }), this.prisma.userFile.groupBy({ by: ['storageProvider'], where, _count: { _all: true } }), this.prisma.userFile.groupBy({ by: ['source'], where, _count: { _all: true } })]);
-    return { stats: { total, totalSizeBytes: Number(size._sum.sizeBytes ?? 0n), images: byMime.filter((x) => x.mimeType.startsWith('image/')).reduce((a, x) => a + x._count._all, 0), pdfs: byMime.find((x) => x.mimeType === 'application/pdf')?._count._all ?? 0, docs: byMime.filter((x) => x.mimeType.includes('word') || x.mimeType.includes('document') || x.mimeType.includes('text/')).reduce((a, x) => a + x._count._all, 0), storage: Object.fromEntries(byProvider.map((x) => [x.storageProvider.toLowerCase(), x._count._all])), sources: Object.fromEntries(bySource.map((x) => [x.source.toLowerCase(), x._count._all])) }, items: rows.map((row) => ({ ...row, sizeBytes: Number(row.sizeBytes), owner: row.user, user: undefined })), meta: paginationMeta(page, limit, total) };
+  async retryNotification(actorId: string, id: string) {
+    const notification = await this.prisma.notification.findUnique({ where: { id }, select: { id: true, status: true, userId: true } });
+    if (!notification) throw new NotFoundException('Notification was not found');
+    if (notification.status !== NotificationStatus.FAILED) throw new ForbiddenException('Only failed notifications can be retried');
+    const updated = await this.prisma.notification.update({
+      where: { id },
+      data: { status: NotificationStatus.PENDING, retryCount: 0, nextRetryAt: new Date(), failedAt: null, claimedAt: null, claimToken: null },
+      select: { id: true, status: true },
+    });
+    await this.activityLog.record({ userId: actorId, action: 'ADMIN_NOTIFICATION_RETRY', entityType: 'NOTIFICATION', entityId: id, metadata: { targetUserId: notification.userId } });
+    return updated;
+  }
+
+  async getFiles(query: AdminFilesQueryDto) {
+    const typeFilter: Prisma.UserFileWhereInput | undefined = query.type === 'image'
+      ? { mimeType: { startsWith: 'image/' } }
+      : query.type === 'pdf'
+        ? { mimeType: 'application/pdf' }
+        : query.type === 'document'
+          ? { OR: [{ mimeType: { contains: 'word' } }, { mimeType: { contains: 'document' } }, { mimeType: { startsWith: 'text/' } }] }
+          : undefined;
+    const where: Prisma.UserFileWhereInput = {
+      status: { not: FileStatus.DELETED },
+      source: query.source,
+      storageProvider: query.storageProvider,
+      originalName: query.search?.trim() ? { contains: query.search.trim(), mode: 'insensitive' } : undefined,
+      ...(typeFilter ?? {}),
+    };
+    const [rows, total, size, byMime, byProvider, bySource] = await Promise.all([
+      this.prisma.userFile.findMany({ where, orderBy: { createdAt: 'desc' }, skip: paginationSkip(query.page, query.limit), take: Math.min(query.limit, 100), select: { id: true, originalName: true, mimeType: true, extension: true, sizeBytes: true, source: true, storageProvider: true, createdAt: true, user: { select: { id: true, email: true, firstName: true, lastName: true } } } }),
+      this.prisma.userFile.count({ where }),
+      this.prisma.userFile.aggregate({ where, _sum: { sizeBytes: true } }),
+      this.prisma.userFile.groupBy({ by: ['mimeType'], where, _count: { _all: true } }),
+      this.prisma.userFile.groupBy({ by: ['storageProvider'], where, _count: { _all: true } }),
+      this.prisma.userFile.groupBy({ by: ['source'], where, _count: { _all: true } }),
+    ]);
+    return { stats: { total, totalSizeBytes: Number(size._sum.sizeBytes ?? 0n), images: byMime.filter((x) => x.mimeType.startsWith('image/')).reduce((a, x) => a + x._count._all, 0), pdfs: byMime.find((x) => x.mimeType === 'application/pdf')?._count._all ?? 0, docs: byMime.filter((x) => x.mimeType.includes('word') || x.mimeType.includes('document') || x.mimeType.startsWith('text/')).reduce((a, x) => a + x._count._all, 0), storage: Object.fromEntries(byProvider.map((x) => [x.storageProvider.toLowerCase(), x._count._all])), sources: Object.fromEntries(bySource.map((x) => [x.source.toLowerCase(), x._count._all])) }, items: rows.map((row) => ({ ...row, sizeBytes: Number(row.sizeBytes), owner: row.user, user: undefined })), meta: paginationMeta(query.page, query.limit, total) };
   }
 
   async getActivity(query: AdminActivityQueryDto) {
@@ -164,12 +235,13 @@ export class AdminService {
     const worker = this.worker.config();
     const health = await this.getSystemHealth();
     const toMinutes = (ms: number) => Math.round(ms / 60_000);
+    const platform = await this.prisma.platformSettings.findUnique({ where: { id: 'global' } });
     return {
       platform: {
-        name: 'Qulay AI',
+        name: platform?.name ?? 'Qulay AI',
         defaultUserStatus: UserStatus.ACTIVE,
-        registrationEnabled: true,
-        maintenanceMode: false,
+        registrationEnabled: platform?.registrationEnabled ?? true,
+        updatedAt: platform?.updatedAt?.toISOString() ?? null,
       },
       security: {
         accessTokenExpiresIn: jwt.accessExpiresIn,
@@ -193,6 +265,30 @@ export class AdminService {
       },
       system: { environment: health.environment, version: health.version, api: health.api, database: health.database },
     };
+  }
+
+  async updatePlatformSettings(actorId: string, dto: UpdateAdminPlatformSettingsDto) {
+    const current = await this.prisma.platformSettings.findUnique({ where: { id: 'global' } });
+    const updated = await this.prisma.platformSettings.upsert({
+      where: { id: 'global' },
+      create: { id: 'global', name: dto.name?.trim() || 'Qulay AI', registrationEnabled: dto.registrationEnabled ?? true, updatedBy: actorId },
+      update: {
+        ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
+        ...(dto.registrationEnabled !== undefined ? { registrationEnabled: dto.registrationEnabled } : {}),
+        updatedBy: actorId,
+      },
+    });
+    await this.activityLog.record({
+      userId: actorId,
+      action: 'ADMIN_SETTINGS_UPDATED',
+      entityType: 'PLATFORM_SETTINGS',
+      entityId: updated.id,
+      metadata: {
+        changed: [dto.name !== undefined ? 'name' : null, dto.registrationEnabled !== undefined ? 'registrationEnabled' : null].filter(Boolean),
+        previousRegistrationEnabled: current?.registrationEnabled ?? true,
+      },
+    });
+    return { name: updated.name, registrationEnabled: updated.registrationEnabled, updatedAt: updated.updatedAt.toISOString() };
   }
 
   private daysAgo(days: number) { return new Date(Date.now() - Math.max(1, Math.min(days, 90)) * 86_400_000); }

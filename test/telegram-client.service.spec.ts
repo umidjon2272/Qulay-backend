@@ -83,53 +83,6 @@ describe('TeleprotoTelegramClientService', () => {
     await expect(service.beginLogin('+998901234567')).rejects.toMatchObject({ code: 'FLOOD_WAIT', retryAfterSeconds: 30 });
   });
 
-  describe('production diagnostics', () => {
-    let logSpy: jest.SpyInstance;
-
-    beforeEach(() => {
-      logSpy = jest.spyOn((service as unknown as { logger: { log: (...args: unknown[]) => void } }).logger, 'log');
-    });
-
-    it('logs safe diagnostic fields for a normal SentCode response, without any PII', async () => {
-      invokeSpy.mockResolvedValueOnce(new Api.auth.SentCode({
-        type: new Api.auth.SentCodeTypeApp({ length: 5 }),
-        phoneCodeHash: 'app-hash',
-        nextType: new Api.auth.CodeTypeSms(),
-        timeout: 60,
-      }));
-      await service.beginLogin('+998901234567');
-      expect(logSpy).toHaveBeenCalledWith(expect.objectContaining({
-        event: 'telegram_sent_code_diagnostic',
-        source: 'send_code',
-        responseKind: 'auth.SentCode',
-        rawType: 'auth.SentCodeTypeApp',
-        delivery: 'telegram_app',
-        codeLength: 5,
-        rawNextType: 'auth.CodeTypeSms',
-        nextDelivery: 'sms',
-        timeoutSeconds: 60,
-      }));
-      const loggedText = JSON.stringify(logSpy.mock.calls);
-      expect(loggedText).not.toContain('app-hash');
-      expect(loggedText).not.toContain('+998901234567');
-      expect(loggedText).not.toContain('test-hash');
-    });
-
-    it('logs SentCodeSuccess and SentCodePaymentRequired as their real response kind instead of silently swallowing them', async () => {
-      invokeSpy.mockResolvedValueOnce(new Api.auth.SentCodeSuccess({
-        authorization: new Api.auth.Authorization({ user: {} as never }),
-      }));
-      await expect(service.beginLogin('+998901234567')).rejects.toMatchObject({ code: 'UNAVAILABLE' });
-      expect(logSpy).toHaveBeenCalledWith(expect.objectContaining({ responseKind: 'auth.SentCodeSuccess', rawType: null, delivery: null }));
-
-      invokeSpy.mockResolvedValueOnce(new Api.auth.SentCodePaymentRequired({
-        storeProduct: 'x', phoneCodeHash: 'hash', supportEmailAddress: 'a@b.com', supportEmailSubject: 's', premiumDays: 1, currency: 'USD', amount: 100n as never,
-      }));
-      await expect(service.beginLogin('+998901234567')).rejects.toMatchObject({ code: 'UNAVAILABLE' });
-      expect(logSpy).toHaveBeenCalledWith(expect.objectContaining({ responseKind: 'auth.SentCodePaymentRequired', rawType: null }));
-    });
-  });
-
   describe('verifyCode', () => {
     it('signs in and returns the connected account on a correct code', async () => {
       invokeSpy.mockResolvedValueOnce(undefined);
@@ -155,6 +108,42 @@ describe('TeleprotoTelegramClientService', () => {
     it('classifies an expired code as PHONE_CODE_EXPIRED -> EXPIRED_CODE', async () => {
       invokeSpy.mockRejectedValueOnce(Object.assign(new Error('PHONE_CODE_EXPIRED'), { errorMessage: 'PHONE_CODE_EXPIRED' }));
       await expect(service.verifyCode({ session: '', phoneNumber: '+998901234567', phoneCodeHash: 'hash-1', code: '11111' })).rejects.toMatchObject({ code: 'EXPIRED_CODE' });
+    });
+  });
+
+  describe('peer resolution for sending', () => {
+    const user = (id: number, firstName: string, username?: string) => new Api.User({
+      id: returnBigInt(id), firstName, username,
+    });
+
+    it('resolves a saved contact even when it is not in recent dialogs', async () => {
+      const contact = user(77, 'Aziz Contact', 'aziz_contact');
+      jest.spyOn(TelegramClient.prototype, 'getDialogs').mockResolvedValue([] as never);
+      invokeSpy.mockImplementation(async (request: unknown) => {
+        if (request instanceof Api.contacts.GetContacts) return { users: [contact] };
+        throw new Error('Unexpected request');
+      });
+      jest.spyOn(TelegramClient.prototype, 'sendMessage').mockResolvedValue({ id: 991 } as never);
+
+      await expect(service.resolvePeer('', '77')).resolves.toEqual(expect.objectContaining({ peerId: '77', displayName: 'Aziz Contact' }));
+      await expect(service.sendMessage('', '77', 'Salom')).resolves.toEqual(expect.objectContaining({ messageId: '991', recipient: expect.objectContaining({ peerId: '77' }) }));
+    });
+
+    it('keeps a short-lived entity reference from username/global search so the selected result can be sent', async () => {
+      const remote = user(88, 'Remote Aziz', 'remoteaziz');
+      jest.spyOn(TelegramClient.prototype, 'getMe').mockResolvedValue(user(999, 'Owner') as never);
+      jest.spyOn(TelegramClient.prototype, 'getDialogs').mockResolvedValue([] as never);
+      invokeSpy.mockImplementation(async (request: unknown) => {
+        if (request instanceof Api.contacts.GetContacts) return { users: [] };
+        if (request instanceof Api.contacts.ResolveUsername) return { users: [remote], chats: [] };
+        if (request instanceof Api.contacts.Search) return { users: [], chats: [] };
+        throw new Error('Unexpected request');
+      });
+      jest.spyOn(TelegramClient.prototype, 'sendMessage').mockResolvedValue({ id: 992 } as never);
+
+      const matches = await service.search('', '@remoteaziz', 10);
+      expect(matches).toEqual([expect.objectContaining({ peerId: '88', username: '@remoteaziz' })]);
+      await expect(service.sendMessage('', '88', 'Salom')).resolves.toEqual(expect.objectContaining({ messageId: '992', recipient: expect.objectContaining({ peerId: '88' }) }));
     });
   });
 

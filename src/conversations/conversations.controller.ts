@@ -5,6 +5,7 @@ import {
   Get,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   Query,
   UseGuards,
@@ -17,6 +18,7 @@ import { MessageQueryDto } from '../messages/dto/message-query.dto';
 import { MessagesService } from '../messages/messages.service';
 import { CreateConversationDto } from './dto/create-conversation.dto';
 import { ConversationQueryDto } from './dto/conversation-query.dto';
+import { UpdateConversationDto } from './dto/update-conversation.dto';
 import { ConversationsService } from './conversations.service';
 
 @Controller('conversations')
@@ -58,6 +60,11 @@ export class ConversationsController {
   @Get(':id')
   get(@CurrentUser() user: AuthenticatedUser, @Param('id', new ParseUUIDPipe({ version: '4' })) id: string) {
     return this.conversationsService.getForUser(user.sub, id);
+  }
+
+  @Patch(':id')
+  update(@CurrentUser() user: AuthenticatedUser, @Param('id', new ParseUUIDPipe({ version: '4' })) id: string, @Body() dto: UpdateConversationDto) {
+    return this.conversationsService.updateForUser(user.sub, id, dto);
   }
 
   @Delete(':id')

@@ -45,6 +45,8 @@ export class AuthService {
   ) {}
 
   async register(dto: RegisterDto): Promise<AuthResponse> {
+    const platform = await this.prisma.platformSettings.findUnique({ where: { id: 'global' } });
+    if (platform?.registrationEnabled === false) throw new ForbiddenException('Registration is currently disabled');
     const startedAt = this.timestamp();
     this.logTiming('register:start', startedAt);
     const email = this.normalizeEmail(dto.email);

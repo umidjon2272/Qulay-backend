@@ -4,6 +4,7 @@ import { paginationMeta, paginationSkip } from '../common/dto/pagination-query.d
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateConversationDto } from './dto/create-conversation.dto';
 import { ConversationQueryDto } from './dto/conversation-query.dto';
+import { UpdateConversationDto } from './dto/update-conversation.dto';
 
 @Injectable()
 export class ConversationsService {
@@ -49,6 +50,15 @@ export class ConversationsService {
     return this.prisma.conversation.create({
       data: { userId, title: dto.title ?? 'New conversation' },
     });
+  }
+
+  async updateForUser(userId: string, id: string, dto: UpdateConversationDto) {
+    await this.getForUser(userId, id);
+    return this.prisma.conversation.update({
+      where: { id },
+      data: { title: dto.title },
+      include: { _count: { select: { messages: true } } },
+    }).then(({ _count, ...conversation }) => ({ ...conversation, messageCount: _count.messages }));
   }
 
   async deleteForUser(userId: string, id: string): Promise<{ message: string }> {

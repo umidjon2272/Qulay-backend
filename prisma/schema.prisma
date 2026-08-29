@@ -573,3 +573,12 @@ model NotificationPreference {
 
   @@index([userId])
 }
+
+model PlatformSettings {
+  id                  String   @id @default("global")
+  name                String   @default("Qulay AI") @db.VarChar(100)
+  registrationEnabled Boolean  @default(true)
+  updatedBy           String?  @db.Uuid
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}

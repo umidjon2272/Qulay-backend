@@ -1,9 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Api, TelegramClient } from 'teleproto';
 import { getPeerId } from 'teleproto/Utils';
 import { returnBigInt } from 'teleproto/Helpers';
 import { StringSession } from 'teleproto/sessions';
+import { createHash } from 'node:crypto';
 import { classifyTelegramError, TelegramAdapterError } from './telegram.errors';
 
 export type TelegramAccount = { telegramUserId: string; username: string | null; displayName: string | null; phoneNumber: string | null };
@@ -39,7 +40,7 @@ export abstract class TelegramClientService {
 
 @Injectable()
 export class TeleprotoTelegramClientService extends TelegramClientService {
-  private readonly logger = new Logger(TeleprotoTelegramClientService.name);
+  private readonly peerEntityCache = new Map<string, { entity: Api.TypeUser | Api.TypeChat; peer: TelegramPeer; expiresAt: number }>();
   private readonly apiId: number | undefined;
   private readonly apiHash: string | undefined;
 
@@ -68,7 +69,6 @@ export class TeleprotoTelegramClientService extends TelegramClientService {
     try {
       await client.connect();
       const result = await client.invoke(new Api.auth.ResendCode({ phoneNumber: input.phoneNumber, phoneCodeHash: input.phoneCodeHash }));
-      this.logSentCodeDiagnostic('resend_code', result);
       if (!(result instanceof Api.auth.SentCode)) throw new TelegramAdapterError('UNAVAILABLE');
       return { session: this.savedSession(client), ...this.describeSentCode(result) };
     } catch (error) {
@@ -94,41 +94,8 @@ export class TeleprotoTelegramClientService extends TelegramClientService {
       if ((error as { errorMessage?: string }).errorMessage === 'AUTH_RESTART') return this.requestSentCode(client, phoneNumber);
       throw error;
     }
-    this.logSentCodeDiagnostic('send_code', result);
     if (!(result instanceof Api.auth.SentCode)) throw new TelegramAdapterError('UNAVAILABLE');
     return result;
-  }
-
-  /**
-   * TEMPORARY production diagnostic (safe fields only — no phone number, phoneCodeHash, code, API credentials, or session).
-   * Logs the raw Telegram response verbatim so we can see exactly what Telegram sent, without inferring or forcing anything.
-   * Remove once the "code never arrives" investigation is closed.
-   */
-  private logSentCodeDiagnostic(source: 'send_code' | 'resend_code', result: Api.auth.TypeSentCode): void {
-    const responseKind = result instanceof Api.auth.SentCode
-      ? 'auth.SentCode'
-      : result instanceof Api.auth.SentCodeSuccess
-        ? 'auth.SentCodeSuccess'
-        : result instanceof Api.auth.SentCodePaymentRequired
-          ? 'auth.SentCodePaymentRequired'
-          : 'other';
-    const sentCode = result instanceof Api.auth.SentCode ? result : null;
-    this.logger.log({
-      event: 'telegram_sent_code_diagnostic',
-      source,
-      responseKind,
-      rawType: sentCode?.type?.className ?? null,
-      delivery: sentCode ? this.mapDeliveryType(sentCode.type) : null,
-      codeLength: sentCode ? this.sentCodeLength(sentCode.type) : null,
-      rawNextType: sentCode?.nextType?.className ?? null,
-      nextDelivery: sentCode?.nextType ? this.mapNextDeliveryType(sentCode.nextType) : null,
-      timeoutSeconds: sentCode?.timeout ?? null,
-    });
-  }
-
-  private sentCodeLength(type: Api.auth.TypeSentCodeType): number | null {
-    const withLength = type as { length?: number };
-    return typeof withLength.length === 'number' ? withLength.length : null;
   }
 
   private describeSentCode(sentCode: Api.auth.SentCode): { phoneCodeHash: string } & TelegramSentCodeMeta {
@@ -229,23 +196,41 @@ export class TeleprotoTelegramClientService extends TelegramClientService {
 
       const candidates: TelegramPeer[] = [];
       const dialogs = await client.getDialogs({ limit: Math.min(100, Math.max(20, limit * 4)) });
-      candidates.push(...dialogs.filter((dialog) => Boolean(dialog.entity)).map((dialog) => this.toPeer(dialog)));
+      for (const dialog of dialogs) {
+        if (!dialog.entity) continue;
+        const entity = dialog.entity as Api.TypeUser | Api.TypeChat;
+        const peer = this.toPeer(dialog);
+        candidates.push(peer);
+        this.rememberPeerEntity(session, entity, peer);
+      }
 
       const contacts = await client.invoke(new Api.contacts.GetContacts({ hash: returnBigInt(0) }));
-      if ('users' in contacts) candidates.push(...contacts.users.map((entity) => this.entityToPeer(entity)));
+      if ('users' in contacts) {
+        for (const entity of contacts.users) {
+          const peer = this.entityToPeer(entity);
+          candidates.push(peer);
+          this.rememberPeerEntity(session, entity, peer);
+        }
+      }
 
       if (this.isUsernameLike(normalized)) {
         try {
           const resolved = await client.invoke(new Api.contacts.ResolveUsername({ username: normalized }));
-          candidates.push(...resolved.users.map((entity) => this.entityToPeer(entity)));
-          candidates.push(...resolved.chats.map((entity) => this.entityToPeer(entity)));
+          for (const entity of [...resolved.users, ...resolved.chats]) {
+            const peer = this.entityToPeer(entity);
+            candidates.push(peer);
+            this.rememberPeerEntity(session, entity, peer);
+          }
         } catch (error) {
           const classified = classifyTelegramError(error);
           if (classified.code !== 'PEER_NOT_FOUND') throw classified;
         }
         const global = await client.invoke(new Api.contacts.Search({ q: normalized, limit }));
-        candidates.push(...global.users.map((entity) => this.entityToPeer(entity)));
-        candidates.push(...global.chats.map((entity) => this.entityToPeer(entity)));
+        for (const entity of [...global.users, ...global.chats]) {
+          const peer = this.entityToPeer(entity);
+          candidates.push(peer);
+          this.rememberPeerEntity(session, entity, peer);
+        }
       }
 
       return this.rankAndDeduplicate(candidates, normalized).slice(0, limit);
@@ -265,21 +250,28 @@ export class TeleprotoTelegramClientService extends TelegramClientService {
   }
 
   async resolvePeer(session: string, peerId: string): Promise<TelegramPeer> {
-    const peers = await this.listPeers(session, 100);
-    const peer = peers.find((item) => item.peerId === peerId);
-    if (!peer) throw new TelegramAdapterError('PEER_NOT_FOUND');
-    return peer;
+    const client = this.client(session);
+    try {
+      await client.connect();
+      const resolved = await this.findPeerEntity(client, session, peerId);
+      if (!resolved) throw new TelegramAdapterError('PEER_NOT_FOUND');
+      return resolved.peer;
+    } catch (error) {
+      if (error instanceof TelegramAdapterError) throw error;
+      throw classifyTelegramError(error);
+    } finally {
+      await client.disconnect().catch(() => undefined);
+    }
   }
 
   async sendMessage(session: string, peerId: string, text: string): Promise<{ messageId: string; recipient: TelegramPeer }> {
     const client = this.client(session);
     try {
       await client.connect();
-      const dialogs = await client.getDialogs({ limit: 100 });
-      const dialog = dialogs.find((item) => item.entity && getPeerId(item.entity, true) === peerId);
-      if (!dialog?.entity) throw new TelegramAdapterError('PEER_NOT_FOUND');
-      const message = await client.sendMessage(dialog.entity, { message: text });
-      return { messageId: String(message.id), recipient: this.toPeer(dialog) };
+      const resolved = await this.findPeerEntity(client, session, peerId);
+      if (!resolved) throw new TelegramAdapterError('PEER_NOT_FOUND');
+      const message = await client.sendMessage(resolved.entity, { message: text });
+      return { messageId: String(message.id), recipient: resolved.peer };
     } catch (error) {
       if (error instanceof TelegramAdapterError) throw error;
       const classified = classifyTelegramError(error);
@@ -287,6 +279,54 @@ export class TeleprotoTelegramClientService extends TelegramClientService {
     } finally {
       await client.disconnect().catch(() => undefined);
     }
+  }
+
+
+  private async findPeerEntity(client: TelegramClient, session: string, peerId: string): Promise<{ entity: Api.TypeUser | Api.TypeChat; peer: TelegramPeer } | null> {
+    const dialogs = await client.getDialogs({ limit: 100 });
+    const dialog = dialogs.find((item) => item.entity && getPeerId(item.entity, true) === peerId);
+    if (dialog?.entity) {
+      const entity = dialog.entity as Api.TypeUser | Api.TypeChat;
+      const peer = this.toPeer(dialog);
+      this.rememberPeerEntity(session, entity, peer);
+      return { entity, peer };
+    }
+
+    const contacts = await client.invoke(new Api.contacts.GetContacts({ hash: returnBigInt(0) }));
+    if ('users' in contacts) {
+      const entity = contacts.users.find((item) => getPeerId(item as any, true) === peerId);
+      if (entity) {
+        const peer = this.entityToPeer(entity);
+        this.rememberPeerEntity(session, entity, peer);
+        return { entity, peer };
+      }
+    }
+
+    const cached = this.getRememberedPeerEntity(session, peerId);
+    return cached ? { entity: cached.entity, peer: cached.peer } : null;
+  }
+
+  private rememberPeerEntity(session: string, entity: Api.TypeUser | Api.TypeChat, peer?: TelegramPeer): void {
+    const normalizedPeer = peer ?? this.entityToPeer(entity);
+    this.peerEntityCache.set(this.peerCacheKey(session, normalizedPeer.peerId), { entity, peer: normalizedPeer, expiresAt: Date.now() + 10 * 60_000 });
+    if (this.peerEntityCache.size > 500) {
+      const now = Date.now();
+      for (const [key, value] of this.peerEntityCache) if (value.expiresAt <= now) this.peerEntityCache.delete(key);
+      while (this.peerEntityCache.size > 500) this.peerEntityCache.delete(this.peerEntityCache.keys().next().value as string);
+    }
+  }
+
+  private getRememberedPeerEntity(session: string, peerId: string): { entity: Api.TypeUser | Api.TypeChat; peer: TelegramPeer } | null {
+    const key = this.peerCacheKey(session, peerId);
+    const cached = this.peerEntityCache.get(key);
+    if (!cached) return null;
+    if (cached.expiresAt <= Date.now()) { this.peerEntityCache.delete(key); return null; }
+    return { entity: cached.entity, peer: cached.peer };
+  }
+
+  private peerCacheKey(session: string, peerId: string): string {
+    const sessionFingerprint = createHash('sha256').update(session).digest('hex').slice(0, 16);
+    return `${sessionFingerprint}:${peerId}`;
   }
 
   private client(session: string): TelegramClient {
