@@ -22,6 +22,12 @@ export class GoogleController {
     try { return { url: this.auth.connectUrl(user.sub) }; } catch (error) { throw mapGoogleError(error); }
   }
 
+  // Keep the documented endpoint while retaining connect-url for older clients.
+  @Get('auth-url') @UseGuards(JwtAuthGuard)
+  authUrl(@CurrentUser() user: AuthenticatedUser) {
+    return this.connectUrl(user);
+  }
+
   @Get('callback')
   async callback(
     @Query('code') rawCode: unknown,
@@ -41,7 +47,7 @@ export class GoogleController {
     }
     try {
       await this.auth.callback(code, state, oauthError);
-      const target = `${frontend}/settings?tab=integrations&integration=google&status=connected`;
+      const target = `${frontend}/settings?tab=integrations&integration=google&status=connected&success=true`;
       this.logger.log({ event: 'google_oauth_redirect', success: true, target });
       return response.redirect(target);
     } catch (error) {

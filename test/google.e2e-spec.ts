@@ -33,6 +33,7 @@ describe('Google integration API security', () => {
 
   it('blocks unauthenticated Google endpoints and accepts no raw token response', async () => {
     await request(app.getHttpServer()).get('/api/integrations/google/connect-url').expect(401);
+    await request(app.getHttpServer()).get('/api/integrations/google/auth-url').expect(401);
     await request(app.getHttpServer()).get('/api/integrations/google/status').expect(401);
   });
 
@@ -41,7 +42,7 @@ describe('Google integration API security', () => {
       .get('/api/integrations/google/callback')
       .query({ code: 'oauth-code', state: 'valid-signed-state', scope: 'openid email calendar', iss: 'https://accounts.google.com', authuser: '0', prompt: 'consent' })
       .expect(302)
-      .expect('Location', 'http://localhost:5173/settings?tab=integrations&integration=google&status=connected');
+      .expect('Location', 'http://localhost:5173/settings?tab=integrations&integration=google&status=connected&success=true');
 
     expect(googleAuth.callback).toHaveBeenLastCalledWith('oauth-code', 'valid-signed-state', undefined);
   });
@@ -60,7 +61,7 @@ describe('Google integration API security', () => {
       .get('/api/integrations/google/callback')
       .query({ error: 'access_denied', error_description: 'The user denied access', state: 'valid-signed-state' })
       .expect(302)
-      .expect('Location', 'http://localhost:5173/settings?tab=integrations&integration=google&status=error&reason=cancelled');
+      .expect('Location', 'http://localhost:5173/settings?tab=integrations&integration=google&status=cancelled&reason=cancelled');
   });
 
   it('ignores arbitrary provider metadata without treating it as callback application input', async () => {
@@ -68,7 +69,7 @@ describe('Google integration API security', () => {
       .get('/api/integrations/google/callback')
       .query({ code: 'oauth-code', state: 'valid-signed-state', random_google_metadata: 'ignored', hd: 'example.com', redirect_uri: 'https://evil.example/callback' })
       .expect(302)
-      .expect('Location', 'http://localhost:5173/settings?tab=integrations&integration=google&status=connected');
+      .expect('Location', 'http://localhost:5173/settings?tab=integrations&integration=google&status=connected&success=true');
     expect(googleAuth.callback).toHaveBeenLastCalledWith('oauth-code', 'valid-signed-state', undefined);
   });
 
