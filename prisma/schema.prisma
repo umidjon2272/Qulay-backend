@@ -346,6 +346,10 @@ model Meeting {
   reminderMinutesBefore Int           @default(15)
   status                MeetingStatus @default(SCHEDULED)
   contactId             String?       @db.Uuid
+  googleCalendarEventId String?       @db.VarChar(1024)
+  googleCalendarId      String?       @db.VarChar(200)
+  googleSyncedAt        DateTime?
+  googleSyncError       String?       @db.VarChar(100)
   createdAt             DateTime      @default(now())
   updatedAt             DateTime      @updatedAt
   user                  User          @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -354,6 +358,7 @@ model Meeting {
   @@index([userId, startsAt])
   @@index([userId, status])
   @@index([userId, contactId, startsAt])
+  @@unique([userId, googleCalendarEventId])
 }
 
 model Note {

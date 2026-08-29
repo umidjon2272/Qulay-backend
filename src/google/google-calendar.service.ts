@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ActivityLogService, ACTIVITY_ACTIONS } from '../activity-log/activity-log.service';
 import { GoogleApiClientService } from './google-api-client.service';
 import { GoogleAuthService } from './google-auth.service';
@@ -15,6 +15,7 @@ const eventPath = (calendarId: string, eventId?: string) => `https://www.googlea
 
 @Injectable()
 export class GoogleCalendarService {
+  private readonly logger = new Logger(GoogleCalendarService.name);
   constructor(private readonly auth: GoogleAuthService, private readonly api: GoogleApiClientService, private readonly activityLog: ActivityLogService) {}
 
   async list(userId: string, query: CalendarEventsQueryDto) {
@@ -34,7 +35,7 @@ export class GoogleCalendarService {
       const calendarId = dto.calendarId ?? 'primary';
       const event = await this.api.request<GoogleEvent>(eventPath(calendarId), token, { method: 'POST', resource: 'calendar', body: this.toGoogleEvent(dto) });
       const normalized = normalizeEvent(event);
-      await this.activityLog.record({ userId, action: ACTIVITY_ACTIONS.GOOGLE_CALENDAR_EVENT_CREATED, entityType: 'GOOGLE_CALENDAR_EVENT', metadata: { source: 'GOOGLE' } });
+      await this.recordActivity({ userId, action: ACTIVITY_ACTIONS.GOOGLE_CALENDAR_EVENT_CREATED });
       return normalized;
     } catch (error) { throw mapGoogleError(error); }
   }
@@ -47,7 +48,7 @@ export class GoogleCalendarService {
       const calendarId = dto.calendarId ?? 'primary';
       const event = await this.api.request<GoogleEvent>(eventPath(calendarId, eventId), token, { method: 'PATCH', resource: 'calendar', body: this.toGoogleEvent(dto) });
       const normalized = normalizeEvent(event);
-      await this.activityLog.record({ userId, action: ACTIVITY_ACTIONS.GOOGLE_CALENDAR_EVENT_UPDATED, entityType: 'GOOGLE_CALENDAR_EVENT', metadata: { source: 'GOOGLE' } });
+      await this.recordActivity({ userId, action: ACTIVITY_ACTIONS.GOOGLE_CALENDAR_EVENT_UPDATED });
       return normalized;
     } catch (error) { throw mapGoogleError(error); }
   }
@@ -56,7 +57,7 @@ export class GoogleCalendarService {
     try {
       const token = await this.auth.getAccessToken(userId);
       await this.api.request<unknown>(eventPath(calendarId, eventId), token, { method: 'DELETE', resource: 'calendar' });
-      await this.activityLog.record({ userId, action: ACTIVITY_ACTIONS.GOOGLE_CALENDAR_EVENT_DELETED, entityType: 'GOOGLE_CALENDAR_EVENT', entityId: undefined, metadata: { source: 'GOOGLE' } });
+      await this.recordActivity({ userId, action: ACTIVITY_ACTIONS.GOOGLE_CALENDAR_EVENT_DELETED });
       return { deleted: true, id: eventId };
     } catch (error) { throw mapGoogleError(error); }
   }
@@ -66,14 +67,22 @@ export class GoogleCalendarService {
     if (dto.title !== undefined) output.summary = dto.title;
     if (dto.description !== undefined) output.description = dto.description;
     if (dto.location !== undefined) output.location = dto.location;
-    if (dto.start !== undefined) output.start = { dateTime: dto.start };
-    if (dto.end !== undefined) output.end = { dateTime: dto.end };
+    if (dto.start !== undefined) output.start = { dateTime: dto.start, timeZone: 'Asia/Tashkent' };
+    if (dto.end !== undefined) output.end = { dateTime: dto.end, timeZone: 'Asia/Tashkent' };
     if (dto.attendees !== undefined) output.attendees = dto.attendees.map((email) => ({ email }));
     return output;
   }
 
   private assertPeriod(start: string, end: string): void {
     if (new Date(start).getTime() >= new Date(end).getTime()) throw new BadRequestException('start end dan oldin bo‘lishi kerak');
+  }
+
+  private async recordActivity(input: { userId: string; action: string }): Promise<void> {
+    try {
+      await this.activityLog.record({ ...input, entityType: 'GOOGLE_CALENDAR_EVENT', metadata: { source: 'GOOGLE' } });
+    } catch {
+      this.logger.warn({ event: 'google_calendar_activity_log_failed', action: input.action });
+    }
   }
 }
 
