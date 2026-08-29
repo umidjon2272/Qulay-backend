@@ -3,6 +3,7 @@ import { MemoryService } from '../src/memory/memory.service';
 
 describe('MemoryService', () => {
   const prisma = {
+    user: { findUnique: jest.fn(), update: jest.fn() },
     contact: { findFirst: jest.fn() },
     userMemory: {
       findMany: jest.fn(),
@@ -12,6 +13,7 @@ describe('MemoryService', () => {
       update: jest.fn(),
       updateMany: jest.fn(),
       delete: jest.fn(),
+      deleteMany: jest.fn(),
     },
   } as any;
   const activityLog = { record: jest.fn().mockResolvedValue(undefined) } as any;
@@ -19,6 +21,8 @@ describe('MemoryService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    prisma.user.findUnique.mockResolvedValue({ memoryEnabled: true });
+    prisma.userMemory.findFirst.mockResolvedValue(null);
     service = new MemoryService(prisma, activityLog);
   });
 

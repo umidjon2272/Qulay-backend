@@ -9,7 +9,9 @@ import {
   Post,
   Query,
   UseGuards,
+  Put,
 } from '@nestjs/common';
+import { IsBoolean } from 'class-validator';
 import { AuthenticatedUser } from '../auth/types/jwt-payload.type';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
@@ -17,6 +19,8 @@ import { CreateMemoryDto } from './dto/create-memory.dto';
 import { MemoryQueryDto } from './dto/memory-query.dto';
 import { UpdateMemoryDto } from './dto/update-memory.dto';
 import { MemoryService } from './memory.service';
+
+class MemoryPreferenceDto { @IsBoolean() enabled!: boolean; }
 
 @Controller('memories')
 @UseGuards(JwtAuthGuard)
@@ -32,6 +36,20 @@ export class MemoryController {
   create(@CurrentUser() user: AuthenticatedUser, @Body() dto: CreateMemoryDto) {
     return this.memoryService.createForUser(user.sub, dto);
   }
+
+  @Get('preference')
+  preference(@CurrentUser() user: AuthenticatedUser) { return this.memoryService.getPreference(user.sub); }
+
+  @Put('preference')
+  updatePreference(@CurrentUser() user: AuthenticatedUser, @Body() dto: MemoryPreferenceDto) {
+    return this.memoryService.setPreference(user.sub, dto.enabled);
+  }
+
+  @Get('export')
+  export(@CurrentUser() user: AuthenticatedUser) { return this.memoryService.exportForUser(user.sub); }
+
+  @Delete()
+  deleteAll(@CurrentUser() user: AuthenticatedUser) { return this.memoryService.deleteAllForUser(user.sub); }
 
   @Patch(':id')
   update(

@@ -39,17 +39,18 @@ export class AiAgentService {
     await this.prisma.conversation.update({ where: { id: conversation.id }, data: { updatedAt: new Date() } });
 
     const [user, memories, history] = await Promise.all([
-      this.prisma.user.findUnique({ where: { id: userId }, select: { firstName: true, lastName: true, timezone: true, language: true } }),
+      this.prisma.user.findUnique({ where: { id: userId }, select: { firstName: true, lastName: true, timezone: true, language: true, memoryEnabled: true } }),
       this.prisma.userMemory.findMany({ where: { userId, status: MemoryStatus.ACTIVE }, include: { contact: { select: { displayName: true } } }, orderBy: [{ isVerified: 'desc' }, { importance: 'desc' }, { updatedAt: 'desc' }], take: 30 }),
       this.prisma.message.findMany({ where: { conversationId: conversation.id }, orderBy: { createdAt: 'asc' }, take: 40 }),
     ]);
     if (!user) throw new NotFoundException('Foydalanuvchi topilmadi');
 
     const messages: ProviderMessage[] = [
-      { role: 'system', content: this.systemPrompt(user, memories) },
+      { role: 'system', content: this.systemPrompt(user, user.memoryEnabled ? memories : []) },
       ...history.filter((item) => item.role === MessageRole.USER || item.role === MessageRole.ASSISTANT).map((item) => ({ role: this.toProviderRole(item.role), content: item.content })),
     ];
-    const tools: ProviderTool[] = this.registry.getToolDefinitionsForModel().map((tool) => ({
+    const memoryTools = new Set(['save_memory', 'update_memory', 'delete_memory', 'get_relevant_memories']);
+    const tools: ProviderTool[] = this.registry.getToolDefinitionsForModel().filter((tool) => user.memoryEnabled || !memoryTools.has(tool.name)).map((tool) => ({
       type: 'function',
       function: { name: tool.name, description: `${tool.description}${tool.requiresConfirmation ? ' This action always requires explicit user confirmation.' : ''}`, parameters: tool.inputSchema },
     }));
@@ -132,7 +133,7 @@ export class AiAgentService {
     return this.prisma.conversation.create({ data: { userId, title: message.slice(0, 80) } });
   }
 
-  private systemPrompt(user: { firstName: string; lastName: string; timezone: string; language: string }, memories: Array<{ key: string; value: string; type: string; isVerified: boolean; confidence: number; contact: { displayName: string } | null }>) {
+  private systemPrompt(user: { firstName: string; lastName: string; timezone: string; language: string; memoryEnabled: boolean }, memories: Array<{ key: string; value: string; type: string; isVerified: boolean; confidence: number; contact: { displayName: string } | null }>) {
     const memoryLines = memories.map((memory) => `- [${memory.type}] ${memory.key}: ${memory.value}${memory.contact ? ` (${memory.contact.displayName})` : ''}${memory.isVerified ? ' [tasdiqlangan]' : ` [taxmin ${memory.confidence}%]`}`).join('\n');
     return `Siz Qulay AI — tadbirkorning shaxsiy ish agentisiz. Foydalanuvchi: ${user.firstName} ${user.lastName}. Til: ${user.language}. Vaqt zonasi: ${user.timezone}.
 Qoidalar:

@@ -189,6 +189,7 @@ model User {
   status              UserStatus           @default(ACTIVE)
   timezone            String               @default("UTC")
   language            String               @default("en")
+  memoryEnabled       Boolean              @default(true)
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
   refreshTokens       RefreshToken[]

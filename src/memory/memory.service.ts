@@ -47,7 +47,16 @@ export class MemoryService {
 
   async createForUser(userId: string, dto: CreateMemoryDto) {
     await this.subscriptions?.assertMemoryAllowed(userId);
+    const preference = await this.prisma.user.findUnique({ where: { id: userId }, select: { memoryEnabled: true } });
+    if (!preference?.memoryEnabled) throw new ConflictException('AI memory is disabled');
     await this.assertContactOwnership(userId, dto.contactId);
+    const existing = await this.prisma.userMemory.findFirst({
+      where: { userId, key: { equals: dto.key.trim(), mode: 'insensitive' }, status: MemoryStatus.ACTIVE },
+    });
+    if (existing) {
+      if (existing.value.trim().toLocaleLowerCase() === dto.value.trim().toLocaleLowerCase()) return this.getForUser(userId, existing.id);
+      throw new ConflictException('A memory with this key already exists; update it explicitly');
+    }
     try {
       const memory = await this.prisma.userMemory.create({
         data: {
@@ -121,6 +130,32 @@ export class MemoryService {
       entityId: id,
     });
     return { message: 'Memory deleted successfully' };
+  }
+
+  async getPreference(userId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { memoryEnabled: true } });
+    if (!user) throw new NotFoundException('User was not found');
+    return { enabled: user.memoryEnabled };
+  }
+
+  async setPreference(userId: string, enabled: boolean) {
+    await this.prisma.user.update({ where: { id: userId }, data: { memoryEnabled: enabled } });
+    await this.activityLog.record({ userId, action: ACTIVITY_ACTIONS.MEMORY_PREFERENCE_UPDATED, entityType: 'MEMORY_PREFERENCE', metadata: { enabled } });
+    return { enabled };
+  }
+
+  async deleteAllForUser(userId: string) {
+    const result = await this.prisma.userMemory.deleteMany({ where: { userId } });
+    await this.activityLog.record({ userId, action: ACTIVITY_ACTIONS.MEMORY_ALL_DELETED, entityType: 'MEMORY', metadata: { count: result.count } });
+    return { message: 'All memories deleted successfully', count: result.count };
+  }
+
+  async exportForUser(userId: string) {
+    const items = await this.prisma.userMemory.findMany({
+      where: { userId }, orderBy: { updatedAt: 'desc' },
+      select: { type: true, key: true, value: true, importance: true, confidence: true, isVerified: true, status: true, source: true, createdAt: true, updatedAt: true },
+    });
+    return { exportedAt: new Date().toISOString(), items };
   }
 
   /**
