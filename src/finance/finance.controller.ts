@@ -10,6 +10,8 @@ import { CreateFinanceTransactionDto } from './dto/create-finance-transaction.dt
 import { UpdateFinanceCategoryDto } from './dto/update-finance-category.dto';
 import { UpdateFinanceTransactionDto } from './dto/update-finance-transaction.dto';
 import { FinanceService } from './finance.service';
+import { CreateFinanceAccountDto, UpdateFinanceAccountDto } from './dto/finance-account.dto';
+import { FinanceCurrency } from '@prisma/client';
 
 @Controller('finance')
 @UseGuards(JwtAuthGuard)
@@ -19,6 +21,26 @@ export class FinanceController {
   @Get('transactions')
   listTransactions(@CurrentUser() user: AuthenticatedUser, @Query() query: FinanceTransactionQueryDto) {
     return this.financeService.listTransactionsForUser(user.sub, query);
+  }
+
+  @Get('accounts')
+  listAccounts(@CurrentUser() user: AuthenticatedUser, @Query('currency') currency?: FinanceCurrency) {
+    return this.financeService.listAccountsForUser(user.sub, currency);
+  }
+
+  @Post('accounts')
+  createAccount(@CurrentUser() user: AuthenticatedUser, @Body() dto: CreateFinanceAccountDto) {
+    return this.financeService.createAccountForUser(user.sub, dto);
+  }
+
+  @Patch('accounts/:id')
+  updateAccount(@CurrentUser() user: AuthenticatedUser, @Param('id', new ParseUUIDPipe({ version: '4' })) id: string, @Body() dto: UpdateFinanceAccountDto) {
+    return this.financeService.updateAccountForUser(user.sub, id, dto);
+  }
+
+  @Delete('accounts/:id')
+  archiveAccount(@CurrentUser() user: AuthenticatedUser, @Param('id', new ParseUUIDPipe({ version: '4' })) id: string) {
+    return this.financeService.archiveAccountForUser(user.sub, id);
   }
 
   @Get('transactions/:id')

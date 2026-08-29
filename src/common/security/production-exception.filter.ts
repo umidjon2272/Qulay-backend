@@ -1,8 +1,11 @@
-import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus } from '@nestjs/common';
+import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus, Optional } from '@nestjs/common';
 import { Request, Response } from 'express';
+import { MonitoringService } from '../../monitoring/monitoring.service';
 
 @Catch()
 export class ProductionExceptionFilter implements ExceptionFilter {
+  constructor(@Optional() private readonly monitoring?: MonitoringService) {}
+
   catch(exception: unknown, host: ArgumentsHost): void {
     const context = host.switchToHttp();
     const response = context.getResponse<Response>();
@@ -29,6 +32,7 @@ export class ProductionExceptionFilter implements ExceptionFilter {
     }
 
     if (status >= 500) {
+      this.monitoring?.captureException(exception, { path: request.url, method: request.method, status });
       response.status(status).json({
         statusCode: status,
         message: 'Internal server error',

@@ -22,6 +22,10 @@ export class CreateFinanceTransactionDto {
   @IsUUID('4')
   categoryId?: string;
 
+  @IsOptional()
+  @IsUUID('4')
+  accountId?: string;
+
   @Transform(trim)
   @IsString()
   @MinLength(1)

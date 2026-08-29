@@ -1,8 +1,9 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { MemoryType, Prisma } from '@prisma/client';
+import { ConflictException, Injectable, NotFoundException, Optional } from '@nestjs/common';
+import { MemoryStatus, MemoryType, Prisma } from '@prisma/client';
 import { ActivityLogService, ACTIVITY_ACTIONS } from '../activity-log/activity-log.service';
 import { paginationMeta, paginationSkip } from '../common/dto/pagination-query.dto';
 import { PrismaService } from '../prisma/prisma.service';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { CreateMemoryDto } from './dto/create-memory.dto';
 import { MemoryQueryDto } from './dto/memory-query.dto';
 import { UpdateMemoryDto } from './dto/update-memory.dto';
@@ -12,6 +13,7 @@ export type MemoryRetrievalOptions = {
   contactId?: string;
   importance?: number;
   limit?: number;
+  status?: MemoryStatus;
 };
 
 @Injectable()
@@ -19,6 +21,7 @@ export class MemoryService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly activityLog: ActivityLogService,
+    @Optional() private readonly subscriptions?: SubscriptionsService,
   ) {}
 
   async listForUser(userId: string, query: MemoryQueryDto) {
@@ -27,6 +30,7 @@ export class MemoryService {
       contactId: query.contactId,
       importance: query.importance,
       key: query.key,
+      status: query.status ?? MemoryStatus.ACTIVE,
     });
     const [items, total] = await Promise.all([
       this.prisma.userMemory.findMany({
@@ -42,6 +46,7 @@ export class MemoryService {
   }
 
   async createForUser(userId: string, dto: CreateMemoryDto) {
+    await this.subscriptions?.assertMemoryAllowed(userId);
     await this.assertContactOwnership(userId, dto.contactId);
     try {
       const memory = await this.prisma.userMemory.create({
@@ -51,6 +56,9 @@ export class MemoryService {
           key: dto.key,
           value: dto.value,
           importance: dto.importance ?? 5,
+          confidence: dto.confidence ?? (dto.source?.toUpperCase().startsWith('AI') ? 60 : 100),
+          isVerified: dto.isVerified ?? !dto.source?.toUpperCase().startsWith('AI'),
+          status: dto.status ?? MemoryStatus.ACTIVE,
           source: dto.source?.trim() || 'MANUAL',
           contactId: dto.contactId,
         },
@@ -80,8 +88,13 @@ export class MemoryService {
           value: dto.value,
           type: dto.type,
           importance: dto.importance,
+          confidence: dto.confidence,
+          isVerified: dto.isVerified,
+          status: dto.status,
           source: dto.source?.trim(),
           contactId: dto.contactId,
+          correctedAt: dto.value !== undefined || dto.key !== undefined ? new Date() : undefined,
+          archivedAt: dto.status === MemoryStatus.ARCHIVED ? new Date() : dto.status === MemoryStatus.ACTIVE ? null : undefined,
         },
         include: { contact: true },
       });
@@ -121,7 +134,7 @@ export class MemoryService {
   ) {
     const normalizedQuery = query.trim();
     const memories = await this.prisma.userMemory.findMany({
-      where: this.buildWhere(userId, normalizedQuery, options),
+      where: this.buildWhere(userId, normalizedQuery, { ...options, status: MemoryStatus.ACTIVE }),
       include: { contact: true },
       orderBy: [{ importance: 'desc' }, { lastUsedAt: 'desc' }, { updatedAt: 'desc' }],
       take: options.limit ?? 20,
@@ -159,6 +172,7 @@ export class MemoryService {
       type: options.type,
       contactId: options.contactId,
       importance: options.importance,
+      status: options.status,
       ...(options.key ? { key: { contains: options.key.trim(), mode: 'insensitive' } } : {}),
       ...(normalizedSearch
         ? {
@@ -181,7 +195,7 @@ export class MemoryService {
     }
   }
 
-  private async getForUser(userId: string, id: string) {
+  async getForUser(userId: string, id: string) {
     const memory = await this.prisma.userMemory.findFirst({ where: { id, userId } });
     if (!memory) {
       throw new NotFoundException('Memory was not found');

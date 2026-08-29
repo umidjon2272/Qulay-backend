@@ -44,6 +44,9 @@ export class FilesController {
     return new StreamableFile(file.stream, { type: file.mimeType, length: file.sizeBytes });
   }
 
+  @Get(':id/content')
+  content(@CurrentUser() user: AuthenticatedUser, @Param('id', new ParseUUIDPipe({ version: '4' })) id: string) { return this.files.getContentForUser(user.sub, id); }
+
   @Get(':id')
   get(@CurrentUser() user: AuthenticatedUser, @Param('id', new ParseUUIDPipe({ version: '4' })) id: string) { return this.files.getForUser(user.sub, id); }
 

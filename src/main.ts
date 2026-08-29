@@ -32,7 +32,7 @@ export function configureApp(app: INestApplication): void {
       transformOptions: { enableImplicitConversion: true },
     }),
   );
-  app.useGlobalFilters(new ProductionExceptionFilter());
+  app.useGlobalFilters(app.get(ProductionExceptionFilter));
   app.enableCors({
     credentials: true,
     origin: (

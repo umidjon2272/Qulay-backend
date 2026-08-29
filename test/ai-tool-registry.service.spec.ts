@@ -42,7 +42,8 @@ describe('AI tool registry and execution', () => {
 
   it('lists all first-party tools with confirmation metadata', () => {
     const tools = registry.listMetadata();
-    expect(tools).toHaveLength(27);
+    expect(tools).toHaveLength(32);
+    expect(tools.find((tool) => tool.name === 'get_file_content')).toMatchObject({ sideEffect: 'READ', requiresConfirmation: false });
     expect(tools.find((tool) => tool.name === 'get_tasks')).toMatchObject({ sideEffect: 'READ', requiresConfirmation: false });
     expect(tools.find((tool) => tool.name === 'create_task')).toMatchObject({ sideEffect: 'WRITE', requiresConfirmation: true });
   });

@@ -1,6 +1,6 @@
 import { Type } from 'class-transformer';
 import { IsEnum, IsInt, IsOptional, IsString, IsUUID, Max, MaxLength, Min } from 'class-validator';
-import { MemoryType } from '@prisma/client';
+import { MemoryStatus, MemoryType } from '@prisma/client';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 
 export class MemoryQueryDto extends PaginationQueryDto {
@@ -28,4 +28,8 @@ export class MemoryQueryDto extends PaginationQueryDto {
   @Min(1)
   @Max(10)
   importance?: number;
+
+  @IsOptional()
+  @IsEnum(MemoryStatus)
+  status?: MemoryStatus;
 }

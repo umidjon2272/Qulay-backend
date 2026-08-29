@@ -58,6 +58,11 @@ enum MemoryType {
   CONTEXT
 }
 
+enum MemoryStatus {
+  ACTIVE
+  ARCHIVED
+}
+
 enum UsageType {
   TEXT
   VOICE
@@ -79,6 +84,43 @@ enum FinanceCategoryType {
 enum FinanceCurrency {
   UZS
   USD
+}
+
+enum FinanceAccountType {
+  CASH
+  CARD
+  BANK
+  OTHER
+}
+
+enum FileExtractionStatus {
+  PENDING
+  READY
+  FAILED
+  UNSUPPORTED
+}
+
+enum SubscriptionTier {
+  STARTER
+  PRO
+  BUSINESS
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  EXPIRED
+}
+
+enum AgentActionStatus {
+  PENDING
+  EXECUTING
+  EXECUTED
+  CANCELLED
+  EXPIRED
+  FAILED
 }
 
 enum TelegramConnectionStatus {
@@ -162,12 +204,15 @@ model User {
   activityLogs        ActivityLog[]
   financeTransactions FinanceTransaction[]
   financeCategories   FinanceCategory[]
+  financeAccounts     FinanceAccount[]
   telegramConnection  TelegramConnection?
   googleConnection    GoogleConnection?
   notifications        Notification[]
   notificationPreference NotificationPreference?
   files               UserFile[]
   fileFolders         FileFolder[]
+  subscription        UserSubscription?
+  pendingAgentActions PendingAgentAction[]
 
   @@index([createdAt])
   @@index([status, createdAt])
@@ -205,6 +250,10 @@ model UserFile {
   source          FileSource            @default(UPLOAD)
   status          FileStatus            @default(ACTIVE)
   checksum        String?              @db.Char(64)
+  extractionStatus FileExtractionStatus @default(PENDING)
+  extractedText   String?              @db.Text
+  extractedAt     DateTime?
+  extractionError String?              @db.VarChar(200)
   createdAt       DateTime             @default(now())
   updatedAt       DateTime             @updatedAt
   deletedAt       DateTime?
@@ -216,6 +265,7 @@ model UserFile {
   @@index([userId, mimeType])
   @@index([userId, source])
   @@index([userId, checksum])
+  @@index([userId, extractionStatus])
   @@index([createdAt])
 }
 
@@ -384,6 +434,7 @@ model Conversation {
   updatedAt DateTime  @updatedAt
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   messages  Message[]
+  pendingAgentActions PendingAgentAction[]
 
   @@index([userId, updatedAt])
 }
@@ -406,11 +457,16 @@ model UserMemory {
   key        String     @db.VarChar(100)
   value      String     @db.Text
   importance Int        @default(5)
+  confidence Int        @default(100)
+  isVerified Boolean    @default(false)
+  status     MemoryStatus @default(ACTIVE)
   source     String     @default("MANUAL") @db.VarChar(100)
   contactId  String?    @db.Uuid
   createdAt  DateTime   @default(now())
   updatedAt  DateTime   @updatedAt
   lastUsedAt DateTime?
+  correctedAt DateTime?
+  archivedAt DateTime?
   user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
   contact    Contact?   @relation(fields: [contactId], references: [id], onDelete: SetNull)
 
@@ -419,6 +475,7 @@ model UserMemory {
   @@index([userId, contactId])
   @@index([userId, createdAt])
   @@index([userId, lastUsedAt])
+  @@index([userId, status, importance])
 }
 
 model Contact {
@@ -432,6 +489,10 @@ model Contact {
   telegramUsername    String?              @db.VarChar(100)
   company             String?              @db.VarChar(200)
   position            String?              @db.VarChar(200)
+  relationship        String?              @db.VarChar(200)
+  birthday            DateTime?            @db.Date
+  lastContactedAt     DateTime?
+  nextFollowUpAt      DateTime?
   notes               String?              @db.Text
   tags                String[]             @default([])
   createdAt           DateTime             @default(now())
@@ -451,6 +512,25 @@ model Contact {
   @@index([userId, phone])
   @@index([userId, email])
   @@index([userId, telegramUsername])
+  @@index([userId, nextFollowUpAt])
+}
+
+model FinanceAccount {
+  id           String             @id @default(uuid()) @db.Uuid
+  userId       String             @db.Uuid
+  name         String             @db.VarChar(100)
+  type         FinanceAccountType
+  currency     FinanceCurrency
+  openingBalance Decimal          @default(0) @db.Decimal(18, 2)
+  isDefault    Boolean            @default(false)
+  isArchived   Boolean            @default(false)
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+  user         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions FinanceTransaction[]
+
+  @@unique([userId, name, currency])
+  @@index([userId, currency, isArchived])
 }
 
 model FinanceCategory {
@@ -477,6 +557,7 @@ model FinanceTransaction {
   amount          Decimal                @db.Decimal(18, 2)
   currency        FinanceCurrency
   categoryId      String?                @db.Uuid
+  accountId       String?                @db.Uuid
   title           String                 @db.VarChar(200)
   description     String?                @db.Text
   transactionDate DateTime
@@ -486,12 +567,14 @@ model FinanceTransaction {
   updatedAt       DateTime               @updatedAt
   user            User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
   category        FinanceCategory?       @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  account         FinanceAccount?        @relation(fields: [accountId], references: [id], onDelete: SetNull)
   contact         Contact?               @relation(fields: [contactId], references: [id], onDelete: SetNull)
 
   @@index([userId])
   @@index([userId, transactionDate])
   @@index([userId, type])
   @@index([userId, categoryId])
+  @@index([userId, accountId])
   @@index([userId, currency])
   @@index([userId, currency, transactionDate])
 }
@@ -511,6 +594,44 @@ model AiUsage {
   @@index([userId, type])
   @@index([userId, createdAt])
   @@index([createdAt, type])
+}
+
+model UserSubscription {
+  id                 String             @id @default(uuid()) @db.Uuid
+  userId             String             @unique @db.Uuid
+  tier               SubscriptionTier   @default(STARTER)
+  status             SubscriptionStatus @default(TRIALING)
+  trialEndsAt        DateTime?
+  currentPeriodStart DateTime            @default(now())
+  currentPeriodEnd   DateTime?
+  cancelAtPeriodEnd  Boolean             @default(false)
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  user               User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status, currentPeriodEnd])
+  @@index([tier, status])
+}
+
+model PendingAgentAction {
+  id             String            @id @default(uuid()) @db.Uuid
+  userId         String            @db.Uuid
+  conversationId String?           @db.Uuid
+  toolName       String            @db.VarChar(100)
+  input          Json
+  preview        Json?
+  status         AgentActionStatus @default(PENDING)
+  idempotencyKey String            @unique @db.VarChar(100)
+  expiresAt      DateTime
+  executedAt     DateTime?
+  errorCode      String?           @db.VarChar(100)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  user           User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversation   Conversation?     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status, expiresAt])
+  @@index([conversationId, createdAt])
 }
 
 model ActivityLog {

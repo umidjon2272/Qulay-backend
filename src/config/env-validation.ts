@@ -52,6 +52,15 @@ export const envValidationSchema = Joi.object({
   GOOGLE_CLIENT_SECRET: Joi.string().min(1).optional(),
   GOOGLE_REDIRECT_URI: Joi.string().uri().optional(),
   GOOGLE_TOKEN_ENCRYPTION_KEY: Joi.string().pattern(/^[a-fA-F0-9]{64}$/).optional(),
+  OPENAI_API_KEY: Joi.string().min(20).optional(),
+  OPENAI_MODEL: Joi.string().min(1).default('gpt-5-mini'),
+  OPENAI_BASE_URL: Joi.string().uri().default('https://api.openai.com/v1'),
+  AI_TIMEOUT_MS: Joi.number().integer().min(5000).max(120000).default(45000),
+  EMAIL_PROVIDER: Joi.string().lowercase().valid('noop', 'resend').default('noop'),
+  RESEND_API_KEY: Joi.string().min(10).optional(),
+  EMAIL_FROM: Joi.string().min(3).optional(),
+  SENTRY_DSN: Joi.string().uri().optional(),
+  NOTIFICATION_CRON_SECRET: Joi.string().min(32).optional(),
 
   FILE_STORAGE_PROVIDER: Joi.string().lowercase().valid('local', 's3').default('local'),
   FILE_STORAGE_LOCAL_PATH: Joi.string().min(1).default('./uploads'),
@@ -70,10 +79,14 @@ export const envValidationSchema = Joi.object({
 
   if (value.JWT_ACCESS_SECRET === value.JWT_REFRESH_SECRET) return helpers.error('jwt.secrets.same');
   if (value.NODE_ENV === 'production' && value.AUTH_TIMING_LOGS) return helpers.error('auth.timing.production');
+  if (value.EMAIL_PROVIDER === 'resend' && (!value.RESEND_API_KEY || !value.EMAIL_FROM)) return helpers.error('email.resend.missing');
+  if (value.FILE_STORAGE_PROVIDER === 's3' && (!value.S3_ENDPOINT || !value.S3_BUCKET || !value.S3_ACCESS_KEY_ID || !value.S3_SECRET_ACCESS_KEY)) return helpers.error('storage.s3.missing');
   return value;
 }).messages({
   'integration.telegram.partial': 'Telegram integration requires all of: TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_SESSION_ENCRYPTION_KEY. Missing: {{#missing}}',
   'integration.google.partial': 'Google integration requires all of: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI, GOOGLE_TOKEN_ENCRYPTION_KEY. Missing: {{#missing}}',
   'jwt.secrets.same': 'JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must be different',
   'auth.timing.production': 'AUTH_TIMING_LOGS must be disabled in production',
+  'email.resend.missing': 'EMAIL_PROVIDER=resend requires RESEND_API_KEY and EMAIL_FROM',
+  'storage.s3.missing': 'FILE_STORAGE_PROVIDER=s3 requires S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY',
 });

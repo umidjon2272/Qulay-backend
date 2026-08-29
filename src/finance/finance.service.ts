@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { FinanceCategoryType, FinanceCurrency, FinanceTransactionType, Prisma } from '@prisma/client';
+import { FinanceAccountType, FinanceCategoryType, FinanceCurrency, FinanceTransactionType, Prisma } from '@prisma/client';
 import { ActivityLogService, ACTIVITY_ACTIONS } from '../activity-log/activity-log.service';
 import { paginationMeta, paginationSkip } from '../common/dto/pagination-query.dto';
 import { assertDateKey, dateKeyInTimezone, parseDateTime, utcDayRange, zonedDayRange } from '../common/date.utils';
@@ -12,6 +12,7 @@ import { FinanceSummaryQueryDto } from './dto/finance-summary-query.dto';
 import { FinanceTransactionQueryDto } from './dto/transaction-query.dto';
 import { UpdateFinanceCategoryDto } from './dto/update-finance-category.dto';
 import { UpdateFinanceTransactionDto } from './dto/update-finance-transaction.dto';
+import { CreateFinanceAccountDto, UpdateFinanceAccountDto } from './dto/finance-account.dto';
 
 const DEFAULT_CATEGORIES: ReadonlyArray<{ name: string; type: FinanceCategoryType }> = [
   { name: 'Reklama', type: FinanceCategoryType.EXPENSE },
@@ -30,6 +31,7 @@ type Period = { from: Date; to: Date };
 type TransactionInclude = {
   category: { select: { id: true; name: true; type: true; icon: true; color: true } };
   contact: { select: { id: true; displayName: true } };
+  account: { select: { id: true; name: true; type: true; currency: true } };
 };
 
 @Injectable()
@@ -37,6 +39,7 @@ export class FinanceService {
   private readonly transactionInclude: TransactionInclude = {
     category: { select: { id: true, name: true, type: true, icon: true, color: true } },
     contact: { select: { id: true, displayName: true } },
+    account: { select: { id: true, name: true, type: true, currency: true } },
   };
 
   constructor(
@@ -59,6 +62,7 @@ export class FinanceService {
       userId,
       type: query.type,
       categoryId: query.categoryId,
+      accountId: query.accountId,
       currency: query.currency,
       amount: Object.keys(amount).length ? amount : undefined,
       transactionDate: period ? { gte: period.from, lt: period.to } : undefined,
@@ -100,6 +104,7 @@ export class FinanceService {
   async createForUser(userId: string, dto: CreateFinanceTransactionDto) {
     const category = await this.validateCategory(userId, dto.categoryId, dto.type);
     await this.validateContact(userId, dto.contactId);
+    const account = await this.resolveAccount(userId, dto.accountId, dto.currency);
     const amount = this.toPositiveDecimal(dto.amount);
     const transaction = await this.prisma.financeTransaction.create({
       data: {
@@ -108,6 +113,7 @@ export class FinanceService {
         amount,
         currency: dto.currency,
         categoryId: category?.id,
+        accountId: account?.id,
         title: dto.title,
         description: dto.description,
         transactionDate: this.parseTransactionDate(dto.transactionDate),
@@ -135,6 +141,12 @@ export class FinanceService {
         : null
       : await this.validateCategory(userId, dto.categoryId, type);
     await this.validateContact(userId, dto.contactId);
+    const currency = dto.currency ?? current.currency;
+    const account = dto.accountId === undefined
+      ? current.accountId
+        ? await this.resolveAccount(userId, current.accountId, currency)
+        : null
+      : await this.resolveAccount(userId, dto.accountId, currency);
     const transaction = await this.prisma.financeTransaction.update({
       where: { id: current.id },
       data: {
@@ -142,6 +154,7 @@ export class FinanceService {
         amount: dto.amount === undefined ? undefined : this.toPositiveDecimal(dto.amount),
         currency: dto.currency,
         categoryId: category?.id ?? (dto.categoryId === undefined ? undefined : null),
+        accountId: account?.id ?? (dto.accountId === undefined ? undefined : null),
         title: dto.title,
         description: dto.description,
         transactionDate: dto.transactionDate ? this.parseTransactionDate(dto.transactionDate) : undefined,
@@ -178,6 +191,70 @@ export class FinanceService {
       where: { userId, type: query.type },
       orderBy: [{ type: 'asc' }, { name: 'asc' }],
     });
+  }
+
+  async listAccountsForUser(userId: string, currency?: FinanceCurrency) {
+    await this.ensureDefaultAccounts(userId);
+    const accounts = await this.prisma.financeAccount.findMany({
+      where: { userId, currency, isArchived: false },
+      orderBy: [{ isDefault: 'desc' }, { name: 'asc' }],
+    });
+    const balances = await Promise.all(accounts.map(async (account) => {
+      const rows = await this.prisma.financeTransaction.groupBy({
+        by: ['type'],
+        where: { userId, accountId: account.id, currency: account.currency },
+        _sum: { amount: true },
+      });
+      const income = this.decimal(rows.find((row) => row.type === FinanceTransactionType.INCOME)?._sum.amount);
+      const expense = this.decimal(rows.find((row) => row.type === FinanceTransactionType.EXPENSE)?._sum.amount);
+      return { ...account, openingBalance: this.formatDecimal(account.openingBalance), balance: this.formatDecimal(account.openingBalance.plus(income).minus(expense)) };
+    }));
+    return balances;
+  }
+
+  async createAccountForUser(userId: string, dto: CreateFinanceAccountDto) {
+    if (dto.isDefault) await this.prisma.financeAccount.updateMany({ where: { userId, currency: dto.currency }, data: { isDefault: false } });
+    try {
+      const account = await this.prisma.financeAccount.create({
+        data: {
+          userId,
+          name: dto.name,
+          type: dto.type,
+          currency: dto.currency,
+          openingBalance: dto.openingBalance ? new Prisma.Decimal(dto.openingBalance) : new Prisma.Decimal(0),
+          isDefault: dto.isDefault ?? false,
+        },
+      });
+      await this.activityLog.record({ userId, action: ACTIVITY_ACTIONS.FINANCE_ACCOUNT_CREATED, entityType: 'FINANCE_ACCOUNT', entityId: account.id });
+      return { ...account, openingBalance: this.formatDecimal(account.openingBalance) };
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') throw new ConflictException('Bu nomdagi moliya hisobi mavjud');
+      throw error;
+    }
+  }
+
+  async updateAccountForUser(userId: string, id: string, dto: UpdateFinanceAccountDto) {
+    const account = await this.getAccountForUser(userId, id);
+    if (dto.isDefault) await this.prisma.financeAccount.updateMany({ where: { userId, currency: account.currency, id: { not: id } }, data: { isDefault: false } });
+    const updated = await this.prisma.financeAccount.update({
+      where: { id },
+      data: {
+        name: dto.name,
+        type: dto.type,
+        openingBalance: dto.openingBalance === undefined ? undefined : new Prisma.Decimal(dto.openingBalance),
+        isDefault: dto.isDefault,
+        isArchived: dto.isArchived,
+      },
+    });
+    await this.activityLog.record({ userId, action: ACTIVITY_ACTIONS.FINANCE_ACCOUNT_UPDATED, entityType: 'FINANCE_ACCOUNT', entityId: id });
+    return { ...updated, openingBalance: this.formatDecimal(updated.openingBalance) };
+  }
+
+  async archiveAccountForUser(userId: string, id: string) {
+    const account = await this.getAccountForUser(userId, id);
+    await this.prisma.financeAccount.update({ where: { id }, data: { isArchived: true, isDefault: false } });
+    await this.activityLog.record({ userId, action: ACTIVITY_ACTIONS.FINANCE_ACCOUNT_ARCHIVED, entityType: 'FINANCE_ACCOUNT', entityId: id });
+    return { message: `${account.name} hisobi arxivlandi` };
   }
 
   async createCategoryForUser(userId: string, dto: CreateFinanceCategoryDto) {
@@ -387,6 +464,25 @@ export class FinanceService {
     }
   }
 
+  async ensureDefaultAccounts(userId: string): Promise<void> {
+    const defaults = [
+      { name: 'Naqd pul', type: FinanceAccountType.CASH, currency: FinanceCurrency.UZS },
+      { name: 'Karta', type: FinanceAccountType.CARD, currency: FinanceCurrency.UZS },
+      { name: 'USD', type: FinanceAccountType.CASH, currency: FinanceCurrency.USD },
+    ] as const;
+    for (const [index, item] of defaults.entries()) {
+      try {
+        await this.prisma.financeAccount.upsert({
+          where: { userId_name_currency: { userId, name: item.name, currency: item.currency } },
+          create: { userId, ...item, isDefault: index === 0 },
+          update: {},
+        });
+      } catch (error) {
+        if (!(error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002')) throw error;
+      }
+    }
+  }
+
   private async getOwnedTransaction(userId: string, id: string) {
     const transaction = await this.prisma.financeTransaction.findFirst({ where: { id, userId } });
     if (!transaction) throw new NotFoundException('Finance transaction was not found');
@@ -397,6 +493,23 @@ export class FinanceService {
     const category = await this.prisma.financeCategory.findFirst({ where: { id, userId } });
     if (!category) throw new NotFoundException('Finance category was not found');
     return category;
+  }
+
+  private async getAccountForUser(userId: string, id: string) {
+    const account = await this.prisma.financeAccount.findFirst({ where: { id, userId } });
+    if (!account) throw new NotFoundException('Moliya hisobi topilmadi');
+    return account;
+  }
+
+  private async resolveAccount(userId: string, accountId: string | undefined, currency: FinanceCurrency) {
+    if (accountId) {
+      const account = await this.getAccountForUser(userId, accountId);
+      if (account.currency !== currency) throw new BadRequestException('Hisob valyutasi tranzaksiya valyutasiga mos emas');
+      if (account.isArchived) throw new BadRequestException('Arxivlangan hisobga tranzaksiya yozib bo‘lmaydi');
+      return account;
+    }
+    await this.ensureDefaultAccounts(userId);
+    return this.prisma.financeAccount.findFirst({ where: { userId, currency, isArchived: false }, orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }] });
   }
 
   private async validateCategory(userId: string, categoryId: string | undefined, type: FinanceTransactionType) {

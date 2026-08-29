@@ -13,7 +13,7 @@ export class ContactHistoryService {
       throw new NotFoundException('Contact was not found');
     }
 
-    const [meetings, notes, memories] = await Promise.all([
+    const [meetings, notes, memories, financeTransactions] = await Promise.all([
       this.prisma.meeting.findMany({
         where: { userId, contactId },
         orderBy: [{ startsAt: 'desc' }, { createdAt: 'desc' }],
@@ -25,8 +25,14 @@ export class ContactHistoryService {
         take: 20,
       }),
       this.prisma.userMemory.findMany({
-        where: { userId, contactId },
+        where: { userId, contactId, status: 'ACTIVE' },
         orderBy: [{ importance: 'desc' }, { updatedAt: 'desc' }],
+        take: 20,
+      }),
+      this.prisma.financeTransaction.findMany({
+        where: { userId, contactId },
+        include: { category: true, account: true },
+        orderBy: [{ transactionDate: 'desc' }, { createdAt: 'desc' }],
         take: 20,
       }),
     ]);
@@ -36,6 +42,7 @@ export class ContactHistoryService {
       recentMeetings: meetings,
       relatedNotes: notes,
       relatedMemories: memories,
+      financeTransactions: financeTransactions.map((item) => ({ ...item, amount: item.amount.toFixed(2) })),
       tasks: [],
     };
   }

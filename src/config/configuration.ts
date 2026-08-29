@@ -38,4 +38,17 @@ export default () => ({
     redirectUri: process.env.GOOGLE_REDIRECT_URI,
     tokenEncryptionKey: process.env.GOOGLE_TOKEN_ENCRYPTION_KEY,
   },
+  ai: {
+    apiKey: process.env.OPENAI_API_KEY,
+    model: process.env.OPENAI_MODEL ?? 'gpt-5-mini',
+    baseUrl: process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1',
+    timeoutMs: Number.parseInt(process.env.AI_TIMEOUT_MS ?? '45000', 10),
+  },
+  email: {
+    provider: (process.env.EMAIL_PROVIDER ?? 'noop').toLowerCase(),
+    apiKey: process.env.RESEND_API_KEY,
+    from: process.env.EMAIL_FROM,
+  },
+  monitoring: { sentryDsn: process.env.SENTRY_DSN },
+  notificationCronSecret: process.env.NOTIFICATION_CRON_SECRET,
 });

@@ -26,6 +26,10 @@ export class UpdateFinanceTransactionDto {
   categoryId?: string;
 
   @IsOptional()
+  @IsUUID('4')
+  accountId?: string;
+
+  @IsOptional()
   @Transform(trim)
   @IsString()
   @MinLength(1)

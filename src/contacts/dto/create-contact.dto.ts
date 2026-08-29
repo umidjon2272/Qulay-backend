@@ -1,5 +1,5 @@
 import { Transform } from 'class-transformer';
-import { IsArray, IsEmail, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { IsArray, IsEmail, IsISO8601, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 
 const trim = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value);
 
@@ -51,6 +51,20 @@ export class CreateContactDto {
   @IsString()
   @MaxLength(200)
   position?: string | null;
+
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @MaxLength(200)
+  relationship?: string | null;
+
+  @IsOptional()
+  @IsISO8601({ strict: false })
+  birthday?: string | null;
+
+  @IsOptional()
+  @IsISO8601({ strict: false })
+  nextFollowUpAt?: string | null;
 
   @IsOptional()
   @IsString()

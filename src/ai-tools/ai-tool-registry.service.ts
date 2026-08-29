@@ -6,11 +6,13 @@ import { ActivityLogService, ACTIVITY_ACTIONS } from '../activity-log/activity-l
 import { ContactHistoryService } from '../contacts/contact-history.service';
 import { ContactsService } from '../contacts/contacts.service';
 import { CreateContactDto } from '../contacts/dto/create-contact.dto';
+import { UpdateContactDto } from '../contacts/dto/update-contact.dto';
 import { ContactQueryDto } from '../contacts/dto/contact-query.dto';
 import { FinanceService } from '../finance/finance.service';
 import { FinanceToolsService } from '../finance/finance-tools.service';
 import { CreateFinanceTransactionDto } from '../finance/dto/create-finance-transaction.dto';
 import { CreateMemoryDto } from '../memory/dto/create-memory.dto';
+import { UpdateMemoryDto } from '../memory/dto/update-memory.dto';
 import { MemoryService } from '../memory/memory.service';
 import { CreateMeetingDto } from '../meetings/dto/create-meeting.dto';
 import { MeetingQueryDto } from '../meetings/dto/meeting-query.dto';
@@ -32,7 +34,8 @@ import {
   MeetingsToolInput, NotesToolInput, RelevantMemoriesToolInput, RemindersToolInput,
   SaveMemoryToolInput, SearchContactsToolInput, TasksToolInput, TodayFinanceToolInput,
   TodayPlanInput, SearchTelegramChatsToolInput, SendTelegramMessageToolInput,
-  SearchFilesToolInput, GetFileMetadataToolInput,
+  SearchFilesToolInput, GetFileMetadataToolInput, GetFileContentToolInput,
+  UpdateContactToolInput, DeleteContactToolInput, UpdateMemoryToolInput, DeleteMemoryToolInput,
   GetGoogleCalendarEventsToolInput, CreateGoogleCalendarEventToolInput,
   UpdateGoogleCalendarEventToolInput, DeleteGoogleCalendarEventToolInput, SearchGoogleDriveFilesToolInput,
 } from './dto/tool-input.dto';
@@ -224,6 +227,12 @@ export class AIToolRegistryService {
       execute: (context, input) => this.filesService!.getForUser(context.userId, input.fileId),
     }));
 
+    this.register(this.base<GetFileContentToolInput, unknown>({
+      name: 'get_file_content', description: 'Read extracted text from an owned PDF, DOCX, XLSX, TXT, CSV or JSON file.', category: AIToolCategory.FILE,
+      sideEffect: 'READ', validate: GetFileContentToolInput, inputSchema: schema({ fileId: { type: 'string' } }, ['fileId']),
+      execute: (context, input) => this.filesService!.getContentForUser(context.userId, input.fileId),
+    }));
+
     this.register(this.base<SearchContactsToolInput, unknown>({
       name: 'search_contacts', description: 'Search contacts owned by the authenticated user.', category: AIToolCategory.CONTACT,
       sideEffect: 'READ', validate: SearchContactsToolInput, inputSchema: schema({ query: { type: 'string' } }, ['query']),
@@ -304,6 +313,22 @@ export class AIToolRegistryService {
       execute: (context, input) => this.contactsService.createForUser(context.userId, input as CreateContactDto),
     }));
 
+    this.register(this.base<UpdateContactToolInput, unknown>({
+      name: 'update_contact', description: 'Correct or update an owned contact after explicit confirmation.', category: AIToolCategory.CONTACT,
+      sideEffect: 'WRITE', validate: UpdateContactToolInput, inputSchema: schema({ contactId: { type: 'string' }, firstName: { type: 'string' }, lastName: { type: 'string' }, displayName: { type: 'string' }, phone: { type: 'string' }, email: { type: 'string' }, telegramUsername: { type: 'string' }, company: { type: 'string' }, position: { type: 'string' }, relationship: { type: 'string' }, notes: { type: 'string' }, tags: { type: 'array' } }, ['contactId']),
+      authorize: (context, input) => this.assertContactOwned(context.userId, input.contactId),
+      preview: async (context, input) => ({ current: await this.contactsService.getForUser(context.userId, input.contactId), changes: input }),
+      execute: (context, input) => { const { contactId, ...changes } = input; return this.contactsService.updateForUser(context.userId, contactId, changes as UpdateContactDto); },
+    }));
+
+    this.register(this.base<DeleteContactToolInput, unknown>({
+      name: 'delete_contact', description: 'Delete an owned contact after explicit confirmation.', category: AIToolCategory.CONTACT,
+      sideEffect: 'WRITE', validate: DeleteContactToolInput, inputSchema: schema({ contactId: { type: 'string' } }, ['contactId']),
+      authorize: (context, input) => this.assertContactOwned(context.userId, input.contactId),
+      preview: (context, input) => this.contactsService.getForUser(context.userId, input.contactId),
+      execute: (context, input) => this.contactsService.deleteForUser(context.userId, input.contactId),
+    }));
+
     this.register(this.base<SaveMemoryToolInput, unknown>({
       name: 'save_memory', description: 'Save a user-scoped memory after confirmation.', category: AIToolCategory.MEMORY,
       sideEffect: 'WRITE', validate: SaveMemoryToolInput, inputSchema: schema({ type: { type: 'string' }, key: { type: 'string' }, value: { type: 'string' }, importance: { type: 'integer' }, contactId: { type: 'string' } }, ['type', 'key', 'value']),
@@ -312,9 +337,25 @@ export class AIToolRegistryService {
       execute: (context, input) => this.memoryService.createForUser(context.userId, { ...input, source: 'AI_TOOL' } as CreateMemoryDto),
     }));
 
+    this.register(this.base<UpdateMemoryToolInput, unknown>({
+      name: 'update_memory', description: 'Correct an owned long-term memory after explicit confirmation.', category: AIToolCategory.MEMORY,
+      sideEffect: 'WRITE', validate: UpdateMemoryToolInput, inputSchema: schema({ memoryId: { type: 'string' }, type: { type: 'string' }, key: { type: 'string' }, value: { type: 'string' }, importance: { type: 'integer' } }, ['memoryId']),
+      authorize: (context, input) => this.memoryService.getForUser(context.userId, input.memoryId).then(() => undefined),
+      preview: async (context, input) => ({ current: await this.memoryService.getForUser(context.userId, input.memoryId), changes: input }),
+      execute: (context, input) => { const { memoryId, ...changes } = input; return this.memoryService.updateForUser(context.userId, memoryId, { ...changes, source: 'AI_CORRECTION', isVerified: true, confidence: 100 } as UpdateMemoryDto); },
+    }));
+
+    this.register(this.base<DeleteMemoryToolInput, unknown>({
+      name: 'delete_memory', description: 'Forget an owned long-term memory after explicit confirmation.', category: AIToolCategory.MEMORY,
+      sideEffect: 'WRITE', validate: DeleteMemoryToolInput, inputSchema: schema({ memoryId: { type: 'string' } }, ['memoryId']),
+      authorize: (context, input) => this.memoryService.getForUser(context.userId, input.memoryId).then(() => undefined),
+      preview: (context, input) => this.memoryService.getForUser(context.userId, input.memoryId),
+      execute: (context, input) => this.memoryService.deleteForUser(context.userId, input.memoryId),
+    }));
+
     this.register(this.base<CreateFinanceTransactionToolInput, unknown>({
       name: 'create_finance_transaction', description: 'Create a finance transaction for the authenticated user.', category: AIToolCategory.FINANCE,
-      sideEffect: 'WRITE', validate: CreateFinanceTransactionToolInput, inputSchema: schema({ type: { type: 'string' }, amount: { type: 'string' }, currency: { type: 'string' }, title: { type: 'string' }, categoryId: { type: 'string' }, contactId: { type: 'string' }, transactionDate: { type: 'string' }, description: { type: 'string' } }, ['type', 'amount', 'currency', 'title']),
+      sideEffect: 'WRITE', validate: CreateFinanceTransactionToolInput, inputSchema: schema({ type: { type: 'string' }, amount: { type: 'string' }, currency: { type: 'string' }, title: { type: 'string' }, categoryId: { type: 'string' }, accountId: { type: 'string' }, contactId: { type: 'string' }, transactionDate: { type: 'string' }, description: { type: 'string' } }, ['type', 'amount', 'currency', 'title']),
       authorize: async (context, input) => {
         if (input.contactId) await this.assertContactOwned(context.userId, input.contactId);
         if (input.categoryId) {
@@ -389,7 +430,8 @@ export class AIToolRegistryService {
   private entityTypeFor(toolName: string): string {
     const types: Record<string, string> = {
       create_task: 'TASK', create_reminder: 'REMINDER', create_meeting: 'MEETING', create_note: 'NOTE',
-      create_contact: 'CONTACT', save_memory: 'MEMORY', create_finance_transaction: 'FINANCE_TRANSACTION',
+      create_contact: 'CONTACT', update_contact: 'CONTACT', delete_contact: 'CONTACT',
+      save_memory: 'MEMORY', update_memory: 'MEMORY', delete_memory: 'MEMORY', create_finance_transaction: 'FINANCE_TRANSACTION',
       send_telegram_message: 'TELEGRAM_MESSAGE',
       create_google_calendar_event: 'GOOGLE_CALENDAR_EVENT', update_google_calendar_event: 'GOOGLE_CALENDAR_EVENT', delete_google_calendar_event: 'GOOGLE_CALENDAR_EVENT',
     };

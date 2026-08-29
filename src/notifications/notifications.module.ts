@@ -2,7 +2,7 @@ import { Module } from '@nestjs/common';
 import { ActivityLogModule } from '../activity-log/activity-log.module';
 import { TelegramModule } from '../telegram/telegram.module';
 import { PrismaModule } from '../prisma/prisma.module';
-import { NotificationsController } from './notifications.controller';
+import { NotificationCronController, NotificationsController } from './notifications.controller';
 import { NotificationDeliveryService, InAppNotificationAdapter } from './notification-delivery.service';
 import { TelegramNotificationAdapter } from './adapters/telegram-notification.adapter';
 import { WebPushNotificationAdapter } from './adapters/web-push-notification.adapter';
@@ -12,7 +12,7 @@ import { NotificationWorkerService } from './notification-worker.service';
 
 @Module({
   imports: [PrismaModule, ActivityLogModule, TelegramModule],
-  controllers: [NotificationsController],
+  controllers: [NotificationsController, NotificationCronController],
   providers: [
     NotificationService,
     NotificationSchedulerService,

@@ -25,6 +25,8 @@ import { GoogleModule } from './google/google.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { FilesModule } from './files/files.module';
 import { AdminModule } from './admin/admin.module';
+import { SubscriptionsModule } from './subscriptions/subscriptions.module';
+import { AiAgentModule } from './ai-agent/ai-agent.module';
 
 @Module({
   imports: [
@@ -56,6 +58,8 @@ import { AdminModule } from './admin/admin.module';
     NotificationsModule,
     FilesModule,
     AdminModule,
+    SubscriptionsModule,
+    AiAgentModule,
     HealthModule,
   ],
 })

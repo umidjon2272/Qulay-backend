@@ -2,18 +2,21 @@ import { createHash } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { FileSource, FileStatus, Prisma } from '@prisma/client';
+import { FileExtractionStatus, FileSource, FileStatus, Prisma } from '@prisma/client';
 import { ActivityLogService, ACTIVITY_ACTIONS } from '../activity-log/activity-log.service';
 import { paginationMeta, paginationSkip } from '../common/dto/pagination-query.dto';
 import { PrismaService } from '../prisma/prisma.service';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { CreateFolderDto, UpdateFolderDto } from './dto/folder.dto';
 import { FileQueryDto } from './dto/file-query.dto';
 import { FileStorageAdapter, FILE_STORAGE_ADAPTER } from './storage/file-storage-adapter';
 import { ALLOWED_FILE_MIME_TYPES, assertSafeFilename, validateAndSniffMime } from './storage/mime-sniffing';
+import { FileContentExtractionService } from './extractors/file-content-extraction.service';
 
 const FILE_PUBLIC_SELECT = {
   id: true, originalName: true, label: true, mimeType: true, extension: true, sizeBytes: true,
   source: true, folderId: true, status: true, checksum: true, createdAt: true, updatedAt: true, deletedAt: true,
+  extractionStatus: true, extractedAt: true, extractionError: true,
 } as const;
 
 type UploadedInput = { originalname: string; mimetype: string; size: number; buffer: Buffer };
@@ -28,6 +31,8 @@ export class FilesService {
     private readonly activityLog: ActivityLogService,
     private readonly config: ConfigService,
     @Inject(FILE_STORAGE_ADAPTER) private readonly storage: FileStorageAdapter,
+    private readonly extraction: FileContentExtractionService,
+    private readonly subscriptions: SubscriptionsService,
   ) {
     this.maxSizeBytes = config.get<number>('storage.maxSizeBytes') ?? 20 * 1024 * 1024;
     this.provider = config.get<'LOCAL' | 'S3'>('storage.provider') ?? 'LOCAL';
@@ -36,6 +41,7 @@ export class FilesService {
   async uploadForUser(userId: string, file: UploadedInput | undefined, folderId?: string, label?: string) {
     if (!file) throw new BadRequestException('A file is required');
     if (file.size > this.maxSizeBytes) throw new BadRequestException(`Maximum file size is ${this.maxSizeBytes / 1024 / 1024} MB`);
+    await this.subscriptions.assertFileAllowed(userId, file.size);
     assertSafeFilename(file.originalname);
     const mimeType = await validateAndSniffMime(file.buffer, file.mimetype);
     if (!ALLOWED_FILE_MIME_TYPES.includes(mimeType)) throw new BadRequestException('File type is not allowed');
@@ -58,7 +64,7 @@ export class FilesService {
         select: FILE_PUBLIC_SELECT,
       });
       await this.activityLog.record({ userId, action: ACTIVITY_ACTIONS.FILE_UPLOADED, entityType: 'FILE', entityId: created.id, metadata: { fileId: created.id, mimeType, source: FileSource.UPLOAD } });
-      return serializeFile(created);
+      return this.extractAndStore(userId, created.id, mimeType, file.buffer);
     } catch (error) {
       await this.storage.delete(storageKey).catch(() => undefined);
       throw error;
@@ -73,7 +79,8 @@ export class FilesService {
       ...(search ? { OR: [
         { originalName: { contains: search, mode: 'insensitive' } },
         { extension: { contains: search, mode: 'insensitive' } },
-        { folder: { name: { contains: search, mode: 'insensitive' } } },
+              { folder: { name: { contains: search, mode: 'insensitive' } } },
+              { extractedText: { contains: search, mode: 'insensitive' } },
       ] } : {}),
     };
     const sort = query.sort === 'originalName' || query.sort === 'sizeBytes' ? query.sort : 'createdAt';
@@ -92,6 +99,17 @@ export class FilesService {
     const file = await this.prisma.userFile.findFirst({ where: { id, userId, status: { not: FileStatus.DELETED } }, select: FILE_PUBLIC_SELECT });
     if (!file) throw new NotFoundException('File was not found');
     return serializeFile(file);
+  }
+
+  async getContentForUser(userId: string, id: string) {
+    const file = await this.prisma.userFile.findFirst({
+      where: { id, userId, status: FileStatus.ACTIVE },
+      select: { ...FILE_PUBLIC_SELECT, extractedText: true },
+    });
+    if (!file) throw new NotFoundException('File was not found');
+    if (file.extractionStatus === FileExtractionStatus.PENDING) throw new ConflictException('Fayl matni hali tayyor emas');
+    if (file.extractionStatus !== FileExtractionStatus.READY || !file.extractedText) throw new ConflictException(file.extractionError || 'Bu fayldan matn ajratib bo‘lmadi');
+    return { ...serializeFile(file), extractedText: file.extractedText };
   }
 
   async getDownloadForUser(userId: string, id: string): Promise<{ stream: Readable; mimeType: string; originalName: string; sizeBytes: number }> {
@@ -175,6 +193,24 @@ export class FilesService {
       current = parent.parentId;
     }
     if (current) throw new BadRequestException('Folder nesting is too deep');
+  }
+
+  private async extractAndStore(userId: string, fileId: string, mimeType: string, buffer: Buffer) {
+    if (!this.extraction.supports(mimeType)) {
+      const file = await this.prisma.userFile.update({ where: { id: fileId }, data: { extractionStatus: FileExtractionStatus.UNSUPPORTED, extractionError: 'Bu fayl turidan matn ajratilmaydi' }, select: FILE_PUBLIC_SELECT });
+      return serializeFile(file);
+    }
+    try {
+      const extractedText = await this.extraction.extract(mimeType, buffer);
+      if (!extractedText) throw new Error('Faylda o‘qiladigan matn topilmadi');
+      const file = await this.prisma.userFile.update({ where: { id: fileId }, data: { extractionStatus: FileExtractionStatus.READY, extractedText, extractedAt: new Date(), extractionError: null }, select: FILE_PUBLIC_SELECT });
+      await this.activityLog.record({ userId, action: ACTIVITY_ACTIONS.FILE_CONTENT_EXTRACTED, entityType: 'FILE', entityId: fileId, metadata: { mimeType, characters: extractedText.length } });
+      return serializeFile(file);
+    } catch (error) {
+      const message = error instanceof Error ? error.message.slice(0, 200) : 'Fayl matnini ajratib bo‘lmadi';
+      const file = await this.prisma.userFile.update({ where: { id: fileId }, data: { extractionStatus: FileExtractionStatus.FAILED, extractionError: message }, select: FILE_PUBLIC_SELECT });
+      return serializeFile(file);
+    }
   }
 }
 

@@ -10,6 +10,8 @@ import { PasswordResetRateLimiterService } from './password-reset/password-reset
 import { PasswordResetService } from './password-reset/password-reset.service';
 import { LoginBruteForceService } from './login-brute-force.service';
 import { AuthSecurityAuditService } from './auth-security-audit.service';
+import { ConfigService } from '@nestjs/config';
+import { ResendEmailDeliveryAdapter } from './password-reset/resend-email-delivery.adapter';
 
 @Module({
   imports: [CommonModule, UsersModule, ActivityLogModule],
@@ -21,7 +23,12 @@ import { AuthSecurityAuditService } from './auth-security-audit.service';
     LoginBruteForceService,
     AuthSecurityAuditService,
     NoopEmailDeliveryAdapter,
-    { provide: EMAIL_DELIVERY_ADAPTER, useExisting: NoopEmailDeliveryAdapter },
+    ResendEmailDeliveryAdapter,
+    {
+      provide: EMAIL_DELIVERY_ADAPTER,
+      inject: [ConfigService, NoopEmailDeliveryAdapter, ResendEmailDeliveryAdapter],
+      useFactory: (config: ConfigService, noop: NoopEmailDeliveryAdapter, resend: ResendEmailDeliveryAdapter) => config.get('email.provider') === 'resend' ? resend : noop,
+    },
   ],
   exports: [AuthService, PasswordResetService],
 })

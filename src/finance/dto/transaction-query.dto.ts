@@ -13,6 +13,10 @@ export class FinanceTransactionQueryDto extends PaginationQueryDto {
   categoryId?: string;
 
   @IsOptional()
+  @IsUUID('4')
+  accountId?: string;
+
+  @IsOptional()
   @IsISO8601({ strict: false })
   from?: string;
 

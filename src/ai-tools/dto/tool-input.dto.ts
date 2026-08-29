@@ -7,6 +7,7 @@ import {
   FinanceCurrency, FinanceTransactionType, MemoryType, MeetingStatus, TaskPriority, TaskStatus,
 } from '@prisma/client';
 import { CreateContactDto } from '../../contacts/dto/create-contact.dto';
+import { UpdateContactDto } from '../../contacts/dto/update-contact.dto';
 import { FINANCE_AMOUNT_PATTERN } from '../../finance/dto/finance-validation';
 
 const dateTimeWithTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/;
@@ -132,6 +133,10 @@ export class GetFileMetadataToolInput {
   @IsUUID('4') fileId!: string;
 }
 
+export class GetFileContentToolInput {
+  @IsUUID('4') fileId!: string;
+}
+
 export class CompareFinancePeriodsToolInput {
   @IsISO8601({ strict: false }) currentFrom!: string;
   @IsISO8601({ strict: false }) currentTo!: string;
@@ -170,12 +175,32 @@ export class CreateNoteToolInput {
 
 export class CreateContactToolInput extends CreateContactDto {}
 
+export class UpdateContactToolInput extends UpdateContactDto {
+  @IsUUID('4') contactId!: string;
+}
+
+export class DeleteContactToolInput {
+  @IsUUID('4') contactId!: string;
+}
+
 export class SaveMemoryToolInput {
   @IsEnum(MemoryType) type!: MemoryType;
   @Transform(trim) @IsString() @MinLength(1) @MaxLength(100) key!: string;
   @IsString() @MinLength(1) @MaxLength(20000) value!: string;
   @IsOptional() @IsInt() @Min(1) @Max(10) importance?: number;
   @IsOptional() @IsUUID('4') contactId?: string;
+}
+
+export class UpdateMemoryToolInput {
+  @IsUUID('4') memoryId!: string;
+  @IsOptional() @Transform(trim) @IsString() @MinLength(1) @MaxLength(100) key?: string;
+  @IsOptional() @IsString() @MinLength(1) @MaxLength(20000) value?: string;
+  @IsOptional() @IsEnum(MemoryType) type?: MemoryType;
+  @IsOptional() @IsInt() @Min(1) @Max(10) importance?: number;
+}
+
+export class DeleteMemoryToolInput {
+  @IsUUID('4') memoryId!: string;
 }
 
 export class CreateFinanceTransactionToolInput {
@@ -185,6 +210,7 @@ export class CreateFinanceTransactionToolInput {
   @IsEnum(FinanceCurrency) currency!: FinanceCurrency;
   @Transform(trim) @IsString() @MinLength(1) @MaxLength(200) title!: string;
   @IsOptional() @IsUUID('4') categoryId?: string;
+  @IsOptional() @IsUUID('4') accountId?: string;
   @IsOptional() @IsUUID('4') contactId?: string;
   @IsOptional() @IsISO8601({ strict: false }) transactionDate?: string;
   @IsOptional() @IsString() @MaxLength(5000) description?: string;
