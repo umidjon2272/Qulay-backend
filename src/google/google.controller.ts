@@ -46,8 +46,10 @@ export class GoogleController {
       return response.redirect(target);
     } catch (error) {
       const mapped = mapGoogleError(error);
-      const reason = oauthError === 'access_denied' ? 'cancelled' : mapped.getStatus() === 400 ? 'invalid' : 'unavailable';
-      const target = `${frontend}/settings?tab=integrations&integration=google&status=error&reason=${reason}`;
+      const cancelled = oauthError === 'access_denied';
+      const reason = cancelled ? 'cancelled' : mapped.getStatus() === 400 ? 'invalid' : 'unavailable';
+      const status = cancelled ? 'cancelled' : 'error';
+      const target = `${frontend}/settings?tab=integrations&integration=google&status=${status}&reason=${reason}`;
       this.logger.warn({ event: 'google_oauth_redirect', success: false, target, reason, errorDescriptionPresent });
       return response.redirect(target);
     }

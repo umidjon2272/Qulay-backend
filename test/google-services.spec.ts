@@ -88,6 +88,38 @@ describe('Google integration adapters', () => {
     fetchSpy.mockRestore();
   });
 
+
+  it('keeps OAuth connected when optional userinfo lookup fails after a successful token exchange', async () => {
+    const prisma = {
+      user: { findUnique: jest.fn().mockResolvedValue({ id: 'user-1' }) },
+      googleConnection: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        upsert: jest.fn().mockResolvedValue({}),
+      },
+    } as any;
+    const crypto = { encrypt: jest.fn((value: string) => `encrypted:${value}`) } as any;
+    const api = { request: jest.fn().mockRejectedValue(new Error('userinfo unavailable')) } as any;
+    const activity = { record: jest.fn().mockResolvedValue(undefined) } as any;
+    const auth = new GoogleAuthService(new ConfigService({
+      google: { configured: true, clientId: 'client-id', clientSecret: 'client-secret', redirectUri: 'https://qulay-backend-y98j.onrender.com/api/integrations/google/callback' },
+      jwt: { accessSecret: 'jwt-secret' },
+    }), prisma, crypto, api, activity);
+    const state = new URL(auth.connectUrl('user-1')).searchParams.get('state')!;
+    const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue({ ok: true, status: 200, json: async () => ({ access_token: 'access-token', expires_in: 3600, scope: 'https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/drive.readonly' }) } as Response);
+
+    await expect(auth.callback('oauth-code', state)).resolves.toBeUndefined();
+    expect(prisma.googleConnection.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({ status: GoogleConnectionStatus.CONNECTED, googleUserId: null }),
+    }));
+    fetchSpy.mockRestore();
+  });
+
+  it('treats broader Calendar and Drive scopes as service-enabled without requiring redundant narrower scopes', async () => {
+    const prisma = { googleConnection: { findUnique: jest.fn().mockResolvedValue({ status: GoogleConnectionStatus.CONNECTED, email: null, displayName: null, connectedAt: null, scopes: ['https://www.googleapis.com/auth/calendar.events', 'https://www.googleapis.com/auth/drive.readonly'] }) } } as any;
+    const auth = new GoogleAuthService(new ConfigService({ google: { configured: true } }), prisma, {} as any, {} as any, {} as any);
+    await expect(auth.status('user-1')).resolves.toMatchObject({ connected: true, calendarEnabled: true, driveEnabled: true });
+  });
+
   it('returns a secret-free connected status for the JWT user', async () => {
     const prisma = { googleConnection: { findUnique: jest.fn().mockResolvedValue({ status: GoogleConnectionStatus.CONNECTED, email: 'user@example.com', displayName: 'User', connectedAt: new Date('2026-08-28T00:00:00Z'), scopes: ['https://www.googleapis.com/auth/calendar.readonly', 'https://www.googleapis.com/auth/calendar.events', 'https://www.googleapis.com/auth/drive.metadata.readonly', 'https://www.googleapis.com/auth/drive.readonly'], encryptedAccessToken: 'secret' }) } } as any;
     const auth = new GoogleAuthService(new ConfigService({ google: { configured: true } }), prisma, {} as any, {} as any, {} as any);

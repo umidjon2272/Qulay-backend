@@ -22,6 +22,9 @@ type OAuthState = { userId: string; nonce: string; expiresAt: number };
 type TokenResponse = { access_token: string; refresh_token?: string; expires_in?: number; scope?: string };
 type GoogleProfile = { sub?: string; email?: string; name?: string };
 
+const CALENDAR_SCOPE_PREFIX = 'https://www.googleapis.com/auth/calendar';
+const DRIVE_SCOPE_PREFIX = 'https://www.googleapis.com/auth/drive';
+
 @Injectable()
 export class GoogleAuthService {
   private readonly logger = new Logger(GoogleAuthService.name);
@@ -70,17 +73,27 @@ export class GoogleAuthService {
       const token = await this.exchangeCode(code);
       exchangeSucceeded = true;
       this.logger.log({ event: 'google_oauth_code_exchange', success: true, accessTokenPresent: Boolean(token.access_token), refreshTokenPresent: Boolean(token.refresh_token) });
-      const profile = await this.api.request<GoogleProfile>('https://www.googleapis.com/oauth2/v3/userinfo', token.access_token, { resource: 'oauth' });
-      if (!profile.sub) throw new GoogleAdapterError('INVALID_REQUEST');
+
+      // Calendar/Drive authorization must not depend on the optional userinfo lookup.
+      // The signed OAuth state already identifies the Qulay AI user. If Google userinfo
+      // is temporarily unavailable, keep the granted tokens/scopes and enrich profile
+      // metadata on a best-effort basis instead of dropping a successful connection.
+      let profile: GoogleProfile = {};
+      try {
+        profile = await this.api.request<GoogleProfile>('https://www.googleapis.com/oauth2/v3/userinfo', token.access_token, { resource: 'oauth' });
+      } catch {
+        this.logger.warn({ event: 'google_oauth_profile_lookup_failed', exchangeSucceeded: true });
+      }
+
       const existing = await this.prisma.googleConnection.findUnique({ where: { userId: state.userId } });
-      const scopes = token.scope?.split(' ').filter(Boolean) ?? [...GOOGLE_SCOPES];
+      const scopes = this.normalizeScopes(token.scope);
       await this.prisma.googleConnection.upsert({
       where: { userId: state.userId },
       create: {
         userId: state.userId,
-        googleUserId: profile.sub,
-        email: profile.email ?? null,
-        displayName: profile.name ?? null,
+        googleUserId: profile.sub ?? null,
+        email: profile.email ?? existing?.email ?? null,
+        displayName: profile.name ?? existing?.displayName ?? null,
         encryptedAccessToken: this.crypto.encrypt(token.access_token),
         encryptedRefreshToken: token.refresh_token ? this.crypto.encrypt(token.refresh_token) : existing?.encryptedRefreshToken ?? null,
         accessTokenExpiresAt: this.expiry(token.expires_in),
@@ -90,9 +103,9 @@ export class GoogleAuthService {
         lastUsedAt: null,
       },
       update: {
-        googleUserId: profile.sub,
-        email: profile.email ?? null,
-        displayName: profile.name ?? null,
+        googleUserId: profile.sub ?? existing?.googleUserId ?? null,
+        email: profile.email ?? existing?.email ?? null,
+        displayName: profile.name ?? existing?.displayName ?? null,
         encryptedAccessToken: this.crypto.encrypt(token.access_token),
         encryptedRefreshToken: token.refresh_token ? this.crypto.encrypt(token.refresh_token) : existing?.encryptedRefreshToken ?? null,
         accessTokenExpiresAt: this.expiry(token.expires_in),
@@ -146,6 +159,8 @@ export class GoogleAuthService {
     const connection = await this.prisma.googleConnection.findUnique({ where: { userId } });
     const connected = connection?.status === GoogleConnectionStatus.CONNECTED;
     const scopes = new Set(connection?.scopes ?? []);
+    const calendarEnabled = connected && [...scopes].some((scope) => scope === CALENDAR_SCOPE_PREFIX || scope.startsWith(`${CALENDAR_SCOPE_PREFIX}.`));
+    const driveEnabled = connected && [...scopes].some((scope) => scope === DRIVE_SCOPE_PREFIX || scope.startsWith(`${DRIVE_SCOPE_PREFIX}.`));
     return {
       configured: true,
       connected,
@@ -153,8 +168,8 @@ export class GoogleAuthService {
       email: connection?.email ?? null,
       displayName: connection?.displayName ?? null,
       connectedAt: connection?.connectedAt?.toISOString() ?? null,
-      calendarEnabled: connected && scopes.has('https://www.googleapis.com/auth/calendar.readonly') && scopes.has('https://www.googleapis.com/auth/calendar.events'),
-      driveEnabled: connected && scopes.has('https://www.googleapis.com/auth/drive.metadata.readonly') && scopes.has('https://www.googleapis.com/auth/drive.readonly'),
+      calendarEnabled,
+      driveEnabled,
     };
   }
 
@@ -232,6 +247,12 @@ export class GoogleAuthService {
       }
     }
     throw new GoogleAdapterError('UNAVAILABLE');
+  }
+
+
+  private normalizeScopes(scopeValue: string | undefined): string[] {
+    if (!scopeValue?.trim()) return [...GOOGLE_SCOPES];
+    return [...new Set(scopeValue.split(/[\s,]+/).map((scope) => scope.trim()).filter(Boolean))];
   }
 
   private signState(payload: OAuthState): string {
