@@ -8,10 +8,10 @@
   "description": "Yechim AI backend foundation and authentication API",
   "scripts": {
     "build": "nest build",
-    "start": "node dist/main.js",
+    "start": "npm run prisma:deploy && node dist/main.js",
     "start:dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
-    "start:prod": "node dist/main.js",
+    "start:prod": "npm run prisma:deploy && node dist/main.js",
     "prisma:generate": "node node_modules/prisma/build/index.js generate",
     "prisma:migrate": "node node_modules/prisma/build/index.js migrate dev",
     "prisma:deploy": "node node_modules/prisma/build/index.js migrate deploy",

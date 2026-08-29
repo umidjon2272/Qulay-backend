@@ -20,11 +20,33 @@ export type GoogleErrorCode =
   | 'FILE_NOT_FOUND'
   | 'UNAVAILABLE'
   | 'INVALID_REQUEST'
-  | 'NOT_CONFIGURED';
+  | 'NOT_CONFIGURED'
+  | 'USER_NOT_FOUND'
+  | 'TOKEN_EXCHANGE_FAILED'
+  | 'TOKEN_ENCRYPTION_FAILED'
+  | 'CONNECTION_PERSIST_FAILED';
 
 export class GoogleAdapterError extends Error {
   constructor(public readonly code: GoogleErrorCode, public readonly status?: number) {
     super(code);
+  }
+}
+
+export function googleErrorCode(error: unknown): GoogleErrorCode {
+  return error instanceof GoogleAdapterError ? error.code : 'UNAVAILABLE';
+}
+
+export function googlePublicErrorMessage(code: GoogleErrorCode): string {
+  switch (code) {
+    case 'OAUTH_CANCELLED': return 'Google ulanishi bekor qilindi';
+    case 'INVALID_STATE': return 'Google OAuth state yaroqsiz yoki eskirgan';
+    case 'USER_NOT_FOUND': return 'OAuth foydalanuvchisi production bazasida topilmadi';
+    case 'TOKEN_EXCHANGE_FAILED': return 'Google authorization code tokenlarga almashtirilmadi';
+    case 'TOKEN_ENCRYPTION_FAILED': return 'Google tokenlarini shifrlash konfiguratsiyasi yaroqsiz';
+    case 'CONNECTION_PERSIST_FAILED': return 'Google ulanishi database’da saqlanmadi';
+    case 'INVALID_REQUEST': return 'Google callback so‘rovi to‘liq emas';
+    case 'NOT_CONFIGURED': return 'Google integratsiyasi sozlanmagan';
+    default: return 'Google ulanishida server xatosi yuz berdi';
   }
 }
 

@@ -53,7 +53,7 @@ describe('Google integration API security', () => {
     await request(app.getHttpServer())
       .get('/api/integrations/google/callback').query(query)
       .expect(302)
-      .expect('Location', 'http://localhost:5173/settings?tab=integrations&integration=google&status=error&reason=invalid');
+      .expect('Location', /status=error&reason=invalid&errorCode=INVALID_STATE/);
   });
 
   it('handles a Google error callback cleanly, including error_description metadata', async () => {
@@ -61,7 +61,7 @@ describe('Google integration API security', () => {
       .get('/api/integrations/google/callback')
       .query({ error: 'access_denied', error_description: 'The user denied access', state: 'valid-signed-state' })
       .expect(302)
-      .expect('Location', 'http://localhost:5173/settings?tab=integrations&integration=google&status=cancelled&reason=cancelled');
+      .expect('Location', /status=cancelled&reason=cancelled&errorCode=OAUTH_CANCELLED/);
   });
 
   it('ignores arbitrary provider metadata without treating it as callback application input', async () => {
@@ -79,7 +79,7 @@ describe('Google integration API security', () => {
       .get('/api/integrations/google/callback')
       .query({ state: 'valid-signed-state', authuser: '0', prompt: 'none' })
       .expect(302)
-      .expect('Location', 'http://localhost:5173/settings?tab=integrations&integration=google&status=error&reason=invalid');
+      .expect('Location', /status=error&reason=invalid&errorCode=INVALID_REQUEST/);
     expect(googleAuth.callback).toHaveBeenLastCalledWith(undefined, 'valid-signed-state', undefined);
   });
 });

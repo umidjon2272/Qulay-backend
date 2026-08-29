@@ -1,12 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { GoogleConnection, GoogleConnectionStatus } from '@prisma/client';
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { ActivityLogService, ACTIVITY_ACTIONS } from '../activity-log/activity-log.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { GoogleApiClientService } from './google-api-client.service';
 import { GoogleCryptoService } from './google-crypto.service';
-import { GoogleAdapterError, isRetryableGoogleStatus, retryAfterMs } from './google.errors';
+import { GoogleAdapterError, googleErrorCode, isRetryableGoogleStatus, retryAfterMs } from './google.errors';
 
 export const GOOGLE_SCOPES = [
   'openid',
@@ -66,8 +66,9 @@ export class GoogleAuthService {
       const state = this.verifyState(stateValue);
       stateValid = true;
       const owner = await this.prisma.user.findUnique({ where: { id: state.userId }, select: { id: true } });
-      if (!owner) throw new GoogleAdapterError('INVALID_STATE');
+      if (!owner) throw new GoogleAdapterError('USER_NOT_FOUND');
       userResolved = true;
+      this.logger.log({ event: 'google_oauth_user_resolved', userRef: this.fingerprint(state.userId), databaseRef: this.databaseFingerprint(), matched: owner.id === state.userId });
       if (oauthError) throw new GoogleAdapterError('OAUTH_CANCELLED');
       if (!code) throw new GoogleAdapterError('INVALID_REQUEST');
       const token = await this.exchangeCode(code);
@@ -87,15 +88,25 @@ export class GoogleAuthService {
 
       const existing = await this.prisma.googleConnection.findUnique({ where: { userId: state.userId } });
       const scopes = this.normalizeScopes(token.scope);
-      await this.prisma.googleConnection.upsert({
+      let encryptedAccessToken: string;
+      let encryptedRefreshToken: string | null;
+      try {
+        encryptedAccessToken = this.crypto.encrypt(token.access_token);
+        encryptedRefreshToken = token.refresh_token ? this.crypto.encrypt(token.refresh_token) : existing?.encryptedRefreshToken ?? null;
+      } catch {
+        throw new GoogleAdapterError('TOKEN_ENCRYPTION_FAILED');
+      }
+      let persisted: GoogleConnection;
+      try {
+        persisted = await this.prisma.googleConnection.upsert({
       where: { userId: state.userId },
       create: {
         userId: state.userId,
         googleUserId: profile.sub ?? null,
         email: profile.email ?? existing?.email ?? null,
         displayName: profile.name ?? existing?.displayName ?? null,
-        encryptedAccessToken: this.crypto.encrypt(token.access_token),
-        encryptedRefreshToken: token.refresh_token ? this.crypto.encrypt(token.refresh_token) : existing?.encryptedRefreshToken ?? null,
+        encryptedAccessToken,
+        encryptedRefreshToken,
         accessTokenExpiresAt: this.expiry(token.expires_in),
         scopes,
         status: GoogleConnectionStatus.CONNECTED,
@@ -106,19 +117,27 @@ export class GoogleAuthService {
         googleUserId: profile.sub ?? existing?.googleUserId ?? null,
         email: profile.email ?? existing?.email ?? null,
         displayName: profile.name ?? existing?.displayName ?? null,
-        encryptedAccessToken: this.crypto.encrypt(token.access_token),
-        encryptedRefreshToken: token.refresh_token ? this.crypto.encrypt(token.refresh_token) : existing?.encryptedRefreshToken ?? null,
+        encryptedAccessToken,
+        encryptedRefreshToken,
         accessTokenExpiresAt: this.expiry(token.expires_in),
         scopes,
         status: GoogleConnectionStatus.CONNECTED,
         connectedAt: new Date(),
       },
-      });
+        });
+      } catch {
+        throw new GoogleAdapterError('CONNECTION_PERSIST_FAILED');
+      }
+      if (persisted.userId !== state.userId || persisted.status !== GoogleConnectionStatus.CONNECTED) throw new GoogleAdapterError('CONNECTION_PERSIST_FAILED');
       dbUpsertSucceeded = true;
-      this.logger.log({ event: 'google_oauth_connection_persisted', success: true, finalStatus: GoogleConnectionStatus.CONNECTED });
-      await this.activityLog.record({ userId: state.userId, action: ACTIVITY_ACTIONS.GOOGLE_CONNECTED, entityType: 'GOOGLE_CONNECTION', metadata: { scopes } });
+      this.logger.log({ event: 'google_oauth_connection_persisted', success: true, userRef: this.fingerprint(state.userId), databaseRef: this.databaseFingerprint(), connectionId: persisted.id, finalStatus: persisted.status, scopeCount: scopes.length });
+      try {
+        await this.activityLog.record({ userId: state.userId, action: ACTIVITY_ACTIONS.GOOGLE_CONNECTED, entityType: 'GOOGLE_CONNECTION', metadata: { scopes } });
+      } catch {
+        this.logger.warn({ event: 'google_oauth_activity_log_failed', userRef: this.fingerprint(state.userId) });
+      }
     } catch (error) {
-      this.logger.warn({ event: 'google_oauth_callback_failed', stateValid, userResolved, exchangeSucceeded, dbUpsertSucceeded, errorCode: error instanceof GoogleAdapterError ? error.code : 'UNAVAILABLE' });
+      this.logger.warn({ event: 'google_oauth_callback_failed', stateValid, userResolved, exchangeSucceeded, dbUpsertSucceeded, errorCode: googleErrorCode(error), errorType: error instanceof Error ? error.constructor.name : 'Unknown' });
       throw error;
     }
   }
@@ -126,6 +145,7 @@ export class GoogleAuthService {
   async getAccessToken(userId: string): Promise<string> {
     this.assertConfigured();
     const connection = await this.prisma.googleConnection.findUnique({ where: { userId } });
+    this.logger.log({ event: 'google_oauth_status_read', userRef: this.fingerprint(userId), databaseRef: this.databaseFingerprint(), connectionFound: Boolean(connection), storedStatus: connection?.status ?? null });
     if (!connection || connection.status === GoogleConnectionStatus.ERROR) {
       throw new GoogleAdapterError('TOKEN_REVOKED');
     }
@@ -222,7 +242,10 @@ export class GoogleAuthService {
     const result = await this.tokenRequest({ code, client_id: this.config.getOrThrow<string>('google.clientId'), client_secret: this.config.getOrThrow<string>('google.clientSecret'), redirect_uri: this.config.getOrThrow<string>('google.redirectUri'), grant_type: 'authorization_code' });
     const response = result.response;
     const payload = result.payload as TokenResponse;
-    if (!response.ok || !payload.access_token) throw new GoogleAdapterError('UNAVAILABLE', response.status);
+    if (!response.ok || !payload.access_token) {
+      this.logger.warn({ event: 'google_oauth_code_exchange', success: false, httpStatus: response.status, providerErrorPresent: Boolean((payload as { error?: unknown })?.error) });
+      throw new GoogleAdapterError('TOKEN_EXCHANGE_FAILED', response.status);
+    }
     return payload;
   }
 
@@ -253,6 +276,14 @@ export class GoogleAuthService {
   private normalizeScopes(scopeValue: string | undefined): string[] {
     if (!scopeValue?.trim()) return [...GOOGLE_SCOPES];
     return [...new Set(scopeValue.split(/[\s,]+/).map((scope) => scope.trim()).filter(Boolean))];
+  }
+
+  private fingerprint(value: string): string {
+    return createHash('sha256').update(value).digest('hex').slice(0, 12);
+  }
+
+  private databaseFingerprint(): string {
+    return this.fingerprint(this.config.get<string>('DATABASE_URL', 'database-url-unavailable'));
   }
 
   private signState(payload: OAuthState): string {

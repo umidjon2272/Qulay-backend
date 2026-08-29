@@ -54,7 +54,7 @@ describe('Google integration adapters', () => {
       user: { findUnique: jest.fn().mockResolvedValue({ id: 'user-1' }) },
       googleConnection: {
         findUnique: jest.fn().mockResolvedValue({ encryptedRefreshToken: 'encrypted:old-refresh' }),
-        upsert: jest.fn().mockResolvedValue({}),
+        upsert: jest.fn().mockResolvedValue({ id: 'connection-1', userId: 'user-1', status: GoogleConnectionStatus.CONNECTED }),
       },
     } as any;
     const crypto = { encrypt: jest.fn((value: string) => `encrypted:${value}`) } as any;
@@ -94,7 +94,7 @@ describe('Google integration adapters', () => {
       user: { findUnique: jest.fn().mockResolvedValue({ id: 'user-1' }) },
       googleConnection: {
         findUnique: jest.fn().mockResolvedValue(null),
-        upsert: jest.fn().mockResolvedValue({}),
+        upsert: jest.fn().mockResolvedValue({ id: 'connection-1', userId: 'user-1', status: GoogleConnectionStatus.CONNECTED }),
       },
     } as any;
     const crypto = { encrypt: jest.fn((value: string) => `encrypted:${value}`) } as any;

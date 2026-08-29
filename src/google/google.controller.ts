@@ -7,7 +7,7 @@ import { CalendarEventsQueryDto, CreateCalendarEventDto, DriveFilesQueryDto, Upd
 import { GoogleAuthService } from './google-auth.service';
 import { GoogleCalendarService } from './google-calendar.service';
 import { GoogleDriveService } from './google-drive.service';
-import { mapGoogleError } from './google.errors';
+import { googleErrorCode, googlePublicErrorMessage, mapGoogleError } from './google.errors';
 import { ConfigService } from '@nestjs/config';
 import { SecurityRateLimitService } from '../common/security/security-rate-limit.service';
 import { RateLimitException } from '../common/security/rate-limit.exception';
@@ -42,6 +42,7 @@ export class GoogleController {
     const state = this.providerQueryValue(rawState, 4096);
     const oauthError = this.providerQueryValue(rawError, 200);
     const errorDescriptionPresent = Boolean(this.providerQueryValue(rawErrorDescription, 2000));
+    this.logger.log({ event: 'google_oauth_callback_received', codePresent: Boolean(code), statePresent: Boolean(state), providerError: oauthError ?? null });
     if (!this.rateLimiter.isAllowed('google-callback-ip', request.ip ?? 'unknown', 30, 60 * 1000)) {
       throw new RateLimitException('Too many OAuth callback attempts. Try again later.');
     }
@@ -55,8 +56,10 @@ export class GoogleController {
       const cancelled = oauthError === 'access_denied';
       const reason = cancelled ? 'cancelled' : mapped.getStatus() === 400 ? 'invalid' : 'unavailable';
       const status = cancelled ? 'cancelled' : 'error';
-      const target = `${frontend}/settings?tab=integrations&integration=google&status=${status}&reason=${reason}`;
-      this.logger.warn({ event: 'google_oauth_redirect', success: false, target, reason, errorDescriptionPresent });
+      const errorCode = googleErrorCode(error);
+      const params = new URLSearchParams({ tab: 'integrations', integration: 'google', status, reason, errorCode, message: googlePublicErrorMessage(errorCode) });
+      const target = `${frontend}/settings?${params.toString()}`;
+      this.logger.warn({ event: 'google_oauth_redirect', success: false, reason, errorCode, errorDescriptionPresent });
       return response.redirect(target);
     }
   }
