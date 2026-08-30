@@ -27,6 +27,7 @@ import { CreateTaskDto } from '../tasks/dto/create-task.dto';
 import { TaskQueryDto } from '../tasks/dto/task-query.dto';
 import { TasksService } from '../tasks/tasks.service';
 import { TodayService } from '../today/today.service';
+import { BriefingService } from '../briefing/briefing.service';
 import {
   CompareFinancePeriodsToolInput, ContactHistoryToolInput, CreateContactToolInput,
   CreateFinanceTransactionToolInput, CreateMeetingToolInput, CreateNoteToolInput,
@@ -38,6 +39,7 @@ import {
   UpdateContactToolInput, DeleteContactToolInput, UpdateMemoryToolInput, DeleteMemoryToolInput,
   GetGoogleCalendarEventsToolInput, CreateGoogleCalendarEventToolInput,
   UpdateGoogleCalendarEventToolInput, DeleteGoogleCalendarEventToolInput, SearchGoogleDriveFilesToolInput,
+  BudgetStatusToolInput, CashflowForecastToolInput, DailyBriefingToolInput,
 } from './dto/tool-input.dto';
 import { TelegramIntegrationService } from '../telegram/telegram-integration.service';
 import { GoogleCalendarService } from '../google/google-calendar.service';
@@ -105,6 +107,7 @@ export class AIToolRegistryService {
     private readonly financeToolsService: FinanceToolsService,
     private readonly todayService: TodayService,
     private readonly telegramIntegrationService: TelegramIntegrationService,
+    private readonly briefingService: BriefingService,
     private readonly activityLog: ActivityLogService,
     @Optional() private readonly googleCalendarService?: GoogleCalendarService,
     @Optional() private readonly googleDriveService?: GoogleDriveService,
@@ -274,6 +277,24 @@ export class AIToolRegistryService {
         const current = assertPeriod(input.currentFrom, input.currentTo); const previous = assertPeriod(input.previousFrom, input.previousTo);
         return this.financeToolsService.compareFinancePeriods(context.userId, current.from, current.to, previous.from, previous.to, input.currency);
       },
+    }));
+
+    this.register(this.base<BudgetStatusToolInput, unknown>({
+      name: 'get_budget_status', description: 'Get deterministic spent-vs-budgeted totals per category for a month.', category: AIToolCategory.FINANCE,
+      sideEffect: 'READ', validate: BudgetStatusToolInput, inputSchema: schema({ monthKey: { type: 'string' }, currency: { type: 'string' } }, ['currency']),
+      execute: (context, input) => this.financeToolsService.getBudgetStatus(context.userId, input.monthKey, input.currency),
+    }));
+
+    this.register(this.base<CashflowForecastToolInput, unknown>({
+      name: 'get_cashflow_forecast', description: 'Get a deterministic linear cash-flow forecast for the current month. Never invent numbers beyond what this tool returns.', category: AIToolCategory.FINANCE,
+      sideEffect: 'READ', validate: CashflowForecastToolInput, inputSchema: schema({ currency: { type: 'string' } }, ['currency']),
+      execute: (context, input) => this.financeToolsService.getCashflowForecast(context.userId, input.currency),
+    }));
+
+    this.register(this.base<DailyBriefingToolInput, unknown>({
+      name: 'get_daily_briefing', description: 'Get the user\'s deterministic daily plan and priorities for today.', category: AIToolCategory.TODAY,
+      sideEffect: 'READ', validate: DailyBriefingToolInput, inputSchema: schema({ date: { type: 'string' } }),
+      execute: (context, input) => this.briefingService.buildMorningBriefing(context.userId, input.date),
     }));
 
     this.register(this.base<CreateTaskToolInput, unknown>({

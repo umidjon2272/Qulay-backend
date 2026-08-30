@@ -51,4 +51,5 @@ export default () => ({
   },
   monitoring: { sentryDsn: process.env.SENTRY_DSN },
   notificationCronSecret: process.env.NOTIFICATION_CRON_SECRET,
+  agentCronSecret: process.env.AGENT_CRON_SECRET ?? process.env.NOTIFICATION_CRON_SECRET,
 });

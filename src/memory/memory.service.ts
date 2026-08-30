@@ -7,6 +7,7 @@ import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { CreateMemoryDto } from './dto/create-memory.dto';
 import { MemoryQueryDto } from './dto/memory-query.dto';
 import { UpdateMemoryDto } from './dto/update-memory.dto';
+import { APP_ERROR_CODES } from '../common/errors/app-error-codes';
 
 export type MemoryRetrievalOptions = {
   type?: MemoryType;
@@ -48,14 +49,14 @@ export class MemoryService {
   async createForUser(userId: string, dto: CreateMemoryDto) {
     await this.subscriptions?.assertMemoryAllowed(userId);
     const preference = await this.prisma.user.findUnique({ where: { id: userId }, select: { memoryEnabled: true } });
-    if (!preference?.memoryEnabled) throw new ConflictException('AI memory is disabled');
+    if (!preference?.memoryEnabled) throw new ConflictException({ code: APP_ERROR_CODES.MEMORY_DISABLED, message: 'AI memory is disabled' });
     await this.assertContactOwnership(userId, dto.contactId);
     const existing = await this.prisma.userMemory.findFirst({
       where: { userId, key: { equals: dto.key.trim(), mode: 'insensitive' }, status: MemoryStatus.ACTIVE },
     });
     if (existing) {
       if (existing.value.trim().toLocaleLowerCase() === dto.value.trim().toLocaleLowerCase()) return this.getForUser(userId, existing.id);
-      throw new ConflictException('A memory with this key already exists; update it explicitly');
+      throw new ConflictException({ code: APP_ERROR_CODES.MEMORY_KEY_CONFLICT, message: 'A memory with this key already exists; update it explicitly' });
     }
     try {
       const memory = await this.prisma.userMemory.create({
@@ -240,7 +241,7 @@ export class MemoryService {
 
   private throwDuplicateMemory(error: unknown): void {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
-      throw new ConflictException('A memory with this key already exists');
+      throw new ConflictException({ code: APP_ERROR_CODES.MEMORY_KEY_CONFLICT, message: 'A memory with this key already exists' });
     }
   }
 }

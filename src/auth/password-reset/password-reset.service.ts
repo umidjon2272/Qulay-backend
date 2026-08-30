@@ -10,6 +10,7 @@ import { ResetPasswordDto } from '../dto/reset-password.dto';
 import { EMAIL_DELIVERY_ADAPTER, EmailDeliveryAdapter } from './email-delivery.adapter';
 import { PasswordResetRateLimiterService } from './password-reset-rate-limiter.service';
 import { RateLimitException } from '../../common/security/rate-limit.exception';
+import { APP_ERROR_CODES } from '../../common/errors/app-error-codes';
 
 export const FORGOT_PASSWORD_RESPONSE = {
   success: true,
@@ -98,7 +99,7 @@ export class PasswordResetService {
     const now = new Date();
 
     if (!resetToken || !hashMatches || resetToken.expiresAt <= now || resetToken.usedAt || resetToken.user.status !== UserStatus.ACTIVE) {
-      throw new BadRequestException('Reset token yaroqsiz yoki muddati tugagan.');
+      throw new BadRequestException({ code: APP_ERROR_CODES.RESET_TOKEN_INVALID, message: 'Reset token yaroqsiz yoki muddati tugagan.' });
     }
 
     const newPasswordHash = await bcrypt.hash(dto.newPassword, this.saltRounds());
@@ -108,13 +109,13 @@ export class PasswordResetService {
           where: { id: resetToken.id, usedAt: null, expiresAt: { gt: now } },
           data: { usedAt: now },
         });
-        if (claimed.count !== 1) throw new BadRequestException('Reset token yaroqsiz yoki muddati tugagan.');
+        if (claimed.count !== 1) throw new BadRequestException({ code: APP_ERROR_CODES.RESET_TOKEN_INVALID, message: 'Reset token yaroqsiz yoki muddati tugagan.' });
 
         const updatedUser = await transaction.user.updateMany({
           where: { id: resetToken.userId, status: UserStatus.ACTIVE },
           data: { passwordHash: newPasswordHash },
         });
-        if (updatedUser.count !== 1) throw new BadRequestException('Reset token yaroqsiz yoki muddati tugagan.');
+        if (updatedUser.count !== 1) throw new BadRequestException({ code: APP_ERROR_CODES.RESET_TOKEN_INVALID, message: 'Reset token yaroqsiz yoki muddati tugagan.' });
 
         await transaction.refreshToken.updateMany({
           where: { userId: resetToken.userId, revokedAt: null },

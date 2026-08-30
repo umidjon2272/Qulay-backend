@@ -61,6 +61,7 @@ export const envValidationSchema = Joi.object({
   EMAIL_FROM: Joi.string().min(3).optional(),
   SENTRY_DSN: Joi.string().uri().optional(),
   NOTIFICATION_CRON_SECRET: Joi.string().min(32).optional(),
+  AGENT_CRON_SECRET: Joi.string().min(32).optional(),
 
   FILE_STORAGE_PROVIDER: Joi.string().lowercase().valid('local', 's3').default('local'),
   FILE_STORAGE_LOCAL_PATH: Joi.string().min(1).default('./uploads'),

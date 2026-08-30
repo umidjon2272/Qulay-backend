@@ -16,6 +16,7 @@ import { LoginBruteForceService } from './login-brute-force.service';
 import { AuthSecurityAuditService } from './auth-security-audit.service';
 import { RateLimitException } from '../common/security/rate-limit.exception';
 import { hashPassword } from './password-hash';
+import { APP_ERROR_CODES } from '../common/errors/app-error-codes';
 
 type TokenPair = {
   accessToken: string;
@@ -55,7 +56,7 @@ export class AuthService {
     this.logTiming('register:user_lookup', stageStartedAt);
     if (existingUser) {
       await this.securityAudit.recordUserAction(existingUser.id, AuthSecurityAuditService.actions.REGISTER_FAILED, 'email_already_registered');
-      throw new ConflictException('Email is already registered');
+      throw new ConflictException({ code: APP_ERROR_CODES.EMAIL_ALREADY_REGISTERED, message: 'Email is already registered' });
     }
 
     stageStartedAt = this.timestamp();
@@ -93,12 +94,12 @@ export class AuthService {
     if (!user || user.status === UserStatus.BLOCKED) {
       if (user?.status === UserStatus.BLOCKED) {
         await this.securityAudit.recordUserAction(user.id, AuthSecurityAuditService.actions.LOGIN_FAILED, 'blocked_user');
-        throw new ForbiddenException('User is blocked');
+        throw new ForbiddenException({ code: APP_ERROR_CODES.ACCOUNT_BLOCKED, message: 'User is blocked' });
       }
       const locked = this.bruteForce.recordFailure(ip, email);
       this.securityAudit.recordSuspicious(locked ? AuthSecurityAuditService.actions.LOGIN_BLOCKED : AuthSecurityAuditService.actions.LOGIN_FAILED, ip, email);
       if (locked) throw new RateLimitException('Too many login attempts. Try again later.');
-      throw new UnauthorizedException('Invalid email or password');
+      throw new UnauthorizedException({ code: APP_ERROR_CODES.INVALID_CREDENTIALS, message: 'Invalid email or password' });
     }
 
     stageStartedAt = this.timestamp();
@@ -109,7 +110,7 @@ export class AuthService {
       await this.securityAudit.recordUserAction(user.id, AuthSecurityAuditService.actions.LOGIN_FAILED, 'invalid_credentials');
       this.securityAudit.recordSuspicious(locked ? AuthSecurityAuditService.actions.LOGIN_BLOCKED : AuthSecurityAuditService.actions.LOGIN_FAILED, ip, email);
       if (locked) throw new RateLimitException('Too many login attempts. Try again later.');
-      throw new UnauthorizedException('Invalid email or password');
+      throw new UnauthorizedException({ code: APP_ERROR_CODES.INVALID_CREDENTIALS, message: 'Invalid email or password' });
     }
 
     this.bruteForce.recordSuccess(ip, email);
@@ -129,7 +130,7 @@ export class AuthService {
       throw new UnauthorizedException('Invalid refresh token');
     }
     if (user.status === UserStatus.BLOCKED) {
-      throw new ForbiddenException('User is blocked');
+      throw new ForbiddenException({ code: APP_ERROR_CODES.ACCOUNT_BLOCKED, message: 'User is blocked' });
     }
 
     const now = new Date();
@@ -255,11 +256,11 @@ export class AuthService {
 
     const currentPasswordMatches = await bcrypt.compare(dto.currentPassword, user.passwordHash);
     if (!currentPasswordMatches) {
-      throw new BadRequestException('Joriy parol noto‘g‘ri');
+      throw new BadRequestException({ code: APP_ERROR_CODES.CURRENT_PASSWORD_INVALID, message: 'Joriy parol noto‘g‘ri' });
     }
 
     if (dto.currentPassword === dto.newPassword) {
-      throw new BadRequestException('Yangi parol eski parol bilan bir xil bo‘lmasin');
+      throw new BadRequestException({ code: APP_ERROR_CODES.PASSWORD_SAME_AS_CURRENT, message: 'Yangi parol eski parol bilan bir xil bo‘lmasin' });
     }
 
     const newPasswordHash = await this.hashPassword(dto.newPassword);

@@ -23,6 +23,7 @@ describe('AI tool registry and execution', () => {
   const financeToolsService = { getPeriodSummary: jest.fn(), getTodayFinance: jest.fn(), compareFinancePeriods: jest.fn(), createFinanceTransactionForUser: jest.fn() };
   const todayService = { getForUser: jest.fn().mockResolvedValue({ date: '2026-08-25', timezone: 'UTC', tasks: [], reminders: [], meetings: [], overdueTasks: [], nextMeeting: null }) };
   const telegramIntegrationService = { search: jest.fn(), prepareTelegramMessage: jest.fn(), sendMessage: jest.fn() };
+  const briefingService = { buildMorningBriefing: jest.fn() };
   const googleCalendarService = { list: jest.fn(), create: jest.fn(), update: jest.fn(), delete: jest.fn() };
   const googleDriveService = { list: jest.fn(), metadata: jest.fn() };
   const activityLog = { record: jest.fn().mockResolvedValue(undefined) };
@@ -34,15 +35,15 @@ describe('AI tool registry and execution', () => {
     registry = new AIToolRegistryService(
       tasksService as any, remindersService as any, meetingsService as any, notesService as any,
       contactsService as any, contactHistoryService as any, memoryService as any, financeService as any,
-      financeToolsService as any, todayService as any, telegramIntegrationService as any, activityLog as any,
-      googleCalendarService as any, googleDriveService as any,
+      financeToolsService as any, todayService as any, telegramIntegrationService as any, briefingService as any,
+      activityLog as any, googleCalendarService as any, googleDriveService as any,
     );
     execution = new AIToolExecutionService(registry);
   });
 
   it('lists all first-party tools with confirmation metadata', () => {
     const tools = registry.listMetadata();
-    expect(tools).toHaveLength(32);
+    expect(tools).toHaveLength(35);
     expect(tools.find((tool) => tool.name === 'get_file_content')).toMatchObject({ sideEffect: 'READ', requiresConfirmation: false });
     expect(tools.find((tool) => tool.name === 'get_tasks')).toMatchObject({ sideEffect: 'READ', requiresConfirmation: false });
     expect(tools.find((tool) => tool.name === 'create_task')).toMatchObject({ sideEffect: 'WRITE', requiresConfirmation: true });

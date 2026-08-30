@@ -1,8 +1,9 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Query, UseGuards } from '@nestjs/common';
 import { AuthenticatedUser } from '../auth/types/jwt-payload.type';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { AiAgentService } from './ai-agent.service';
+import { AgentActionQueryDto } from './dto/agent-action-query.dto';
 import { AgentChatDto, AgentConfirmationDto } from './dto/agent-chat.dto';
 
 @Controller('ai/agent')
@@ -12,6 +13,11 @@ export class AiAgentController {
 
   @Get('status')
   status() { return this.agent.status(); }
+
+  @Get('actions')
+  listActions(@CurrentUser() user: AuthenticatedUser, @Query() query: AgentActionQueryDto) {
+    return this.agent.listForUser(user.sub, query);
+  }
 
   @Post('chat')
   chat(@CurrentUser() user: AuthenticatedUser, @Body() dto: AgentChatDto) { return this.agent.chat(user.sub, dto); }

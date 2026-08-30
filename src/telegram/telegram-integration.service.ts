@@ -144,9 +144,9 @@ export class TelegramIntegrationService {
   }
 
   async status(userId: string) {
-    if (!this.isConfigured()) return { connected: false, status: 'not_configured', username: null, displayName: null, maskedPhone: null, connectedAt: null };
+    if (!this.isConfigured()) return { connected: false, status: 'not_configured', username: null, displayName: null, maskedPhone: null, connectedAt: null, temporaryError: false, lastErrorAt: null as Date | null, lastErrorCode: null as string | null, lastValidatedAt: null as Date | null };
     const connection = await this.prisma.telegramConnection.findUnique({ where: { userId } });
-    if (!connection) return { connected: false, status: TelegramConnectionStatus.DISCONNECTED, username: null, displayName: null, maskedPhone: null, connectedAt: null };
+    if (!connection) return { connected: false, status: TelegramConnectionStatus.DISCONNECTED, username: null, displayName: null, maskedPhone: null, connectedAt: null, temporaryError: false, lastErrorAt: null as Date | null, lastErrorCode: null as string | null, lastValidatedAt: null as Date | null };
     let temporaryError = false;
     if (connection.status === TelegramConnectionStatus.CONNECTED && connection.encryptedSession) {
       try {
@@ -155,7 +155,7 @@ export class TelegramIntegrationService {
       } catch (error) {
         if (isTelegramAuthInvalid(error)) {
           await this.revokeConnection(userId, telegramErrorCode(error));
-          return { connected: false, status: TelegramConnectionStatus.DISCONNECTED, username: null, displayName: null, maskedPhone: null, connectedAt: null, temporaryError: false };
+          return { connected: false, status: TelegramConnectionStatus.DISCONNECTED, username: null, displayName: null, maskedPhone: null, connectedAt: null, temporaryError: false, lastErrorAt: null as Date | null, lastErrorCode: telegramErrorCode(error) as string | null, lastValidatedAt: null as Date | null };
         }
         temporaryError = true;
         await this.recordConnectionError(userId, error);
@@ -169,6 +169,9 @@ export class TelegramIntegrationService {
       maskedPhone: this.crypto.maskPhone(connection.phoneNumber),
       connectedAt: connection.connectedAt,
       temporaryError,
+      lastErrorAt: temporaryError ? new Date() : connection.lastErrorAt,
+      lastErrorCode: connection.lastErrorCode,
+      lastValidatedAt: connection.lastValidatedAt,
     };
   }
 

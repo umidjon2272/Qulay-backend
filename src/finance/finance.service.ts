@@ -4,6 +4,7 @@ import { ActivityLogService, ACTIVITY_ACTIONS } from '../activity-log/activity-l
 import { paginationMeta, paginationSkip } from '../common/dto/pagination-query.dto';
 import { assertDateKey, dateKeyInTimezone, parseDateTime, utcDayRange, zonedDayRange } from '../common/date.utils';
 import { PrismaService } from '../prisma/prisma.service';
+import { APP_ERROR_CODES } from '../common/errors/app-error-codes';
 import { CreateFinanceCategoryDto } from './dto/create-finance-category.dto';
 import { CreateFinanceTransactionDto } from './dto/create-finance-transaction.dto';
 import { FinanceCategoryQueryDto } from './dto/finance-category-query.dto';
@@ -504,7 +505,7 @@ export class FinanceService {
   private async resolveAccount(userId: string, accountId: string | undefined, currency: FinanceCurrency) {
     if (accountId) {
       const account = await this.getAccountForUser(userId, accountId);
-      if (account.currency !== currency) throw new BadRequestException('Hisob valyutasi tranzaksiya valyutasiga mos emas');
+      if (account.currency !== currency) throw new BadRequestException({ code: APP_ERROR_CODES.FINANCE_ACCOUNT_CURRENCY_MISMATCH, message: 'Hisob valyutasi tranzaksiya valyutasiga mos emas' });
       if (account.isArchived) throw new BadRequestException('Arxivlangan hisobga tranzaksiya yozib bo‘lmaydi');
       return account;
     }
@@ -592,7 +593,7 @@ export class FinanceService {
       });
       rows.forEach((row) => currencies.add(row.currency));
     }
-    if (currencies.size > 1) throw new BadRequestException('currency query is required when the period contains mixed currencies');
+    if (currencies.size > 1) throw new BadRequestException({ code: APP_ERROR_CODES.FINANCE_CURRENCY_AMBIGUOUS, message: 'currency query is required when the period contains mixed currencies' });
     return currencies.values().next().value as FinanceCurrency | undefined;
   }
 

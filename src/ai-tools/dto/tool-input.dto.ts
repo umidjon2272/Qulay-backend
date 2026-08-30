@@ -73,6 +73,19 @@ export class TodayFinanceToolInput {
   @IsOptional() @IsEnum(FinanceCurrency) currency?: FinanceCurrency;
 }
 
+export class BudgetStatusToolInput {
+  @IsOptional() @IsString() @Matches(/^\d{4}-\d{2}$/) monthKey?: string;
+  @IsEnum(FinanceCurrency) currency!: FinanceCurrency;
+}
+
+export class CashflowForecastToolInput {
+  @IsEnum(FinanceCurrency) currency!: FinanceCurrency;
+}
+
+export class DailyBriefingToolInput {
+  @IsOptional() @IsString() @Matches(dateKey) date?: string;
+}
+
 export class SearchTelegramChatsToolInput {
   @Transform(trim) @IsString() @MinLength(1) @MaxLength(100) query!: string;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(20) limit?: number;

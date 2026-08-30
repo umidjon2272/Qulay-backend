@@ -7,7 +7,9 @@ import { AIToolRegistryService } from '../ai-tools/ai-tool-registry.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { AiUsageService } from '../usage/usage.service';
+import { paginationMeta, paginationSkip } from '../common/dto/pagination-query.dto';
 import { AiProviderService, ProviderMessage, ProviderTool } from './ai-provider.service';
+import { AgentActionQueryDto } from './dto/agent-action-query.dto';
 import { AgentChatDto } from './dto/agent-chat.dto';
 
 const MAX_TOOL_ROUNDS = 6;
@@ -26,6 +28,29 @@ export class AiAgentService {
 
   status() {
     return { configured: this.provider.configured(), mode: this.provider.configured() ? 'MODEL' : 'SETUP_REQUIRED' };
+  }
+
+  async listForUser(userId: string, query: AgentActionQueryDto) {
+    const where = { userId, status: query.status };
+    const [items, total] = await Promise.all([
+      this.prisma.pendingAgentAction.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: paginationSkip(query.page, query.limit),
+        take: query.limit,
+      }),
+      this.prisma.pendingAgentAction.count({ where }),
+    ]);
+    return { items, meta: paginationMeta(query.page, query.limit, total) };
+  }
+
+  /** Sweeps PENDING actions past their expiry so the Approval Center's "Muddati tugadi" status is accurate without waiting for a confirm() call. */
+  async expireStale(): Promise<number> {
+    const result = await this.prisma.pendingAgentAction.updateMany({
+      where: { status: AgentActionStatus.PENDING, expiresAt: { lt: new Date() } },
+      data: { status: AgentActionStatus.EXPIRED },
+    });
+    return result.count;
   }
 
   async chat(userId: string, dto: AgentChatDto) {

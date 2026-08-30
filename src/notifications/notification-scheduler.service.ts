@@ -52,6 +52,27 @@ export class NotificationSchedulerService {
     return this.replaceEntityNotifications(userId, 'MEETING', meeting.id, drafts);
   }
 
+  /**
+   * One-off AI-sourced notification (daily briefing, proactive suggestion) with an
+   * already-resolved channel list. Unlike scheduleTaskNotification/etc. this has no
+   * cancel/replace semantics — each call is a distinct, already-deduplicated event.
+   */
+  async scheduleAgentNotification(userId: string, input: { title: string; message: string; channels: NotificationChannel[]; entityType?: string; entityId?: string; metadata?: Prisma.InputJsonValue }) {
+    if (!input.channels.length) return [];
+    const rows = input.channels.map((channel) => ({
+      userId,
+      type: NotificationType.AI,
+      title: this.sanitize(input.title),
+      message: this.sanitize(input.message),
+      channel,
+      entityType: input.entityType,
+      entityId: input.entityId,
+      scheduledAt: new Date(),
+      metadata: input.metadata,
+    }));
+    return this.prisma.$transaction(rows.map((data) => this.prisma.notification.create({ data })));
+  }
+
   cancelEntityNotifications(userId: string, entityType: string, entityId: string) {
     return this.prisma.notification.updateMany({
       where: { userId, entityType, entityId, status: 'PENDING' },

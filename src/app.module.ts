@@ -27,6 +27,11 @@ import { FilesModule } from './files/files.module';
 import { AdminModule } from './admin/admin.module';
 import { SubscriptionsModule } from './subscriptions/subscriptions.module';
 import { AiAgentModule } from './ai-agent/ai-agent.module';
+import { AgentSettingsModule } from './agent-settings/agent-settings.module';
+import { BriefingModule } from './briefing/briefing.module';
+import { IntegrationsHealthModule } from './integrations-health/integrations-health.module';
+import { ProactiveSuggestionsModule } from './proactive-suggestions/proactive-suggestions.module';
+import { AgentSchedulerModule } from './agent-scheduler/agent-scheduler.module';
 
 @Module({
   imports: [
@@ -60,6 +65,11 @@ import { AiAgentModule } from './ai-agent/ai-agent.module';
     AdminModule,
     SubscriptionsModule,
     AiAgentModule,
+    AgentSettingsModule,
+    IntegrationsHealthModule,
+    BriefingModule,
+    ProactiveSuggestionsModule,
+    AgentSchedulerModule,
     HealthModule,
   ],
 })

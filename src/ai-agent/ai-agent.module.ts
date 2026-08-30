@@ -12,5 +12,6 @@ import { AiProviderService } from './ai-provider.service';
   imports: [PrismaModule, AIToolsModule, UsageModule, SubscriptionsModule, ActivityLogModule],
   controllers: [AiAgentController],
   providers: [AiProviderService, AiAgentService],
+  exports: [AiProviderService, AiAgentService],
 })
 export class AiAgentModule {}

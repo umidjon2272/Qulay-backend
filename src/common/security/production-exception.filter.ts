@@ -42,6 +42,12 @@ export class ProductionExceptionFilter implements ExceptionFilter {
     }
 
     const payload = exception instanceof HttpException ? exception.getResponse() : { statusCode: status, message: 'Request failed' };
-    response.status(status).json(typeof payload === 'string' ? { statusCode: status, message: payload } : payload);
+    const body = typeof payload === 'string' ? { statusCode: status, message: payload } : payload;
+    // `code` lets the frontend show a localized message without parsing English/Uzbek
+    // exception text. Throw sites that haven't been migrated yet fall back to this
+    // generic code, which the frontend maps to its existing status-based message —
+    // so this is purely additive and never changes behavior for unmigrated call sites.
+    const withCode = 'code' in body ? body : { ...body, code: 'GENERIC_ERROR' };
+    response.status(status).json(withCode);
   }
 }

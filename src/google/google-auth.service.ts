@@ -190,6 +190,8 @@ export class GoogleAuthService {
       connectedAt: connection?.connectedAt?.toISOString() ?? null,
       calendarEnabled,
       driveEnabled,
+      lastErrorAt: connection?.lastErrorAt?.toISOString() ?? null,
+      lastErrorCode: connection?.lastErrorCode ?? null,
     };
   }
 
@@ -216,24 +218,25 @@ export class GoogleAuthService {
 
   private async refreshAccessToken(userId: string, connection: GoogleConnection): Promise<string> {
     if (!connection.encryptedRefreshToken) {
-      await this.markError(connection.userId);
+      await this.markError(connection.userId, 'TOKEN_REVOKED', false);
       throw new GoogleAdapterError('TOKEN_REVOKED');
     }
     let refreshToken: string;
-    try { refreshToken = this.crypto.decrypt(connection.encryptedRefreshToken); } catch { await this.markError(userId); throw new GoogleAdapterError('TOKEN_REVOKED'); }
+    try { refreshToken = this.crypto.decrypt(connection.encryptedRefreshToken); } catch { await this.markError(userId, 'TOKEN_REVOKED', false); throw new GoogleAdapterError('TOKEN_REVOKED'); }
     try {
       const result = await this.tokenRequest({ client_id: this.config.getOrThrow<string>('google.clientId'), client_secret: this.config.getOrThrow<string>('google.clientSecret'), grant_type: 'refresh_token', refresh_token: refreshToken });
       const payload = result.payload as TokenResponse & { error?: string };
       const response = result.response;
       if (!response.ok || !payload.access_token) {
-        await this.markError(userId);
-        throw new GoogleAdapterError(payload.error === 'invalid_grant' ? 'TOKEN_REVOKED' : 'UNAVAILABLE', response.status);
+        const revoked = payload.error === 'invalid_grant';
+        await this.markError(userId, revoked ? 'TOKEN_REVOKED' : 'UNAVAILABLE', !revoked);
+        throw new GoogleAdapterError(revoked ? 'TOKEN_REVOKED' : 'UNAVAILABLE', response.status);
       }
-      await this.prisma.googleConnection.update({ where: { userId }, data: { encryptedAccessToken: this.crypto.encrypt(payload.access_token), accessTokenExpiresAt: this.expiry(payload.expires_in), status: GoogleConnectionStatus.CONNECTED, lastUsedAt: new Date() } });
+      await this.prisma.googleConnection.update({ where: { userId }, data: { encryptedAccessToken: this.crypto.encrypt(payload.access_token), accessTokenExpiresAt: this.expiry(payload.expires_in), status: GoogleConnectionStatus.CONNECTED, lastUsedAt: new Date(), lastErrorAt: null, lastErrorCode: null } });
       return payload.access_token;
     } catch (error) {
       if (error instanceof GoogleAdapterError) throw error;
-      await this.markError(userId);
+      await this.markError(userId, 'UNAVAILABLE', true);
       throw new GoogleAdapterError('UNAVAILABLE');
     }
   }
@@ -323,8 +326,20 @@ export class GoogleAuthService {
     return this.prisma.googleConnection.update({ where: { id }, data: { lastUsedAt: new Date() } });
   }
 
-  private markError(userId: string): Promise<unknown> {
-    return this.prisma.googleConnection.update({ where: { userId }, data: { status: GoogleConnectionStatus.ERROR } });
+  /**
+   * Transient failures (network blips, temporary 5xx) only stamp the error fields and
+   * keep the current status so a passing glitch doesn't look like a revoked connection.
+   * Permanent failures (invalid_grant, missing/undecryptable refresh token) move to ERROR.
+   */
+  private markError(userId: string, code: string, transient: boolean): Promise<unknown> {
+    return this.prisma.googleConnection.update({
+      where: { userId },
+      data: {
+        lastErrorAt: new Date(),
+        lastErrorCode: code,
+        ...(transient ? {} : { status: GoogleConnectionStatus.ERROR }),
+      },
+    });
   }
 
   private isConfigured(): boolean {

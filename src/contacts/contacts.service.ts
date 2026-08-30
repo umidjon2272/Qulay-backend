@@ -6,6 +6,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ContactQueryDto } from './dto/contact-query.dto';
 import { CreateContactDto } from './dto/create-contact.dto';
 import { UpdateContactDto } from './dto/update-contact.dto';
+import { APP_ERROR_CODES } from '../common/errors/app-error-codes';
 
 @Injectable()
 export class ContactsService {
@@ -49,7 +50,7 @@ export class ContactsService {
   async getForUser(userId: string, id: string) {
     const contact = await this.prisma.contact.findFirst({ where: { id, userId } });
     if (!contact) {
-      throw new NotFoundException('Contact was not found');
+      throw new NotFoundException({ code: APP_ERROR_CODES.CONTACT_NOT_FOUND, message: 'Contact was not found' });
     }
     return contact;
   }
