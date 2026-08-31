@@ -94,7 +94,10 @@ export class AiProviderService {
       return new ServiceUnavailableException('AI xizmatiga ulanib bo‘lmadi. Keyinroq qayta urinib ko‘ring.');
     }
     if (error instanceof OpenAI.APIError) {
-      this.logger.error(`OpenAI API error (status ${error.status ?? 'unknown'}): ${error.name}`);
+      this.logger.error(
+        `OpenAI API error status=${error.status ?? 'unknown'} name=${error.name} code=${error.code ?? 'null'} `
+        + `type=${error.type ?? 'null'} param=${error.param ?? 'null'} message=${redactSecrets(error.message ?? '')}`,
+      );
       return new ServiceUnavailableException('AI xizmatida vaqtinchalik xatolik.');
     }
     this.logger.error(`Unexpected AI provider error: ${redactSecrets(error instanceof Error ? error.message : String(error))}`);

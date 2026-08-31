@@ -144,6 +144,27 @@ describe('AiProviderService', () => {
       await expect(service.complete([], [])).rejects.toMatchObject({ message: 'AI xizmatida vaqtinchalik xatolik.' });
     });
 
+    it('logs the precise 400 invalid-request reason (status/code/type/param/message) without leaking secrets', async () => {
+      const errorSpy = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      responsesCreateMock.mockRejectedValue(new OpenAI.BadRequestError(400, {
+        message: 'Invalid value for \'temperature\': must be between 0 and 2. Key sk-should-not-appear-1234567890 is unrelated.',
+        code: 'invalid_value',
+        type: 'invalid_request_error',
+        param: 'temperature',
+      }, 'Invalid value for temperature', new Headers()));
+      const service = new AiProviderService(config);
+      await expect(service.complete([], [])).rejects.toMatchObject({ message: 'AI xizmatida vaqtinchalik xatolik.' });
+      const logged = errorSpy.mock.calls.map((args) => String(args[0])).join('\n');
+      expect(logged).toContain('status=400');
+      expect(logged).toContain('code=invalid_value');
+      expect(logged).toContain('type=invalid_request_error');
+      expect(logged).toContain('param=temperature');
+      expect(logged).toContain('must be between 0 and 2');
+      expect(logged).not.toContain('sk-should-not-appear-1234567890');
+      expect(logged).toContain('[REDACTED]');
+      errorSpy.mockRestore();
+    });
+
     it('redacts an API-key-shaped substring even if a third-party error message contains one', async () => {
       const errorSpy = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
       responsesCreateMock.mockRejectedValue(new Error('upstream proxy rejected sk-abcdefghijklmno1234567890'));
