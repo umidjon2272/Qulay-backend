@@ -80,6 +80,7 @@ export const envValidationSchema = Joi.object({
 
   if (value.JWT_ACCESS_SECRET === value.JWT_REFRESH_SECRET) return helpers.error('jwt.secrets.same');
   if (value.NODE_ENV === 'production' && value.AUTH_TIMING_LOGS) return helpers.error('auth.timing.production');
+  if (value.NODE_ENV === 'production' && !value.OPENAI_API_KEY) return helpers.error('ai.openai.production');
   if (value.EMAIL_PROVIDER === 'resend' && (!value.RESEND_API_KEY || !value.EMAIL_FROM)) return helpers.error('email.resend.missing');
   if (value.FILE_STORAGE_PROVIDER === 's3' && (!value.S3_ENDPOINT || !value.S3_BUCKET || !value.S3_ACCESS_KEY_ID || !value.S3_SECRET_ACCESS_KEY)) return helpers.error('storage.s3.missing');
   return value;
@@ -88,6 +89,7 @@ export const envValidationSchema = Joi.object({
   'integration.google.partial': 'Google integration requires all of: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI, GOOGLE_TOKEN_ENCRYPTION_KEY. Missing: {{#missing}}',
   'jwt.secrets.same': 'JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must be different',
   'auth.timing.production': 'AUTH_TIMING_LOGS must be disabled in production',
+  'ai.openai.production': 'OPENAI_API_KEY is required in production',
   'email.resend.missing': 'EMAIL_PROVIDER=resend requires RESEND_API_KEY and EMAIL_FROM',
   'storage.s3.missing': 'FILE_STORAGE_PROVIDER=s3 requires S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY',
 });
