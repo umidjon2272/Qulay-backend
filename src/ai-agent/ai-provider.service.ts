@@ -62,7 +62,6 @@ export class AiProviderService {
         input: toResponseInput(messages),
         tools: tools.map(toResponseTool),
         tool_choice: 'auto',
-        temperature: 0.2,
       });
       if (response.error) {
         this.logger.error(`OpenAI Responses API returned an error: ${response.error.code} ${response.error.message}`);
