@@ -242,6 +242,7 @@ model User {
   dailyBriefingLogs      DailyBriefingLog[]
   proactiveSuggestions   ProactiveSuggestion[]
   financeBudgets         FinanceBudget[]
+  updatedPlans           SubscriptionPlanConfig[] @relation("PlanUpdatedBy")
 
   @@index([createdAt])
   @@index([status, createdAt])
@@ -636,6 +637,7 @@ model AiUsage {
   outputTokens  Int       @default(0)
   audioSeconds  Float     @default(0)
   estimatedCost Float     @default(0)
+  creditUnits   Int       @default(0)
   createdAt     DateTime  @default(now())
   user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -653,12 +655,31 @@ model UserSubscription {
   currentPeriodStart DateTime           @default(now())
   currentPeriodEnd   DateTime?
   cancelAtPeriodEnd  Boolean            @default(false)
+  entitlementSnapshot Json?
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
   user               User               @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([status, currentPeriodEnd])
   @@index([tier, status])
+}
+
+model SubscriptionPlanConfig {
+  tier               SubscriptionTier @id
+  name               String           @db.VarChar(80)
+  monthlyPrice       Int              @default(0)
+  currency           FinanceCurrency  @default(UZS)
+  aiCreditsPerMonth  Int              @default(100)
+  toolActionsPerMonth Int             @default(250)
+  voiceMinutesPerMonth Int            @default(30)
+  files              Int              @default(25)
+  storageMb          Int              @default(1000)
+  memories           Int              @default(200)
+  isActive           Boolean          @default(true)
+  updatedBy          String?          @db.Uuid
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+  updater            User?            @relation("PlanUpdatedBy", fields: [updatedBy], references: [id], onDelete: SetNull)
 }
 
 model PendingAgentAction {

@@ -7,6 +7,7 @@ import { NotificationWorkerService } from '../notifications/notification-worker.
 import { SECURITY_LIMITS } from '../common/security/security-limits.constants';
 import { PrismaService } from '../prisma/prisma.service';
 import { AdminActivityQueryDto, AdminFilesQueryDto, AdminUsersQueryDto, UpdateAdminPlatformSettingsDto } from './dto/admin-query.dto';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 
 type CountRow = { status: string; _count: { _all: number } };
 type TrendRow = { date: Date; count: bigint };
@@ -19,6 +20,7 @@ export class AdminService {
     private readonly activityLog: ActivityLogService,
     private readonly config: ConfigService,
     private readonly worker: NotificationWorkerService,
+    private readonly subscriptions: SubscriptionsService,
   ) {}
 
   async getOverview(range = 30) {
@@ -77,7 +79,7 @@ export class AdminService {
     const user = await this.prisma.user.findUnique({ where: { id }, select: {
       id: true, email: true, firstName: true, lastName: true, avatarUrl: true, role: true, status: true, createdAt: true, updatedAt: true,
       telegramConnection: { select: { status: true, connectedAt: true } }, googleConnection: { select: { status: true, connectedAt: true } },
-      activityLogs: { orderBy: { createdAt: 'desc' }, take: 10, select: { id: true, action: true, entityType: true, entityId: true, createdAt: true } },
+      activityLogs: { orderBy: { createdAt: 'desc' }, take: 10, select: { id: true, action: true, entityType: true, entityId: true, createdAt: true } }, subscription: { select: { tier: true, status: true, currentPeriodEnd: true } },
     } });
     if (!user) throw new NotFoundException('User was not found');
     const now = new Date();
@@ -86,6 +88,10 @@ export class AdminService {
     ]);
     return { ...user, lastActivity: user.activityLogs[0]?.createdAt ?? null, activity: user.activityLogs, usage: { tasks, reminders, meetings, notes, contacts, financeTransactions: finance, files, aiRequests: aiUsage }, security: { activeRefreshSessions: sessions, passwordResetRequests: resetRequests }, integrations: { telegram: { connected: user.telegramConnection?.status === TelegramConnectionStatus.CONNECTED, status: user.telegramConnection?.status ?? TelegramConnectionStatus.DISCONNECTED }, google: { connected: user.googleConnection?.status === GoogleConnectionStatus.CONNECTED, status: user.googleConnection?.status ?? GoogleConnectionStatus.DISCONNECTED } }, telegramConnection: undefined, googleConnection: undefined, activityLogs: undefined };
   }
+
+  listPlans() { return this.subscriptions.listPlans(true); }
+  updatePlan(actorId: string, tier: import('@prisma/client').SubscriptionTier, dto: Parameters<SubscriptionsService['updatePlan']>[2]) { return this.subscriptions.updatePlan(actorId, tier, dto); }
+  assignSubscription(actorId: string, userId: string, tier: import('@prisma/client').SubscriptionTier, status?: import('@prisma/client').SubscriptionStatus) { return this.subscriptions.assignPlan(actorId, userId, tier, status); }
 
   async updateUserStatus(actorId: string, userId: string, status: UserStatus) {
     if (actorId === userId && status === UserStatus.BLOCKED) throw new ForbiddenException('An admin cannot block their own account');

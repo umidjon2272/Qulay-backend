@@ -1,6 +1,6 @@
 import { Type } from 'class-transformer';
 import { IsBoolean, IsDateString, IsEnum, IsIn, IsInt, IsOptional, IsString, IsUUID, Max, MaxLength, Min, MinLength } from 'class-validator';
-import { FileSource, FileStorageProvider, UserRole, UserStatus } from '@prisma/client';
+import { FileSource, FileStorageProvider, FinanceCurrency, SubscriptionStatus, SubscriptionTier, UserRole, UserStatus } from '@prisma/client';
 
 export class AdminRangeQueryDto {
   @IsOptional()
@@ -38,6 +38,24 @@ export class AdminStatusDto {
 export class AdminRoleDto {
   @IsEnum(UserRole)
   role!: UserRole;
+}
+
+export class UpdateSubscriptionPlanDto {
+  @IsOptional() @IsString() @MinLength(1) @MaxLength(80) name?: string;
+  @IsOptional() @IsInt() @Min(0) monthlyPrice?: number;
+  @IsOptional() @IsEnum(FinanceCurrency) currency?: FinanceCurrency;
+  @IsOptional() @IsInt() @Min(0) aiCreditsPerMonth?: number;
+  @IsOptional() @IsInt() @Min(0) toolActionsPerMonth?: number;
+  @IsOptional() @IsInt() @Min(0) voiceMinutesPerMonth?: number;
+  @IsOptional() @IsInt() @Min(0) files?: number;
+  @IsOptional() @IsInt() @Min(0) storageMb?: number;
+  @IsOptional() @IsInt() @Min(0) memories?: number;
+  @IsOptional() @IsBoolean() isActive?: boolean;
+}
+
+export class AssignUserSubscriptionDto {
+  @IsEnum(SubscriptionTier) tier!: SubscriptionTier;
+  @IsOptional() @IsEnum(SubscriptionStatus) status?: SubscriptionStatus;
 }
 
 

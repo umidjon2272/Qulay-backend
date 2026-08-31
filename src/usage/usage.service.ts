@@ -10,6 +10,7 @@ type UsageInput = {
   outputTokens?: number;
   audioSeconds?: number;
   estimatedCost?: number;
+  creditUnits?: number;
 };
 
 @Injectable()
@@ -78,6 +79,7 @@ export class AiUsageService {
         outputTokens: input.outputTokens ?? 0,
         audioSeconds: input.audioSeconds ?? 0,
         estimatedCost: input.estimatedCost ?? 0,
+        creditUnits: input.creditUnits ?? (input.type === UsageType.TEXT ? 1 : 0),
       },
     });
   }
