@@ -6,11 +6,13 @@ import { TeleprotoTelegramClientService } from '../src/telegram/telegram-client.
 describe('TeleprotoTelegramClientService', () => {
   let service: TeleprotoTelegramClientService;
   let invokeSpy: jest.SpyInstance;
+  let connectSpy: jest.SpyInstance;
 
   beforeEach(() => {
     service = new TeleprotoTelegramClientService(new ConfigService({ telegram: { apiId: 12345, apiHash: 'test-hash' } }));
-    jest.spyOn(TelegramClient.prototype, 'connect').mockResolvedValue(true as never);
+    connectSpy = jest.spyOn(TelegramClient.prototype, 'connect').mockResolvedValue(true as never);
     jest.spyOn(TelegramClient.prototype, 'disconnect').mockResolvedValue(true as never);
+    jest.spyOn(TelegramClient.prototype, 'checkAuthorization').mockResolvedValue(false);
     invokeSpy = jest.spyOn(TelegramClient.prototype, 'invoke');
   });
 
@@ -32,6 +34,54 @@ describe('TeleprotoTelegramClientService', () => {
       rawType: 'auth.SentCodeTypeApp',
       rawNextType: 'auth.CodeTypeSms',
     });
+  });
+
+  it('connects an isolated empty session before sending with minimal CodeSettings', async () => {
+    invokeSpy.mockResolvedValueOnce(new Api.auth.SentCode({
+      type: new Api.auth.SentCodeTypeApp({ length: 5 }), phoneCodeHash: 'hash',
+    }));
+    await service.beginLogin(' +998901234567 ', 'user-a');
+    expect(connectSpy).toHaveBeenCalledTimes(1);
+    expect(connectSpy.mock.invocationCallOrder[0]).toBeLessThan(invokeSpy.mock.invocationCallOrder[0]);
+    const request = invokeSpy.mock.calls[0][0] as Api.auth.SendCode;
+    expect(request).toBeInstanceOf(Api.auth.SendCode);
+    expect(request.phoneNumber).toBe('+998901234567');
+    expect(request.settings).toBeInstanceOf(Api.CodeSettings);
+    expect((request.settings as unknown as { originalArgs: Record<string, unknown> }).originalArgs).toEqual({});
+    expect(request.settings).toMatchObject({
+      allowFlashcall: undefined, currentNumber: undefined, allowAppHash: undefined,
+      allowMissedCall: undefined, allowFirebase: undefined, unknownNumber: undefined,
+      logoutTokens: undefined, token: undefined, appSandbox: undefined,
+    });
+  });
+
+  it('uses distinct clients and sessions for simultaneous users', async () => {
+    const connectedClients: TelegramClient[] = [];
+    connectSpy.mockImplementation(function (this: TelegramClient) { connectedClients.push(this); return Promise.resolve(true as never); });
+    invokeSpy
+      .mockResolvedValueOnce(new Api.auth.SentCode({ type: new Api.auth.SentCodeTypeApp({ length: 5 }), phoneCodeHash: 'hash-a' }))
+      .mockResolvedValueOnce(new Api.auth.SentCode({ type: new Api.auth.SentCodeTypeApp({ length: 5 }), phoneCodeHash: 'hash-b' }));
+    await Promise.all([service.beginLogin('+998901234567', 'user-a'), service.beginLogin('+998911234567', 'user-b')]);
+    expect(connectedClients).toHaveLength(2);
+    expect(connectedClients[0]).not.toBe(connectedClients[1]);
+    expect(connectedClients[0].session).not.toBe(connectedClients[1].session);
+  });
+
+  it('does not send a code if the fresh client unexpectedly reports authorization', async () => {
+    jest.spyOn(TelegramClient.prototype, 'checkAuthorization').mockResolvedValueOnce(true);
+    await expect(service.beginLogin('+998901234567', 'user-a')).rejects.toMatchObject({ code: 'ALREADY_AUTHORIZED' });
+    expect(invokeSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not leak phone, hash, API hash, or session data in sendCode diagnostics', async () => {
+    const logger = (service as unknown as { logger: { log: (...args: unknown[]) => void } }).logger;
+    const logSpy = jest.spyOn(logger, 'log');
+    invokeSpy.mockResolvedValueOnce(new Api.auth.SentCode({ type: new Api.auth.SentCodeTypeApp({ length: 5 }), phoneCodeHash: 'private-hash' }));
+    await service.beginLogin('+998901234567', 'user-a');
+    const output = JSON.stringify(logSpy.mock.calls);
+    expect(output).not.toContain('+998901234567');
+    expect(output).not.toContain('private-hash');
+    expect(output).not.toContain('test-hash');
   });
 
   it('normalizes sentCodeTypeSms', async () => {

@@ -1,10 +1,10 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Api, TelegramClient } from 'teleproto';
 import { getPeerId } from 'teleproto/Utils';
 import { returnBigInt } from 'teleproto/Helpers';
 import { StringSession } from 'teleproto/sessions';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { classifyTelegramError, TelegramAdapterError } from './telegram.errors';
 
 export type TelegramAccount = { telegramUserId: string; username: string | null; displayName: string | null; phoneNumber: string | null };
@@ -26,7 +26,7 @@ export type TelegramSentCodeMeta = {
 export type TelegramSentCode = { session: string; phoneCodeHash: string } & TelegramSentCodeMeta;
 
 export abstract class TelegramClientService {
-  abstract beginLogin(phoneNumber: string): Promise<TelegramSentCode>;
+  abstract beginLogin(phoneNumber: string, userScopeId?: string): Promise<TelegramSentCode>;
   abstract resendCode(input: { session: string; phoneNumber: string; phoneCodeHash: string }): Promise<TelegramSentCode>;
   abstract verifyCode(input: { session: string; phoneNumber: string; phoneCodeHash: string; code: string }): Promise<{ status: 'connected' | 'password_required'; session: string; account?: TelegramAccount }>;
   abstract verifyPassword(input: { session: string; password: string }): Promise<{ session: string; account: TelegramAccount }>;
@@ -40,6 +40,7 @@ export abstract class TelegramClientService {
 
 @Injectable()
 export class TeleprotoTelegramClientService extends TelegramClientService {
+  private readonly logger = new Logger(TeleprotoTelegramClientService.name);
   private readonly peerEntityCache = new Map<string, { entity: Api.TypeUser | Api.TypeChat; peer: TelegramPeer; expiresAt: number }>();
   private readonly apiId: number | undefined;
   private readonly apiHash: string | undefined;
@@ -50,19 +51,41 @@ export class TeleprotoTelegramClientService extends TelegramClientService {
     this.apiHash = config.get<string>('telegram.apiHash');
   }
 
-  async beginLogin(phoneNumber: string): Promise<TelegramSentCode> {
+  async beginLogin(phoneNumber: string, userScopeId = 'unscoped'): Promise<TelegramSentCode> {
+    const normalizedPhone = this.normalizeLoginPhone(phoneNumber);
+    const clientInstanceId = randomUUID();
     const client = this.client('');
+    const sessionEmptyBeforeSendCode = !this.savedSession(client);
     let connected = false;
     try {
       await client.connect();
       connected = true;
-      const sentCode = await this.requestSentCode(client, phoneNumber);
+      const isUserAuthorized = await client.checkAuthorization();
+      this.logSendCodeState('telegram_send_code_started', client, clientInstanceId, userScopeId, isUserAuthorized, sessionEmptyBeforeSendCode);
+      if (isUserAuthorized) throw new TelegramAdapterError('ALREADY_AUTHORIZED', undefined, undefined, undefined, true, true);
+      const sentCode = await this.requestSentCode(client, normalizedPhone);
+      this.logger.log({
+        event: 'telegram_send_code_completed', clientInstanceId, userScopeId, isUserAuthorized,
+        sessionEmptyBeforeSendCode, selectedDcId: client.session.dcId || null,
+        returnedType: sentCode.type?.className ?? 'unknown', nextType: sentCode.nextType?.className ?? null,
+        timeoutSeconds: sentCode.timeout ?? null,
+      });
       return { session: this.savedSession(client), ...this.describeSentCode(sentCode) };
     } catch (error) {
       throw this.withAuthContext(error, connected, Boolean(this.savedSession(client)));
     } finally {
       await client.disconnect().catch(() => undefined);
     }
+  }
+
+  private logSendCodeState(event: string, client: TelegramClient, clientInstanceId: string, userScopeId: string, isUserAuthorized: boolean, sessionEmptyBeforeSendCode: boolean): void {
+    this.logger.log({ event, clientInstanceId, userScopeId, isUserAuthorized, sessionEmptyBeforeSendCode, selectedDcId: client.session.dcId || null, clientConnected: true });
+  }
+
+  private normalizeLoginPhone(phoneNumber: string): string {
+    const normalized = phoneNumber.trim();
+    if (!/^\+[1-9]\d{7,14}$/.test(normalized)) throw new TelegramAdapterError('INVALID_PHONE');
+    return normalized;
   }
 
   async resendCode(input: { session: string; phoneNumber: string; phoneCodeHash: string }): Promise<TelegramSentCode> {
@@ -340,10 +363,11 @@ export class TeleprotoTelegramClientService extends TelegramClientService {
   }
 
   private credentials(): { apiId: number; apiHash: string } {
-    if (this.apiId === undefined || !this.apiHash) {
+    const apiId = this.apiId;
+    if (apiId === undefined || !Number.isSafeInteger(apiId) || apiId <= 0 || !this.apiHash) {
       throw new TelegramAdapterError('NOT_CONFIGURED');
     }
-    return { apiId: this.apiId, apiHash: this.apiHash };
+    return { apiId, apiHash: this.apiHash };
   }
 
   private savedSession(client: TelegramClient): string {

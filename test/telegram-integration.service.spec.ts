@@ -118,7 +118,7 @@ describe('TelegramIntegrationService', () => {
     client.beginLogin.mockResolvedValue({ session: 'fresh-session', phoneCodeHash: 'fresh-hash', delivery: 'telegram_app', nextDelivery: null, timeoutSeconds: null, rawType: 'auth.SentCodeTypeApp', rawNextType: null });
     prisma.telegramConnection.update.mockResolvedValue(undefined);
     await expect(service.resendCode('user-a')).resolves.toMatchObject({ status: 'code_required', delivery: 'telegram_app', nextDelivery: null });
-    expect(client.beginLogin).toHaveBeenCalledWith('+998901234567');
+    expect(client.beginLogin).toHaveBeenCalledWith('+998901234567', 'user-a');
     expect(prisma.telegramConnection.update).toHaveBeenCalledWith(expect.objectContaining({ where: { userId: 'user-a' }, data: expect.objectContaining({ encryptedSession: 'encrypted:fresh-session', encryptedPhoneCodeHash: 'encrypted:fresh-hash' }) }));
   });
 

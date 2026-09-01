@@ -1,6 +1,6 @@
 import { BadRequestException, ConflictException, HttpException, HttpStatus, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 
-export type TelegramErrorCode = 'INVALID_PHONE' | 'INVALID_CODE' | 'EXPIRED_CODE' | 'CODE_HASH_INVALID' | 'RESEND_UNAVAILABLE' | 'AUTH_RESTART' | 'WRONG_PASSWORD' | 'FLOOD_WAIT' | 'PHONE_NUMBER_FLOOD' | 'SMS_CODE_CREATE_FAILED' | 'UPDATE_APP_TO_LOGIN' | 'CONNECTION_EXPIRED' | 'PEER_NOT_FOUND' | 'UNAVAILABLE' | 'SEND_FAILED' | 'NOT_CONFIGURED';
+export type TelegramErrorCode = 'INVALID_PHONE' | 'INVALID_CODE' | 'EXPIRED_CODE' | 'CODE_HASH_INVALID' | 'RESEND_UNAVAILABLE' | 'AUTH_RESTART' | 'ALREADY_AUTHORIZED' | 'WRONG_PASSWORD' | 'FLOOD_WAIT' | 'PHONE_NUMBER_FLOOD' | 'SMS_CODE_CREATE_FAILED' | 'UPDATE_APP_TO_LOGIN' | 'CONNECTION_EXPIRED' | 'PEER_NOT_FOUND' | 'UNAVAILABLE' | 'SEND_FAILED' | 'NOT_CONFIGURED';
 
 export class TelegramAdapterError extends Error {
   constructor(
@@ -25,6 +25,7 @@ export function mapTelegramError(error: unknown): HttpException {
       case 'CODE_HASH_INVALID': return new BadRequestException("Telegram login holati eskirgan. Yangi kod so'rang.");
       case 'RESEND_UNAVAILABLE': return new ConflictException('Telegram bu kod uchun qayta yuborishni taklif qilmadi. Yangi ulanishni boshlang.');
       case 'AUTH_RESTART': return new ConflictException('Telegram login jarayonini qayta boshlashni talab qildi. Yangi kod so\'rang.');
+      case 'ALREADY_AUTHORIZED': return new ConflictException('Telegram sessiyasi allaqachon tasdiqlangan. Qayta kod yuborilmadi.');
       case 'WRONG_PASSWORD': return new BadRequestException('Wrong Telegram 2FA password');
       case 'FLOOD_WAIT': return new HttpException({ message: "Telegram ko'p urinish sabab vaqtincha kutishni talab qildi.", retryAfterSeconds: error.retryAfterSeconds ?? 60 }, HttpStatus.TOO_MANY_REQUESTS);
       case 'PHONE_NUMBER_FLOOD': return new HttpException({ message: "Bu telefon raqami vaqtincha bloklangan (juda ko'p urinish). Birozdan so'ng qayta urinib ko'ring.", retryAfterSeconds: error.retryAfterSeconds ?? 60 }, HttpStatus.TOO_MANY_REQUESTS);

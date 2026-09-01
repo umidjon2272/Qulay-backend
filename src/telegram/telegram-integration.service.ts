@@ -28,7 +28,7 @@ export class TelegramIntegrationService {
   async connect(userId: string, phoneNumber: string): Promise<CodeRequiredResponse> {
     this.assertConfigured();
     try {
-      const pending = await this.telegramClient.beginLogin(phoneNumber);
+      const pending = await this.telegramClient.beginLogin(phoneNumber, userId);
       const now = new Date();
       await this.prisma.telegramConnection.upsert({
         where: { userId },
@@ -357,7 +357,7 @@ export class TelegramIntegrationService {
     await this.invalidatePending(userId, 'AUTH_RESTART');
     const phoneNumber = this.crypto.decrypt(this.requireStored(connection.phoneNumber));
     try {
-      const pending = await this.telegramClient.beginLogin(phoneNumber);
+      const pending = await this.telegramClient.beginLogin(phoneNumber, userId);
       const now = new Date();
       await this.prisma.telegramConnection.update({
         where: { userId },
