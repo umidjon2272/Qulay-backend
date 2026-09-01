@@ -314,4 +314,12 @@ describe('TelegramIntegrationService', () => {
       });
     });
   });
+  it('reuses a valid pending login instead of invalidating the code on dialog reopen', async () => {
+    prisma.telegramConnection.findUnique.mockResolvedValue({ userId: 'user-a', status: TelegramConnectionStatus.AWAITING_CODE, phoneNumber: 'encrypted:+998901234567', encryptedPhoneCodeHash: 'encrypted:hash', codeSentAt: new Date(), codeResendAfterSeconds: 60, pendingDelivery: 'telegram_app', pendingNextDelivery: 'sms' });
+    const result = await service.connect('user-a', '+998901234567');
+    expect(result).toMatchObject({ status: 'code_required', delivery: 'telegram_app', nextDelivery: 'sms' });
+    expect(client.beginLogin).not.toHaveBeenCalled();
+    expect(prisma.telegramConnection.upsert).not.toHaveBeenCalled();
+  });
+
 });

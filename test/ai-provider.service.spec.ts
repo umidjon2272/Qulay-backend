@@ -190,4 +190,14 @@ describe('AiProviderService', () => {
       await expect(service.complete([], [])).rejects.toMatchObject({ message: 'AI xizmatida vaqtinchalik xatolik.' });
     });
   });
+  it('preserves opaque reasoning output between function-call rounds', async () => {
+    const output = [{ type: 'reasoning', id: 'r1', summary: [], encrypted_content: 'opaque-test' }, { type: 'function_call', id: 'fc1', call_id: 'c1', name: 'get_tasks', arguments: '{}' }];
+    responsesCreateMock.mockResolvedValueOnce({ output, output_text: '', model: 'test' }).mockResolvedValueOnce({ output: [], output_text: 'ok', model: 'test' });
+    const service = new AiProviderService(fakeConfig({ 'ai.apiKey': 'test' }));
+    const first = await service.complete([{ role: 'user', content: 'tasks' }], []);
+    await service.complete([first.message, { role: 'tool', tool_call_id: 'c1', content: '[]' }], []);
+    expect(responsesCreateMock.mock.calls[1][0].input).toEqual([...output, { type: 'function_call_output', call_id: 'c1', output: '[]' }]);
+    expect(responsesCreateMock.mock.calls[0][0].store).toBe(false);
+  });
+
 });

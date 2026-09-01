@@ -1,3 +1,4 @@
+import { normalizeToolInput } from './ai-input-normalizer';
 import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { ExecuteToolDto } from './dto/execute-tool.dto';
@@ -18,16 +19,16 @@ export class AIToolExecutionService {
       timezone: contextOptions.timezone,
       source: 'AI_TOOL',
     };
-    const input = await tool.validate(request.input);
+    const input = await tool.validate(normalizeToolInput(request.tool, request.input, context.timezone));
     await tool.authorize?.(context, input);
 
     if (tool.requiresConfirmation && !request.confirmed) {
       const preview = await tool.preview?.(context, input);
-      return { status: 'confirmation_required', tool: tool.name, preview: preview ?? input, meta: { requestId: context.requestId } };
+      return { status: 'confirmation_required', tool: tool.name, input, preview: preview ?? input, meta: { requestId: context.requestId } };
     }
 
     const data = await tool.execute(context, input);
-    if (tool.sideEffect === 'WRITE') await this.registry.recordWriteExecution(tool.name, userId, data);
+    if (tool.sideEffect === 'WRITE') await this.registry.recordWriteExecution(tool.name, userId, data).catch(() => undefined);
     return { status: 'success', tool: tool.name, data, meta: { executedAt: new Date().toISOString(), requestId: context.requestId } };
   }
 }

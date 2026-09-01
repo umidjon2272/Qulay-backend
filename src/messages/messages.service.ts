@@ -11,17 +11,17 @@ export class MessagesService {
 
   async listForConversation(userId: string, conversationId: string, query: MessageQueryDto) {
     await this.getConversationForUser(userId, conversationId);
-    const where: Prisma.MessageWhereInput = { conversationId };
+    const where: Prisma.MessageWhereInput = { conversationId, role: { in: [MessageRole.USER, MessageRole.ASSISTANT] } };
     const [items, total] = await Promise.all([
       this.prisma.message.findMany({
         where,
-        orderBy: { createdAt: 'asc' },
+        orderBy: { createdAt: 'desc' },
         skip: paginationSkip(query.page, query.limit),
         take: query.limit,
       }),
       this.prisma.message.count({ where }),
     ]);
-    return { items, meta: paginationMeta(query.page, query.limit, total) };
+    return { items: items.reverse(), meta: paginationMeta(query.page, query.limit, total) };
   }
 
   async createForConversation(userId: string, conversationId: string, dto: CreateMessageDto) {

@@ -28,6 +28,12 @@ export class TelegramIntegrationService {
 
   async connect(userId: string, phoneNumber: string): Promise<CodeRequiredResponse> {
     this.assertConfigured();
+    const existing = await this.prisma.telegramConnection.findUnique({ where: { userId } });
+    if (existing?.status === TelegramConnectionStatus.CONNECTED) throw mapTelegramError(new TelegramAdapterError('ALREADY_AUTHORIZED'));
+    // Reopening the dialog must not replace a still-valid phoneCodeHash or flood Telegram.
+    if (existing?.status === TelegramConnectionStatus.AWAITING_CODE && existing.encryptedPhoneCodeHash && existing.phoneNumber && existing.codeSentAt && Date.now() - existing.codeSentAt.getTime() < 10 * 60_000 && this.crypto.decrypt(existing.phoneNumber) === phoneNumber) {
+      return { status: 'code_required', delivery: (existing.pendingDelivery ?? 'unknown') as TelegramSentCode['delivery'], nextDelivery: existing.pendingNextDelivery as TelegramSentCode['nextDelivery'], timeoutSeconds: Math.max(0, Math.ceil((existing.codeSentAt.getTime() + (existing.codeResendAfterSeconds ?? 0) * 1000 - Date.now()) / 1000)) };
+    }
     try {
       const pending = await this.telegramClient.beginLogin(phoneNumber, userId);
       const now = new Date();
@@ -306,6 +312,10 @@ export class TelegramIntegrationService {
       lastErrorAt: temporaryError ? new Date() : connection.lastErrorAt,
       lastErrorCode: connection.lastErrorCode,
       lastValidatedAt: connection.lastValidatedAt,
+      pendingLogin: connection.status === TelegramConnectionStatus.AWAITING_CODE && connection.pendingDelivery !== 'qr' && Boolean(connection.encryptedPhoneCodeHash) && connection.codeSentAt && Date.now() - connection.codeSentAt.getTime() < 10 * 60_000 ? {
+        delivery: connection.pendingDelivery ?? 'unknown', nextDelivery: connection.pendingNextDelivery,
+        timeoutSeconds: Math.max(0, Math.ceil((connection.codeSentAt.getTime() + (connection.codeResendAfterSeconds ?? 0) * 1000 - Date.now()) / 1000)),
+      } : null,
     };
   }
 

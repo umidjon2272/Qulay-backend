@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { plainToInstance } from 'class-transformer';
 import { validate, ValidationError } from 'class-validator';
-import { FinanceTransactionType, MemoryType } from '@prisma/client';
+import { FinanceCurrency, FinanceTransactionType, MemoryType, TaskStatus, TaskPriority, MeetingStatus } from '@prisma/client';
 import { ActivityLogService, ACTIVITY_ACTIONS } from '../activity-log/activity-log.service';
 import { ContactHistoryService } from '../contacts/contact-history.service';
 import { ContactsService } from '../contacts/contacts.service';
@@ -57,7 +57,7 @@ function schema(
   properties: Record<string, { type: string; description?: string; enum?: readonly string[] }>,
   required: readonly string[] = [],
 ): AIToolInputSchema {
-  return { type: 'object', properties, required };
+  return { type: 'object', properties: Object.fromEntries(Object.entries(properties).map(([key, value]) => [key, value.type === 'array' ? { ...value, items: { type: 'string' } } : value])), required };
 }
 
 async function validateInput<T>(input: unknown, dtoClass: Class<T>): Promise<T> {
@@ -155,7 +155,7 @@ export class AIToolRegistryService {
       description: config.description,
       category: config.category,
       inputSchema: config.inputSchema,
-      requiresConfirmation: config.sideEffect === 'WRITE',
+      requiresConfirmation: config.sideEffect === 'WRITE' && !['save_memory', 'update_memory'].includes(config.name),
       sideEffect: config.sideEffect,
       permission: 'USER_SCOPED',
       validate: (input) => validateInput(input, config.validate),
@@ -184,13 +184,13 @@ export class AIToolRegistryService {
 
     this.register(this.base<TasksToolInput, unknown>({
       name: 'get_tasks', description: 'List the authenticated user\'s tasks.', category: AIToolCategory.TASK,
-      sideEffect: 'READ', validate: TasksToolInput, inputSchema: schema({ status: { type: 'string' }, priority: { type: 'string' }, date: { type: 'string' }, search: { type: 'string' }, limit: { type: 'integer' } }),
+      sideEffect: 'READ', validate: TasksToolInput, inputSchema: schema({ status: { type: 'string', enum: Object.values(TaskStatus) }, priority: { type: 'string', enum: Object.values(TaskPriority) }, date: { type: 'string' }, search: { type: 'string' }, limit: { type: 'integer' } }),
       execute: (context, input) => this.tasksService.listForUser(context.userId, { page: 1, limit: input.limit ?? 100, ...input } as TaskQueryDto),
     }));
 
     this.register(this.base<RemindersToolInput, unknown>({
       name: 'get_reminders', description: 'List the authenticated user\'s reminders.', category: AIToolCategory.REMINDER,
-      sideEffect: 'READ', validate: RemindersToolInput, inputSchema: schema({ priority: { type: 'string' }, date: { type: 'string' }, search: { type: 'string' }, limit: { type: 'integer' } }),
+      sideEffect: 'READ', validate: RemindersToolInput, inputSchema: schema({ priority: { type: 'string', enum: Object.values(TaskPriority) }, date: { type: 'string' }, search: { type: 'string' }, limit: { type: 'integer' } }),
       execute: (context, input) => this.remindersService.listForUser(context.userId, { page: 1, limit: input.limit ?? 100, ...input } as ReminderQueryDto),
     }));
 
@@ -299,7 +299,7 @@ export class AIToolRegistryService {
 
     this.register(this.base<CreateTaskToolInput, unknown>({
       name: 'create_task', description: 'Create a task for the authenticated user.', category: AIToolCategory.TASK,
-      sideEffect: 'WRITE', validate: CreateTaskToolInput, inputSchema: schema({ title: { type: 'string' }, description: { type: 'string' }, dueAt: { type: 'string' }, priority: { type: 'string' } }, ['title']),
+      sideEffect: 'WRITE', validate: CreateTaskToolInput, inputSchema: schema({ title: { type: 'string' }, description: { type: 'string' }, dueAt: { type: 'string' }, priority: { type: 'string', enum: Object.values(TaskPriority) } }, ['title']),
       preview: (_context, input) => ({ title: input.title, dueDate: input.dueAt ?? null, priority: input.priority ?? 'MEDIUM' }),
       execute: (context, input) => this.tasksService.createForUser(context.userId, { title: input.title, description: input.description, dueDate: input.dueAt, priority: input.priority } as CreateTaskDto),
     }));
@@ -351,16 +351,16 @@ export class AIToolRegistryService {
     }));
 
     this.register(this.base<SaveMemoryToolInput, unknown>({
-      name: 'save_memory', description: 'Save a user-scoped memory after confirmation.', category: AIToolCategory.MEMORY,
-      sideEffect: 'WRITE', validate: SaveMemoryToolInput, inputSchema: schema({ type: { type: 'string' }, key: { type: 'string' }, value: { type: 'string' }, importance: { type: 'integer' }, contactId: { type: 'string' } }, ['type', 'key', 'value']),
+      name: 'save_memory', description: 'Remember a stable fact explicitly provided by the user about themselves or a contact. No extra confirmation while memory is enabled. Use subject-specific keys, e.g. sardor.role; search existing memories before saving. Never store secrets or speculative traits.', category: AIToolCategory.MEMORY,
+      sideEffect: 'WRITE', validate: SaveMemoryToolInput, inputSchema: schema({ type: { type: 'string', enum: Object.values(MemoryType) }, key: { type: 'string' }, value: { type: 'string' }, importance: { type: 'integer' }, contactId: { type: 'string' } }, ['type', 'key', 'value']),
       authorize: async (context, input) => { if (input.contactId) await this.assertContactOwned(context.userId, input.contactId); },
       preview: (_context, input) => ({ type: input.type, key: input.key, value: input.value, importance: input.importance ?? 5, contactId: input.contactId ?? null }),
-      execute: (context, input) => this.memoryService.createForUser(context.userId, { ...input, source: 'AI_TOOL' } as CreateMemoryDto),
+      execute: (context, input) => this.memoryService.createForUser(context.userId, { ...input, source: 'AI_USER_STATED', isVerified: true, confidence: 100 } as CreateMemoryDto),
     }));
 
     this.register(this.base<UpdateMemoryToolInput, unknown>({
-      name: 'update_memory', description: 'Correct an owned long-term memory after explicit confirmation.', category: AIToolCategory.MEMORY,
-      sideEffect: 'WRITE', validate: UpdateMemoryToolInput, inputSchema: schema({ memoryId: { type: 'string' }, type: { type: 'string' }, key: { type: 'string' }, value: { type: 'string' }, importance: { type: 'integer' } }, ['memoryId']),
+      name: 'update_memory', description: 'Correct an owned memory when the user explicitly supplies a correction. Search first to obtain its real memoryId. No extra confirmation.', category: AIToolCategory.MEMORY,
+      sideEffect: 'WRITE', validate: UpdateMemoryToolInput, inputSchema: schema({ memoryId: { type: 'string' }, type: { type: 'string', enum: Object.values(MemoryType) }, key: { type: 'string' }, value: { type: 'string' }, importance: { type: 'integer' } }, ['memoryId']),
       authorize: (context, input) => this.memoryService.getForUser(context.userId, input.memoryId).then(() => undefined),
       preview: async (context, input) => ({ current: await this.memoryService.getForUser(context.userId, input.memoryId), changes: input }),
       execute: (context, input) => { const { memoryId, ...changes } = input; return this.memoryService.updateForUser(context.userId, memoryId, { ...changes, source: 'AI_CORRECTION', isVerified: true, confidence: 100 } as UpdateMemoryDto); },
@@ -376,7 +376,7 @@ export class AIToolRegistryService {
 
     this.register(this.base<CreateFinanceTransactionToolInput, unknown>({
       name: 'create_finance_transaction', description: 'Create a finance transaction for the authenticated user.', category: AIToolCategory.FINANCE,
-      sideEffect: 'WRITE', validate: CreateFinanceTransactionToolInput, inputSchema: schema({ type: { type: 'string' }, amount: { type: 'string' }, currency: { type: 'string' }, title: { type: 'string' }, categoryId: { type: 'string' }, accountId: { type: 'string' }, contactId: { type: 'string' }, transactionDate: { type: 'string' }, description: { type: 'string' } }, ['type', 'amount', 'currency', 'title']),
+      sideEffect: 'WRITE', validate: CreateFinanceTransactionToolInput, inputSchema: schema({ type: { type: 'string', enum: Object.values(FinanceTransactionType) }, amount: { type: 'string', description: 'Positive decimal amount, e.g. 500000. 500 ming/min/k = 500000; yarim mln = 500000.' }, currency: { type: 'string', enum: Object.values(FinanceCurrency) }, title: { type: 'string' }, categoryId: { type: 'string' }, accountId: { type: 'string' }, contactId: { type: 'string' }, transactionDate: { type: 'string', description: 'ISO datetime with offset, YYYY-MM-DD, or bugun/kecha/ertaga; resolved in user timezone. Omit only when date is not specified (now).' }, description: { type: 'string' } }, ['type', 'amount', 'currency', 'title']),
       authorize: async (context, input) => {
         if (input.contactId) await this.assertContactOwned(context.userId, input.contactId);
         if (input.categoryId) {
@@ -388,7 +388,7 @@ export class AIToolRegistryService {
       preview: async (context, input) => {
         const category = input.categoryId ? (await this.financeService.listCategoriesForUser(context.userId, {})).find((item) => item.id === input.categoryId) : null;
         const contact = input.contactId ? await this.contactsService.getForUser(context.userId, input.contactId) : null;
-        return { type: input.type, amount: input.amount, currency: input.currency, title: input.title, category: category ? { id: category.id, name: category.name } : null, contact: contact ? { id: contact.id, displayName: contact.displayName } : null };
+        return { type: input.type, amount: input.amount, currency: input.currency, title: input.title, transactionDate: input.transactionDate, timezone: context.timezone ?? 'Asia/Tashkent', category: category ? { id: category.id, name: category.name } : null, contact: contact ? { id: contact.id, displayName: contact.displayName } : null };
       },
       execute: (context, input) => this.financeToolsService.createFinanceTransactionForUser(context.userId, { ...input, transactionDate: input.transactionDate ?? new Date().toISOString() } as CreateFinanceTransactionDto),
     }));

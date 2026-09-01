@@ -29,7 +29,7 @@ export type AIToolExecutionContext = {
 
 export type AIToolInputSchema = {
   type: 'object';
-  properties: Record<string, { type: string; description?: string; enum?: readonly string[] }>;
+  properties: Record<string, { type: string; description?: string; enum?: readonly string[]; items?: { type: string } }>;
   required: readonly string[];
 };
 
@@ -61,6 +61,7 @@ export type AIToolExecutionSuccess = {
 
 export type AIToolConfirmationRequired = {
   status: 'confirmation_required';
+  input?: unknown;
   tool: string;
   preview: unknown;
   meta: { requestId: string };

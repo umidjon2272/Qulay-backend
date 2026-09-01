@@ -1,3 +1,5 @@
+import { AiVoiceService } from './ai-voice.service';
+import { AiVoiceController } from './ai-voice.controller';
 import { Module } from '@nestjs/common';
 import { ActivityLogModule } from '../activity-log/activity-log.module';
 import { AIToolsModule } from '../ai-tools/ai-tools.module';
@@ -10,8 +12,8 @@ import { AiProviderService } from './ai-provider.service';
 
 @Module({
   imports: [PrismaModule, AIToolsModule, UsageModule, SubscriptionsModule, ActivityLogModule],
-  controllers: [AiAgentController],
-  providers: [AiProviderService, AiAgentService],
+  controllers: [AiAgentController, AiVoiceController],
+  providers: [AiProviderService, AiAgentService, AiVoiceService],
   exports: [AiProviderService, AiAgentService],
 })
 export class AiAgentModule {}

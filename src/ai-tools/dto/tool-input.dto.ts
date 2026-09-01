@@ -225,6 +225,6 @@ export class CreateFinanceTransactionToolInput {
   @IsOptional() @IsUUID('4') categoryId?: string;
   @IsOptional() @IsUUID('4') accountId?: string;
   @IsOptional() @IsUUID('4') contactId?: string;
-  @IsOptional() @IsISO8601({ strict: false }) transactionDate?: string;
+  @IsOptional() @IsISO8601({ strict: true, strictSeparator: true }) @Matches(dateTimeWithTimezone) transactionDate?: string;
   @IsOptional() @IsString() @MaxLength(5000) description?: string;
 }

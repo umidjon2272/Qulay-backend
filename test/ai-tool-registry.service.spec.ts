@@ -117,4 +117,17 @@ describe('AI tool registry and execution', () => {
     await expect(execution.execute('user-a', { tool: 'create_google_calendar_event', input: { title: 'Demo', start: '2026-08-26T09:00:00Z', end: '2026-08-26T10:00:00Z' }, confirmed: false })).resolves.toMatchObject({ status: 'confirmation_required' });
     expect(googleCalendarService.create).not.toHaveBeenCalled();
   });
+  it('remembers a stated contact fact without another confirmation, while deletion still requires one', async () => {
+    memoryService.createForUser.mockResolvedValue({ id: 'memory-a', key: 'sardor.role', value: 'Sardor is my marketer' });
+    const result = await execution.execute('user-a', { tool: 'save_memory', input: { type: 'CONTACT', key: 'sardor.role', value: 'Sardor is my marketer' }, confirmed: false });
+    expect(result.status).toBe('success');
+    expect(memoryService.createForUser).toHaveBeenCalledWith('user-a', expect.objectContaining({ key: 'sardor.role', source: 'AI_USER_STATED', isVerified: true }));
+    expect(registry.get('delete_memory').requiresConfirmation).toBe(true);
+  });
+  it('normalizes the exact finance payload before showing its preview', async () => {
+    const result = await execution.execute('user-a', { tool: 'create_finance_transaction', input: { type: 'daromad', amount: '500 min', currency: 'UZS', title: 'Daromad', transactionDate: '01.09.2026' }, confirmed: false }, { timezone: 'Asia/Tashkent' });
+    expect(result).toMatchObject({ status: 'confirmation_required', input: { amount: '500000', transactionDate: '2026-08-31T19:00:00.000Z' }, preview: { amount: '500000', transactionDate: '2026-08-31T19:00:00.000Z' } });
+    expect(financeToolsService.createFinanceTransactionForUser).not.toHaveBeenCalled();
+  });
+
 });

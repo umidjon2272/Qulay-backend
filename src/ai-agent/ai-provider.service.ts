@@ -13,6 +13,7 @@ export type ProviderMessage = {
   content: string | null;
   tool_call_id?: string;
   tool_calls?: ProviderToolCall[];
+  responseItems?: ResponseInputItem[];
 };
 
 export type ProviderToolCall = {
@@ -62,6 +63,8 @@ export class AiProviderService {
         input: toResponseInput(messages),
         tools: tools.map(toResponseTool),
         tool_choice: 'auto',
+        store: false,
+        include: ['reasoning.encrypted_content'],
       });
       if (response.error) {
         this.logger.error(`OpenAI Responses API returned an error: ${response.error.code} ${response.error.message}`);
@@ -112,6 +115,7 @@ function redactSecrets(message: string): string {
 function toResponseInput(messages: ProviderMessage[]): ResponseInputItem[] {
   const items: ResponseInputItem[] = [];
   for (const message of messages) {
+    if (message.responseItems?.length) { items.push(...message.responseItems); continue; }
     if (message.role === 'tool') {
       items.push({ type: 'function_call_output', call_id: message.tool_call_id, output: message.content ?? '' });
       continue;
@@ -143,6 +147,7 @@ function toProviderMessage(response: OpenAIResponse): ProviderMessage {
     return {
       role: 'assistant',
       content: null,
+      ...(response.output.some(item => item.type === 'reasoning') ? { responseItems: response.output as ResponseInputItem[] } : {}),
       tool_calls: functionCalls.map((call) => ({ id: call.call_id, type: 'function', function: { name: call.name, arguments: call.arguments } })),
     };
   }

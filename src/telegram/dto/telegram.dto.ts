@@ -4,7 +4,7 @@ import { IsBoolean, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, M
 const phonePattern = /^\+[1-9]\d{7,14}$/;
 
 export class ConnectTelegramDto {
-  @Transform(({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value))
+  @Transform(({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim().replace(/[\s()-]/g, '').replace(/^00/, '+') : value))
   @IsString()
   @Matches(phonePattern, { message: 'phoneNumber must be a valid international phone number' })
   phoneNumber!: string;
@@ -14,7 +14,8 @@ export class ConnectTelegramDto {
 export class VerifyTelegramCodeDto {
   @Transform(({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()
-  @Matches(/^\d{3,8}$/, { message: 'code must contain only 3 to 8 digits' })
+  @MinLength(1)
+  @MaxLength(64)
   code!: string;
 }
 

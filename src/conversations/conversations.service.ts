@@ -20,7 +20,7 @@ export class ConversationsService {
     const [rows, total] = await Promise.all([
       this.prisma.conversation.findMany({
         where,
-        include: { _count: { select: { messages: true } } },
+        include: { _count: { select: { messages: { where: { role: { in: ['USER', 'ASSISTANT'] } } } } } },
         orderBy: { updatedAt: 'desc' },
         skip: paginationSkip(query.page, query.limit),
         take: query.limit,
@@ -37,7 +37,7 @@ export class ConversationsService {
   async getForUser(userId: string, id: string) {
     const conversation = await this.prisma.conversation.findFirst({
       where: { id, userId },
-      include: { _count: { select: { messages: true } } },
+      include: { _count: { select: { messages: { where: { role: { in: ['USER', 'ASSISTANT'] } } } } } },
     });
     if (!conversation) {
       throw new NotFoundException('Conversation was not found');
@@ -57,7 +57,7 @@ export class ConversationsService {
     return this.prisma.conversation.update({
       where: { id },
       data: { title: dto.title },
-      include: { _count: { select: { messages: true } } },
+      include: { _count: { select: { messages: { where: { role: { in: ['USER', 'ASSISTANT'] } } } } } },
     }).then(({ _count, ...conversation }) => ({ ...conversation, messageCount: _count.messages }));
   }
 

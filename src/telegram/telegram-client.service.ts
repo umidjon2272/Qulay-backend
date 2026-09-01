@@ -13,7 +13,7 @@ export type TelegramPeer = { peerId: string; type: 'USER' | 'GROUP' | 'CHANNEL';
 export type TelegramPendingLogin = { encryptedSessionSource: string; phoneCodeHash: string };
 
 /** Normalized delivery channel derived from Telegram's real `auth.SentCodeType`/`auth.CodeType` constructor. */
-export type TelegramDeliveryType = 'telegram_app' | 'sms' | 'call' | 'email' | 'fragment' | 'firebase_sms' | 'unknown';
+export type TelegramDeliveryType = 'telegram_app' | 'sms' | 'call' | 'email' | 'fragment' | 'firebase_sms' | 'email_setup' | 'unknown';
 
 export type TelegramSentCodeMeta = {
   delivery: TelegramDeliveryType;
@@ -400,7 +400,7 @@ export class GramJsTelegramClientService extends TelegramClientService {
         settings: new Api.CodeSettings({}),
       }));
     } catch (error) {
-      if ((error as { errorMessage?: string }).errorMessage === 'AUTH_RESTART' && !authRestartAttempted) return this.requestSentCode(client, phoneNumber, true);
+      if (/^AUTH_RESTART(?:_\d+)?$/.test((error as { errorMessage?: string }).errorMessage ?? '') && !authRestartAttempted) return this.requestSentCode(client, phoneNumber, true);
       throw error;
     }
     if (!(result instanceof Api.auth.SentCode)) throw new TelegramAdapterError('UNAVAILABLE');
@@ -424,7 +424,8 @@ export class GramJsTelegramClientService extends TelegramClientService {
     if (type instanceof Api.auth.SentCodeTypeCall || type instanceof Api.auth.SentCodeTypeFlashCall || type instanceof Api.auth.SentCodeTypeMissedCall) return 'call';
     if (type instanceof Api.auth.SentCodeTypeFragmentSms) return 'fragment';
     if (type instanceof Api.auth.SentCodeTypeFirebaseSms) return 'firebase_sms';
-    if (type instanceof Api.auth.SentCodeTypeEmailCode || type instanceof Api.auth.SentCodeTypeSetUpEmailRequired) return 'email';
+    if (type instanceof Api.auth.SentCodeTypeSetUpEmailRequired) return 'email_setup';
+    if (type instanceof Api.auth.SentCodeTypeEmailCode) return 'email';
     return 'unknown';
   }
 

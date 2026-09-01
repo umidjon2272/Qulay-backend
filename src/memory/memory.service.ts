@@ -55,7 +55,7 @@ export class MemoryService {
       where: { userId, key: { equals: dto.key.trim(), mode: 'insensitive' }, status: MemoryStatus.ACTIVE },
     });
     if (existing) {
-      if (existing.value.trim().toLocaleLowerCase() === dto.value.trim().toLocaleLowerCase()) return this.getForUser(userId, existing.id);
+      if (existing.contactId === (dto.contactId ?? null) && existing.value.trim().toLocaleLowerCase() === dto.value.trim().toLocaleLowerCase()) return this.getForUser(userId, existing.id);
       throw new ConflictException({ code: APP_ERROR_CODES.MEMORY_KEY_CONFLICT, message: 'A memory with this key already exists; update it explicitly' });
     }
     try {
@@ -203,6 +203,7 @@ export class MemoryService {
     options: MemoryRetrievalOptions & { key?: string } = {},
   ): Prisma.UserMemoryWhereInput {
     const normalizedSearch = search?.trim();
+    const tokens = normalizedSearch?.split(/\s+/).filter((token) => token.length > 1).slice(0, 12) ?? [];
     return {
       userId,
       type: options.type,
@@ -212,10 +213,11 @@ export class MemoryService {
       ...(options.key ? { key: { contains: options.key.trim(), mode: 'insensitive' } } : {}),
       ...(normalizedSearch
         ? {
-            OR: [
-              { key: { contains: normalizedSearch, mode: 'insensitive' } },
-              { value: { contains: normalizedSearch, mode: 'insensitive' } },
-            ],
+            OR: (tokens.length ? tokens : [normalizedSearch]).flatMap((token) => [
+              { key: { contains: token, mode: 'insensitive' as const } },
+              { value: { contains: token, mode: 'insensitive' as const } },
+              { contact: { displayName: { contains: token, mode: 'insensitive' as const } } },
+            ]),
           }
         : {}),
     };
