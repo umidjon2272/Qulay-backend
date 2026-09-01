@@ -6,12 +6,14 @@ import { TelegramController } from './telegram.controller';
 import { TelegramIntegrationService } from './telegram-integration.service';
 import { GramJsTelegramClientService, TelegramClientService } from './telegram-client.service';
 import { TelegramCryptoService } from './telegram-crypto.service';
+import { TelegramDiagnosticService } from './telegram-diagnostic.service';
 
 @Module({
   imports: [PrismaModule, ActivityLogModule, ContactsModule],
   controllers: [TelegramController],
   providers: [
     TelegramCryptoService,
+    TelegramDiagnosticService,
     GramJsTelegramClientService,
     { provide: TelegramClientService, useExisting: GramJsTelegramClientService },
     TelegramIntegrationService,
