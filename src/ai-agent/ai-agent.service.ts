@@ -58,6 +58,9 @@ export class AiAgentService {
   async chat(userId: string, dto: AgentChatDto) {
     await this.subscriptions.assertAiAllowed(userId);
     const conversation = await this.resolveConversation(userId, dto.conversationId, dto.message);
+    if (dto.conversationId && typeof conversation.title === 'string' && this.isGreetingTitle(conversation.title) && !this.isGreetingTitle(dto.message)) {
+      await this.prisma.conversation.update({ where: { id: conversation.id }, data: { title: this.conversationTitle(dto.message) } });
+    }
     await this.prisma.message.create({ data: { conversationId: conversation.id, role: MessageRole.USER, content: dto.message } });
     await this.prisma.conversation.update({ where: { id: conversation.id }, data: { updatedAt: new Date() } });
     const pending = await this.prisma.pendingAgentAction.findFirst({
@@ -166,7 +169,7 @@ export class AiAgentService {
     if (!action) throw new NotFoundException('Tasdiqlash amali topilmadi');
     const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { language: true, timezone: true } });
     const language = user?.language ?? 'uz';
-    if (action.status === AgentActionStatus.EXECUTED) return { status: 'success', message: language === 'ru' ? '✅ Это действие уже выполнено.' : '✅ Bu amal allaqachon bajarilgan.' };
+    if (action.status === AgentActionStatus.EXECUTED) return { status: 'success', message: this.successMessage(action.toolName, action.input, action.preview, language), alreadyExecuted: true };
     if (action.status === AgentActionStatus.CANCELLED && !confirmed) return { status: 'cancelled', message: language === 'ru' ? 'Действие отменено.' : 'Amal bekor qilindi.' };
     if (action.status !== AgentActionStatus.PENDING) throw new ConflictException('Amal bajarilmoqda yoki yakunlangan. Holatini tekshiring.');
     if (action.expiresAt <= new Date()) {
@@ -207,7 +210,7 @@ export class AiAgentService {
     }
     // Persist final state before best-effort history and notifications.
     await this.prisma.pendingAgentAction.update({ where: { id: action.id }, data: { status: AgentActionStatus.EXECUTED, executedAt: new Date() } });
-    const message = language === 'ru' ? '✅ Действие успешно выполнено.' : '✅ Amal muvaffaqiyatli bajarildi.';
+    const message = this.successMessage(action.toolName, action.input, action.preview, language);
     await this.recordOutcome(userId, action, message, true);
     return { status: 'success', message, data: action.toolName === '__batch__' ? data : data[0] };
   }
@@ -226,7 +229,52 @@ export class AiAgentService {
       if (!conversation) throw new NotFoundException('Suhbat topilmadi');
       return conversation;
     }
-    return this.prisma.conversation.create({ data: { userId, title: message.slice(0, 80) } });
+    return this.prisma.conversation.create({ data: { userId, title: this.conversationTitle(message) } });
+  }
+
+  private conversationTitle(message: string): string {
+    const clean = message.replace(/\s+/g, ' ').trim();
+    if (/telegram|xabar|yubor/i.test(clean)) return 'Telegram xabarlari';
+    if (/daromad|kirim/i.test(clean)) return 'Bugungi daromad';
+    if (/xarajat|chiqim/i.test(clean)) return 'Xarajatlar';
+    if (/vazifa|task/i.test(clean)) return 'Vazifalar';
+    return clean.slice(0, 60) || 'Yangi suhbat';
+  }
+
+  private isGreetingTitle(value: string): boolean {
+    return /^(salom+|assalomu alaykum|qalaysiz+|qaalays+a+|hello+|hi+)[.!?\s]*$/i.test(value.trim());
+  }
+
+  private successMessage(toolName: string, inputValue: unknown, previewValue: unknown, language: string): string {
+    const input = (inputValue && typeof inputValue === 'object' ? inputValue : {}) as Record<string, unknown>;
+    const preview = (previewValue && typeof previewValue === 'object' ? previewValue : {}) as Record<string, unknown>;
+    const value = (key: string) => typeof input[key] === 'string' ? input[key] as string : typeof preview[key] === 'string' ? preview[key] as string : '';
+    const quote = (text: string) => `‘${text}’`;
+    if (toolName === 'create_finance_transaction') {
+      const amount = value('amount');
+      const currency = value('currency');
+      const type = value('type');
+      const date = value('transactionDate');
+      const amountLabel = amount && Number.isFinite(Number(amount)) ? Number(amount).toLocaleString(language === 'ru' ? 'ru-RU' : 'uz-UZ') : amount;
+      const currencyLabel = currency === 'UZS' ? (language === 'ru' ? 'сум' : 'so‘m') : currency;
+      const dateLabel = date && !Number.isNaN(Date.parse(date)) ? new Intl.DateTimeFormat(language === 'ru' ? 'ru-RU' : 'uz-UZ', {
+        timeZone: typeof preview.timezone === 'string' ? preview.timezone : 'Asia/Tashkent', year: 'numeric', month: 'long', day: 'numeric',
+      }).format(new Date(date)) : '';
+      if (amountLabel) return language === 'ru'
+        ? `${dateLabel ? `${dateLabel}: ` : ''}${amountLabel}${currencyLabel ? ` ${currencyLabel}` : ''} ${type === 'EXPENSE' ? 'расхода добавлено' : 'дохода добавлено'}.`
+        : `${dateLabel ? `${dateLabel} uchun ` : ''}${amountLabel}${currencyLabel ? ` ${currencyLabel}` : ''} ${type === 'EXPENSE' ? 'xarajat' : 'daromad'} qo‘shildi.`;
+    }
+    if (toolName === 'send_telegram_message') {
+      const recipient = value('recipient');
+      if (recipient) return language === 'ru' ? `Сообщение отправлено: ${recipient}.` : `${recipient}ga xabar yuborildi.`;
+    }
+    if (toolName === 'create_task') {
+      const title = value('title');
+      if (title) return language === 'ru' ? `Задача ${quote(title)} создана.` : `${quote(title)} vazifasi yaratildi.`;
+    }
+    if (toolName === '__batch__') return language === 'ru' ? 'Все подготовленные действия выполнены.' : 'Barcha tayyorlangan amallar bajarildi.';
+    const title = value('title');
+    return language === 'ru' ? `${title ? `${quote(title)}: ` : ''}действие выполнено.` : `${title ? `${quote(title)}: ` : ''}amal bajarildi.`;
   }
 
   private systemPrompt(user: { firstName: string; lastName: string; timezone: string; language: string; memoryEnabled: boolean }, memories: Array<{ id?: string; key: string; value: string; type: string; isVerified: boolean; confidence: number; contact: { displayName: string } | null }>, pending?: { toolName: string; input: unknown } | null) {

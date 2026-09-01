@@ -31,11 +31,22 @@ describe('AI conversation to durable action flow', () => {
     expect(actions[0].input).toEqual(normalized);
     const result = await service.chat('user-a', { conversationId: 'conversation-1', message: 'ha' });
     expect(result.pendingConfirmation).toBeNull();
+    expect(result.message.replace(/\s/g, ' ')).toContain('500 000');
+    expect(result.message).toContain('daromad qo‘shildi');
     expect(provider.complete).toHaveBeenCalledTimes(1);
     expect(execution.execute).toHaveBeenLastCalledWith('user-a', expect.objectContaining({ confirmed: true, input: normalized }), { locale: 'uz', timezone: 'Asia/Tashkent' });
     await service.confirm('user-a', 'action-1', true);
     expect(execution.execute).toHaveBeenCalledTimes(2);
     expect(actions[0].status).toBe('EXECUTED');
+  });
+  it('returns one recipient-specific result and reuses it without sending Telegram twice', async () => {
+    actions.push({ id: 'telegram-action', userId: 'user-a', conversationId: 'conversation-1', status: 'PENDING', expiresAt: new Date(Date.now() + 60000), input: { peerId: 'user:1', text: 'Salom' }, preview: { recipient: 'Aziz (@aziz)', text: 'Salom' }, toolName: 'send_telegram_message', idempotencyKey: 'telegram-key' });
+    execution.execute.mockResolvedValue({ status: 'success', data: { messageId: 'message-1' } });
+    const first = await service.confirm('user-a', 'telegram-action', true);
+    const replay = await service.confirm('user-a', 'telegram-action', true);
+    expect(first.message).toBe('Aziz (@aziz)ga xabar yuborildi.');
+    expect(replay).toMatchObject({ message: first.message, alreadyExecuted: true });
+    expect(execution.execute).toHaveBeenCalledTimes(1);
   });
   it('takes recent history and supports normal advice without tools or confirmation', async () => {
     provider.complete.mockResolvedValue({ message: { role: 'assistant', content: 'Reklamani kichik auditoriyada sinang.' }, model: 'test', usage: { inputTokens: 1, outputTokens: 1 } });
