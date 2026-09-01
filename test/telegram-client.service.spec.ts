@@ -1,15 +1,15 @@
 import { ConfigService } from '@nestjs/config';
-import { Api, TelegramClient } from 'teleproto';
-import { returnBigInt } from 'teleproto/Helpers';
-import { TeleprotoTelegramClientService } from '../src/telegram/telegram-client.service';
+import { Api, TelegramClient } from 'telegram';
+import { returnBigInt } from 'telegram/Helpers';
+import { GramJsTelegramClientService } from '../src/telegram/telegram-client.service';
 
-describe('TeleprotoTelegramClientService', () => {
-  let service: TeleprotoTelegramClientService;
+describe('GramJsTelegramClientService', () => {
+  let service: GramJsTelegramClientService;
   let invokeSpy: jest.SpyInstance;
   let connectSpy: jest.SpyInstance;
 
   beforeEach(() => {
-    service = new TeleprotoTelegramClientService(new ConfigService({ telegram: { apiId: 12345, apiHash: 'test-hash' } }));
+    service = new GramJsTelegramClientService(new ConfigService({ telegram: { apiId: 12345, apiHash: 'test-hash' } }));
     connectSpy = jest.spyOn(TelegramClient.prototype, 'connect').mockResolvedValue(true as never);
     jest.spyOn(TelegramClient.prototype, 'disconnect').mockResolvedValue(true as never);
     jest.spyOn(TelegramClient.prototype, 'checkAuthorization').mockResolvedValue(false);
@@ -168,6 +168,23 @@ describe('TeleprotoTelegramClientService', () => {
       invokeSpy.mockRejectedValueOnce(Object.assign(new Error('PHONE_CODE_EXPIRED'), { errorMessage: 'PHONE_CODE_EXPIRED' }));
       await expect(service.verifyCode({ session: '', phoneNumber: '+998901234567', phoneCodeHash: 'hash-1', code: '11111' })).rejects.toMatchObject({ code: 'EXPIRED_CODE' });
     });
+  });
+
+  it('completes the official GramJS 2FA password flow and saves the resulting account session', async () => {
+    const passwordSpy = jest.spyOn(TelegramClient.prototype, 'signInWithPassword').mockResolvedValue({} as never);
+    jest.spyOn(TelegramClient.prototype, 'getMe').mockResolvedValue({
+      id: { toString: () => '42' }, username: 'aziz', firstName: 'Aziz', lastName: 'Aliyev', phone: '998901234567',
+    } as never);
+    await expect(service.verifyPassword({ session: '', password: 'secret-pass' })).resolves.toMatchObject({
+      account: { telegramUserId: '42', username: 'aziz', displayName: 'Aziz Aliyev' },
+    });
+    expect(passwordSpy).toHaveBeenCalledWith(expect.objectContaining({ apiId: 12345, apiHash: 'test-hash' }), expect.objectContaining({ password: expect.any(Function) }));
+  });
+
+  it('logs out through the official auth.LogOut request', async () => {
+    invokeSpy.mockResolvedValueOnce(undefined);
+    await expect(service.logout('')).resolves.toBeUndefined();
+    expect(invokeSpy.mock.calls[0][0]).toBeInstanceOf(Api.auth.LogOut);
   });
 
   describe('peer resolution for sending', () => {

@@ -4,7 +4,7 @@ import { ContactsModule } from '../contacts/contacts.module';
 import { PrismaModule } from '../prisma/prisma.module';
 import { TelegramController } from './telegram.controller';
 import { TelegramIntegrationService } from './telegram-integration.service';
-import { TelegramClientService, TeleprotoTelegramClientService } from './telegram-client.service';
+import { GramJsTelegramClientService, TelegramClientService } from './telegram-client.service';
 import { TelegramCryptoService } from './telegram-crypto.service';
 
 @Module({
@@ -12,8 +12,8 @@ import { TelegramCryptoService } from './telegram-crypto.service';
   controllers: [TelegramController],
   providers: [
     TelegramCryptoService,
-    TeleprotoTelegramClientService,
-    { provide: TelegramClientService, useExisting: TeleprotoTelegramClientService },
+    GramJsTelegramClientService,
+    { provide: TelegramClientService, useExisting: GramJsTelegramClientService },
     TelegramIntegrationService,
   ],
   exports: [TelegramIntegrationService, TelegramClientService, TelegramCryptoService],

@@ -1,9 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Api, TelegramClient } from 'teleproto';
-import { getPeerId } from 'teleproto/Utils';
-import { returnBigInt } from 'teleproto/Helpers';
-import { StringSession } from 'teleproto/sessions';
+import { Api, TelegramClient } from 'telegram';
+import { getPeerId } from 'telegram/Utils';
+import { returnBigInt } from 'telegram/Helpers';
+import { Logger as GramJsLogger, LogLevel } from 'telegram/extensions/Logger';
+import { StringSession } from 'telegram/sessions';
 import { createHash, randomUUID } from 'node:crypto';
 import { classifyTelegramError, TelegramAdapterError } from './telegram.errors';
 
@@ -18,7 +19,7 @@ export type TelegramSentCodeMeta = {
   delivery: TelegramDeliveryType;
   nextDelivery: TelegramDeliveryType | null;
   timeoutSeconds: number | null;
-  /** Raw teleproto/MTProto constructor name (e.g. "auth.SentCodeTypeApp") for safe, non-PII logging. */
+  /** Raw GramJS/MTProto constructor name (e.g. "auth.SentCodeTypeApp") for safe, non-PII logging. */
   rawType: string;
   rawNextType: string | null;
 };
@@ -39,8 +40,8 @@ export abstract class TelegramClientService {
 }
 
 @Injectable()
-export class TeleprotoTelegramClientService extends TelegramClientService {
-  private readonly logger = new Logger(TeleprotoTelegramClientService.name);
+export class GramJsTelegramClientService extends TelegramClientService {
+  private readonly logger = new Logger(GramJsTelegramClientService.name);
   private readonly peerEntityCache = new Map<string, { entity: Api.TypeUser | Api.TypeChat; peer: TelegramPeer; expiresAt: number }>();
   private readonly apiId: number | undefined;
   private readonly apiHash: string | undefined;
@@ -191,7 +192,7 @@ export class TeleprotoTelegramClientService extends TelegramClientService {
     const client = this.client(session);
     try {
       await client.connect();
-      await client.logOut();
+      await client.invoke(new Api.auth.LogOut());
     } catch (error) {
       throw classifyTelegramError(error);
     } finally {
@@ -359,6 +360,7 @@ export class TeleprotoTelegramClientService extends TelegramClientService {
     const credentials = this.credentials();
     return new TelegramClient(new StringSession(session), credentials.apiId, credentials.apiHash, {
       connectionRetries: 3, reconnectRetries: 2, floodSleepThreshold: 0, deviceModel: 'Qulay AI', appVersion: '1.0',
+      baseLogger: new GramJsLogger(LogLevel.NONE),
     });
   }
 

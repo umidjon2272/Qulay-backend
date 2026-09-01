@@ -17,6 +17,7 @@
     "prisma:deploy": "node node_modules/prisma/build/index.js migrate deploy",
     "prisma:studio": "node node_modules/prisma/build/index.js studio",
     "admin:create": "ts-node scripts/create-admin.ts",
+    "diagnostic:telegram-official": "ts-node scripts/telegram-official-sendcode-test.ts",
     "lint": "tsc --noEmit",
     "test": "jest --config ./test/jest.unit.json --runInBand",
     "test:watch": "jest --watch",
@@ -38,7 +39,7 @@
     "openai": "^7.8.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
-    "teleproto": "^1.228.0"
+    "telegram": "^2.26.22"
   },
   "devDependencies": {
     "@nestjs/cli": "^11.0.0",
