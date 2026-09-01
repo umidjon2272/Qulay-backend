@@ -50,6 +50,11 @@ export abstract class TelegramClientService {
 export class GramJsTelegramClientService extends TelegramClientService {
   private readonly logger = new Logger(GramJsTelegramClientService.name);
   private readonly peerEntityCache = new Map<string, { entity: Api.TypeUser | Api.TypeChat; peer: TelegramPeer; expiresAt: number }>();
+  private readonly activeQrLogins = new Map<string, {
+    client: TelegramClient;
+    updateReceived: boolean;
+    expiresAt: number;
+  }>();
   private readonly apiId: number | undefined;
   private readonly apiHash: string | undefined;
 
@@ -87,85 +92,268 @@ export class GramJsTelegramClientService extends TelegramClientService {
   }
 
   async beginQrLogin(): Promise<TelegramQrResult> {
-    return this.qrLogin('');
+    this.cleanupExpiredQrLogins();
+
+    const client = this.client('');
+    let connected = false;
+    let keepAlive = false;
+
+    try {
+      await client.connect();
+      connected = true;
+
+      if (await client.checkAuthorization()) {
+        return {
+          status: 'connected',
+          session: this.savedSession(client),
+          account: await this.account(client),
+        };
+      }
+
+      const result = await this.exportQrToken(client);
+
+      if (result instanceof Api.auth.LoginTokenSuccess) {
+        return {
+          status: 'connected',
+          session: this.savedSession(client),
+          account: await this.account(client),
+        };
+      }
+
+      if (!(result instanceof Api.auth.LoginToken)) {
+        throw new TelegramAdapterError('UNAVAILABLE');
+      }
+
+      const session = this.savedSession(client);
+
+      if (session) {
+        const key = this.qrSessionKey(session);
+        const state = {
+          client,
+          updateReceived: false,
+          expiresAt: result.expires * 1000,
+        };
+
+        client.addEventHandler((update: Api.TypeUpdate) => {
+          if (update instanceof Api.UpdateLoginToken) {
+            state.updateReceived = true;
+            this.logger.log({
+              event: 'telegram_qr_login_token_update',
+              sessionExists: true,
+              selectedDcId: client.session.dcId || null,
+            });
+          }
+        });
+
+        this.activeQrLogins.set(key, state);
+        keepAlive = true;
+      }
+
+      return {
+        status: 'pending',
+        session,
+        qrUrl: this.qrUrl(result.token),
+        expiresAt: new Date(result.expires * 1000).toISOString(),
+      };
+    } catch (error) {
+      if (this.isQrPasswordRequired(error)) {
+        return { status: 'password_required', session: this.savedSession(client) };
+      }
+      throw this.withAuthContext(error, connected, Boolean(this.savedSession(client)));
+    } finally {
+      if (!keepAlive) {
+        await client.disconnect().catch(() => undefined);
+      }
+    }
   }
 
   async pollQrLogin(session: string): Promise<TelegramQrResult> {
     if (!session) throw new TelegramAdapterError('CONNECTION_EXPIRED');
+
+    const key = this.qrSessionKey(session);
+    const active = this.activeQrLogins.get(key);
+
+    if (active) {
+      try {
+        const result = await this.exportQrToken(active.client);
+        return await this.resolveQrTokenResult(active.client, result, key);
+      } catch (error) {
+        if (this.isQrPasswordRequired(error)) {
+          return { status: 'password_required', session: this.savedSession(active.client) };
+        }
+        throw this.withAuthContext(error, true, Boolean(this.savedSession(active.client)));
+      }
+    }
+
+    // Render restart / process recycle fallback:
+    // rebuild the SAME auth key, then export once to reconcile accepted QR state.
     return this.qrLogin(session);
   }
 
   async checkQrLogin(session: string): Promise<TelegramQrResult> {
     if (!session) throw new TelegramAdapterError('CONNECTION_EXPIRED');
-    const client = this.client(session);
-    let connected = false;
-    try {
-      await client.connect();
-      connected = true;
 
-      const authorized = await client.checkAuthorization();
+    const key = this.qrSessionKey(session);
+    const active = this.activeQrLogins.get(key);
 
-      this.logger.log({
-        event: 'telegram_qr_status_checked',
-        sessionExists: true,
-        clientConnected: true,
-        authorized,
-        selectedDcId: client.session.dcId || null,
-      });
-
-      if (authorized) {
-        const account = await this.account(client);
+    if (active) {
+      try {
+        const authorized = await active.client.checkAuthorization();
 
         this.logger.log({
-          event: 'telegram_qr_authorized',
+          event: 'telegram_qr_status_checked',
+          sessionExists: true,
+          activeClient: true,
           clientConnected: true,
-          selectedDcId: client.session.dcId || null,
-          telegramUserIdExists: Boolean(account.telegramUserId),
+          authorized,
+          updateReceived: active.updateReceived,
+          selectedDcId: active.client.session.dcId || null,
         });
 
-        return {
-          status: 'connected',
-          session: this.savedSession(client),
-          account,
-        };
-      }
+        if (authorized) {
+          const account = await this.account(active.client);
+          const saved = this.savedSession(active.client);
+          await this.closeActiveQrLogin(key);
+          return { status: 'connected', session: saved, account };
+        }
 
-      return {
-        status: 'pending',
-        session: this.savedSession(client),
-      };
-    } catch (error) {
-      throw this.withAuthContext(error, connected, Boolean(this.savedSession(client)));
-    } finally {
-      await client.disconnect().catch(() => undefined);
+        // Telegram's documented QR flow emits UpdateLoginToken after the
+        // phone accepts the QR. Only then perform the required second
+        // ExportLoginToken call, which returns LoginTokenSuccess (or migrate).
+        if (active.updateReceived) {
+          const result = await this.exportQrToken(active.client);
+          return await this.resolveQrTokenResult(active.client, result, key);
+        }
+
+        // Keep the displayed QR stable until its actual expiry.
+        if (Date.now() >= active.expiresAt) {
+          const result = await this.exportQrToken(active.client);
+          return await this.resolveQrTokenResult(active.client, result, key);
+        }
+
+        return { status: 'pending', session: this.savedSession(active.client) };
+      } catch (error) {
+        if (this.isQrPasswordRequired(error)) {
+          return { status: 'password_required', session: this.savedSession(active.client) };
+        }
+        throw this.withAuthContext(error, true, Boolean(this.savedSession(active.client)));
+      }
     }
+
+    // If Render restarted, the in-memory UpdateLoginToken listener is gone.
+    // Reconnect the persisted auth key. If already authorized => success.
+    // Otherwise export once, producing either LoginTokenSuccess or a fresh QR.
+    return this.qrLogin(session);
   }
 
   private async qrLogin(session: string): Promise<TelegramQrResult> {
     const client = this.client(session);
     let connected = false;
+
     try {
       await client.connect();
       connected = true;
-      if (await client.checkAuthorization()) return { status: 'connected', session: this.savedSession(client), account: await this.account(client) };
+
+      if (await client.checkAuthorization()) {
+        return {
+          status: 'connected',
+          session: this.savedSession(client),
+          account: await this.account(client),
+        };
+      }
+
       const result = await this.exportQrToken(client);
-      if (result instanceof Api.auth.LoginTokenSuccess) return { status: 'connected', session: this.savedSession(client), account: await this.account(client) };
-      if (!(result instanceof Api.auth.LoginToken)) throw new TelegramAdapterError('UNAVAILABLE');
+
+      if (result instanceof Api.auth.LoginTokenSuccess) {
+        return {
+          status: 'connected',
+          session: this.savedSession(client),
+          account: await this.account(client),
+        };
+      }
+
+      if (!(result instanceof Api.auth.LoginToken)) {
+        throw new TelegramAdapterError('UNAVAILABLE');
+      }
+
       return {
         status: 'pending',
         session: this.savedSession(client),
-        qrUrl: `tg://login?token=${Buffer.from(result.token).toString('base64url')}`,
+        qrUrl: this.qrUrl(result.token),
         expiresAt: new Date(result.expires * 1000).toISOString(),
       };
     } catch (error) {
-      const message = `${(error as { errorMessage?: string }).errorMessage ?? ''} ${(error as Error).message ?? ''}`.toUpperCase();
-      if (message.includes('SESSION_PASSWORD_NEEDED')) return { status: 'password_required', session: this.savedSession(client) };
+      if (this.isQrPasswordRequired(error)) {
+        return { status: 'password_required', session: this.savedSession(client) };
+      }
       throw this.withAuthContext(error, connected, Boolean(this.savedSession(client)));
     } finally {
       await client.disconnect().catch(() => undefined);
     }
   }
 
+  private async resolveQrTokenResult(
+    client: TelegramClient,
+    result: Api.auth.TypeLoginToken,
+    key: string,
+  ): Promise<TelegramQrResult> {
+    if (result instanceof Api.auth.LoginTokenSuccess) {
+      const account = await this.account(client);
+      const session = this.savedSession(client);
+      await this.closeActiveQrLogin(key);
+      return { status: 'connected', session, account };
+    }
+
+    if (!(result instanceof Api.auth.LoginToken)) {
+      throw new TelegramAdapterError('UNAVAILABLE');
+    }
+
+    const active = this.activeQrLogins.get(key);
+    if (active) {
+      active.updateReceived = false;
+      active.expiresAt = result.expires * 1000;
+    }
+
+    return {
+      status: 'pending',
+      session: this.savedSession(client),
+      qrUrl: this.qrUrl(result.token),
+      expiresAt: new Date(result.expires * 1000).toISOString(),
+    };
+  }
+
+  private qrUrl(token: Buffer | Uint8Array): string {
+    return `tg://login?token=${Buffer.from(token).toString('base64url')}`;
+  }
+
+  private qrSessionKey(session: string): string {
+    return createHash('sha256').update(session).digest('hex');
+  }
+
+  private isQrPasswordRequired(error: unknown): boolean {
+    const candidate = error as { errorMessage?: string; message?: string };
+    const message = `${candidate.errorMessage ?? ''} ${candidate.message ?? ''}`.toUpperCase();
+    return message.includes('SESSION_PASSWORD_NEEDED');
+  }
+
+  private cleanupExpiredQrLogins(): void {
+    const now = Date.now();
+
+    for (const [key, state] of this.activeQrLogins.entries()) {
+      // Extra grace period allows frontend to refresh an expired QR.
+      if (now <= state.expiresAt + 120_000) continue;
+      this.activeQrLogins.delete(key);
+      void state.client.disconnect().catch(() => undefined);
+    }
+  }
+
+  private async closeActiveQrLogin(key: string): Promise<void> {
+    const state = this.activeQrLogins.get(key);
+    if (!state) return;
+
+    this.activeQrLogins.delete(key);
+    await state.client.disconnect().catch(() => undefined);
+  }
   private async exportQrToken(client: TelegramClient): Promise<Api.auth.TypeLoginToken> {
     const credentials = this.credentials();
     const result = await client.invoke(new Api.auth.ExportLoginToken({ apiId: credentials.apiId, apiHash: credentials.apiHash, exceptIds: [] }));
