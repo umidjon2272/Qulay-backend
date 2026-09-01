@@ -39,6 +39,8 @@ export class TelegramIntegrationService {
           encryptedPhoneCodeHash: this.crypto.encrypt(pending.phoneCodeHash),
           codeSentAt: now,
           codeResendAfterSeconds: pending.timeoutSeconds,
+          pendingDelivery: pending.delivery,
+          pendingNextDelivery: pending.nextDelivery,
           status: TelegramConnectionStatus.AWAITING_CODE,
         },
         update: {
@@ -47,6 +49,8 @@ export class TelegramIntegrationService {
           encryptedPhoneCodeHash: this.crypto.encrypt(pending.phoneCodeHash),
           codeSentAt: now,
           codeResendAfterSeconds: pending.timeoutSeconds,
+          pendingDelivery: pending.delivery,
+          pendingNextDelivery: pending.nextDelivery,
           telegramUserId: null,
           username: null,
           displayName: null,
@@ -58,6 +62,7 @@ export class TelegramIntegrationService {
       this.logCodeRequested('connect', pending);
       return { status: 'code_required', delivery: pending.delivery, nextDelivery: pending.nextDelivery, timeoutSeconds: pending.timeoutSeconds };
     } catch (error) {
+      this.logAuthError('connect', error, null);
       await this.markError(userId);
       throw mapTelegramError(error);
     }
@@ -67,6 +72,11 @@ export class TelegramIntegrationService {
     this.assertConfigured();
     const connection = await this.getPendingConnection(userId, TelegramConnectionStatus.AWAITING_CODE);
     this.assertResendAllowed(connection);
+    if (!connection.pendingNextDelivery) {
+      const error = new TelegramAdapterError('RESEND_UNAVAILABLE');
+      this.logAuthError('resend-code', error, connection);
+      throw mapTelegramError(error);
+    }
     try {
       const pending = await this.telegramClient.resendCode({
         session: this.decryptPendingSession(connection),
@@ -80,12 +90,17 @@ export class TelegramIntegrationService {
           encryptedPhoneCodeHash: this.crypto.encrypt(pending.phoneCodeHash),
           codeSentAt: new Date(),
           codeResendAfterSeconds: pending.timeoutSeconds,
+          pendingDelivery: pending.delivery,
+          pendingNextDelivery: pending.nextDelivery,
           lastUsedAt: new Date(),
         },
       });
       this.logCodeRequested('resend', pending);
       return { status: 'code_required', delivery: pending.delivery, nextDelivery: pending.nextDelivery, timeoutSeconds: pending.timeoutSeconds };
     } catch (error) {
+      this.logAuthError('resend-code', error, connection);
+      if (telegramErrorCode(error) === 'AUTH_RESTART') return this.restartLogin(userId, connection);
+      if (['CODE_HASH_INVALID', 'EXPIRED_CODE'].includes(telegramErrorCode(error))) await this.invalidatePending(userId, telegramErrorCode(error));
       throw this.handleAuthError(userId, error);
     }
   }
@@ -107,6 +122,10 @@ export class TelegramIntegrationService {
       timeoutSeconds: pending.timeoutSeconds,
       rawType: pending.rawType,
       rawNextType: pending.rawNextType,
+      pendingAuthStateExists: true,
+      phoneCodeHashExists: Boolean(pending.phoneCodeHash),
+      telegramClientConnected: true,
+      telegramAuthSessionExists: Boolean(pending.session),
     });
   }
 
@@ -127,6 +146,8 @@ export class TelegramIntegrationService {
       await this.finalizeConnection(userId, connection, result.session, result.account);
       return { status: 'connected' };
     } catch (error) {
+      this.logAuthError('verify-code', error, connection);
+      if (['CODE_HASH_INVALID', 'EXPIRED_CODE', 'AUTH_RESTART'].includes(telegramErrorCode(error))) await this.invalidatePending(userId, telegramErrorCode(error));
       throw this.handleAuthError(userId, error);
     }
   }
@@ -188,7 +209,7 @@ export class TelegramIntegrationService {
     if (connection) {
       await this.prisma.telegramConnection.update({
         where: { userId },
-        data: { telegramUserId: null, phoneNumber: null, username: null, displayName: null, encryptedSession: null, encryptedPhoneCodeHash: null, codeSentAt: null, codeResendAfterSeconds: null, status: TelegramConnectionStatus.DISCONNECTED, connectedAt: null, lastValidatedAt: null, lastErrorAt: null, lastErrorCode: null, lastUsedAt: new Date() },
+        data: { telegramUserId: null, phoneNumber: null, username: null, displayName: null, encryptedSession: null, encryptedPhoneCodeHash: null, codeSentAt: null, codeResendAfterSeconds: null, pendingDelivery: null, pendingNextDelivery: null, status: TelegramConnectionStatus.DISCONNECTED, connectedAt: null, lastValidatedAt: null, lastErrorAt: null, lastErrorCode: null, lastUsedAt: new Date() },
       });
     }
     await this.activityLog.record({ userId, action: ACTIVITY_ACTIONS.TELEGRAM_DISCONNECTED, entityType: 'TELEGRAM_CONNECTION', metadata: { source: 'TELEGRAM' } });
@@ -259,6 +280,8 @@ export class TelegramIntegrationService {
         encryptedPhoneCodeHash: null,
         codeSentAt: null,
         codeResendAfterSeconds: null,
+        pendingDelivery: null,
+        pendingNextDelivery: null,
         phoneNumber: connection.phoneNumber,
         telegramUserId: account.telegramUserId,
         username: account.username,
@@ -298,7 +321,7 @@ export class TelegramIntegrationService {
   }
 
   private async revokeConnection(userId: string, errorCode: string): Promise<void> {
-    await this.prisma.telegramConnection.updateMany({ where: { userId }, data: { encryptedSession: null, encryptedPhoneCodeHash: null, codeSentAt: null, codeResendAfterSeconds: null, status: TelegramConnectionStatus.DISCONNECTED, lastErrorAt: new Date(), lastErrorCode: errorCode } });
+    await this.prisma.telegramConnection.updateMany({ where: { userId }, data: { encryptedSession: null, encryptedPhoneCodeHash: null, codeSentAt: null, codeResendAfterSeconds: null, pendingDelivery: null, pendingNextDelivery: null, status: TelegramConnectionStatus.DISCONNECTED, lastErrorAt: new Date(), lastErrorCode: errorCode } });
   }
 
   /** Returns the row as stored — `encryptedSession`/`encryptedPhoneCodeHash` are still ciphertext. Use `decryptPendingSession()` before handing the session to the Telegram client. */
@@ -321,6 +344,51 @@ export class TelegramIntegrationService {
 
   private async markError(userId: string): Promise<void> {
     await this.prisma.telegramConnection.updateMany({ where: { userId }, data: { status: TelegramConnectionStatus.ERROR } });
+  }
+
+  private async invalidatePending(userId: string, errorCode: string): Promise<void> {
+    await this.prisma.telegramConnection.updateMany({
+      where: { userId, status: TelegramConnectionStatus.AWAITING_CODE },
+      data: { encryptedSession: null, encryptedPhoneCodeHash: null, codeSentAt: null, codeResendAfterSeconds: null, pendingDelivery: null, pendingNextDelivery: null, status: TelegramConnectionStatus.DISCONNECTED, lastErrorAt: new Date(), lastErrorCode: errorCode },
+    });
+  }
+
+  private async restartLogin(userId: string, connection: TelegramConnection): Promise<CodeRequiredResponse> {
+    await this.invalidatePending(userId, 'AUTH_RESTART');
+    const phoneNumber = this.crypto.decrypt(this.requireStored(connection.phoneNumber));
+    try {
+      const pending = await this.telegramClient.beginLogin(phoneNumber);
+      const now = new Date();
+      await this.prisma.telegramConnection.update({
+        where: { userId },
+        data: {
+          phoneNumber: this.crypto.encrypt(phoneNumber), encryptedSession: this.crypto.encrypt(pending.session), encryptedPhoneCodeHash: this.crypto.encrypt(pending.phoneCodeHash),
+          codeSentAt: now, codeResendAfterSeconds: pending.timeoutSeconds, pendingDelivery: pending.delivery, pendingNextDelivery: pending.nextDelivery,
+          status: TelegramConnectionStatus.AWAITING_CODE, lastErrorAt: null, lastErrorCode: null, lastUsedAt: now,
+        },
+      });
+      this.logCodeRequested('resend', pending);
+      return { status: 'code_required', delivery: pending.delivery, nextDelivery: pending.nextDelivery, timeoutSeconds: pending.timeoutSeconds };
+    } catch (error) {
+      this.logAuthError('resend-code-restart', error, connection);
+      throw mapTelegramError(error);
+    }
+  }
+
+  private logAuthError(operation: 'connect' | 'resend-code' | 'resend-code-restart' | 'verify-code', error: unknown, connection: TelegramConnection | null): void {
+    const candidate = error as { name?: string; code?: string | number; message?: string; errorMessage?: string; rpcErrorMessage?: string; retryAfterSeconds?: number; clientConnected?: boolean; authSessionExists?: boolean };
+    const classified = error instanceof TelegramAdapterError ? error : null;
+    const redact = (value: string | undefined) => value?.replace(/\+?\d{7,15}/g, '[REDACTED]').replace(/[A-Za-z0-9+/_=-]{24,}/g, '[REDACTED]').slice(0, 160);
+    this.logger.warn({
+      event: 'telegram_auth_error', operation,
+      errorName: candidate.name ?? 'Error', errorCode: classified?.code ?? candidate.code ?? 'UNKNOWN',
+      errorMessage: redact(candidate.message), rpcErrorMessage: redact(classified?.rpcErrorMessage ?? candidate.errorMessage ?? candidate.rpcErrorMessage),
+      floodWaitSeconds: classified?.retryAfterSeconds ?? candidate.retryAfterSeconds ?? null,
+      delivery: connection?.pendingDelivery ?? null, nextDelivery: connection?.pendingNextDelivery ?? null,
+      pendingAuthStateExists: Boolean(connection), phoneCodeHashExists: Boolean(connection?.encryptedPhoneCodeHash),
+      telegramClientConnected: classified?.clientConnected ?? candidate.clientConnected ?? false,
+      telegramAuthSessionExists: classified?.authSessionExists ?? candidate.authSessionExists ?? Boolean(connection?.encryptedSession),
+    });
   }
 
   private handleAuthError(userId: string, error: unknown) {

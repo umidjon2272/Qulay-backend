@@ -46,6 +46,7 @@ describe('TelegramIntegrationService', () => {
     expect(prisma.telegramConnection.upsert).toHaveBeenCalledWith(expect.objectContaining({
       create: expect.objectContaining({
         status: TelegramConnectionStatus.AWAITING_CODE, encryptedSession: 'encrypted:session-string', encryptedPhoneCodeHash: 'encrypted:hash', phoneNumber: 'encrypted:+998901234567', codeResendAfterSeconds: 60,
+        pendingDelivery: 'telegram_app', pendingNextDelivery: 'sms',
       }),
     }));
     expect(JSON.stringify(prisma.telegramConnection.upsert.mock.calls[0])).not.toContain('CODE-SECRET');
@@ -56,6 +57,7 @@ describe('TelegramIntegrationService', () => {
       userId: 'user-a', status: TelegramConnectionStatus.AWAITING_CODE,
       encryptedSession: 'encrypted:session-string', phoneNumber: 'encrypted:+998901234567', encryptedPhoneCodeHash: 'encrypted:hash',
       codeSentAt: new Date(Date.now() - 120_000), codeResendAfterSeconds: 60,
+      pendingDelivery: 'telegram_app', pendingNextDelivery: 'sms',
     });
     client.resendCode.mockResolvedValue({
       session: 'session-string-2', phoneCodeHash: 'hash-2',
@@ -74,9 +76,50 @@ describe('TelegramIntegrationService', () => {
       userId: 'user-a', status: TelegramConnectionStatus.AWAITING_CODE,
       encryptedSession: 'encrypted:session-string', phoneNumber: 'encrypted:+998901234567', encryptedPhoneCodeHash: 'encrypted:hash',
       codeSentAt: new Date(), codeResendAfterSeconds: 60,
+      pendingDelivery: 'telegram_app', pendingNextDelivery: 'sms',
     });
     await expect(service.resendCode('user-a')).rejects.toMatchObject({ status: 429 });
     expect(client.resendCode).not.toHaveBeenCalled();
+  });
+
+  it('returns a clear conflict and does not call Telegram when nextDelivery is null', async () => {
+    prisma.telegramConnection.findUnique.mockResolvedValue({
+      userId: 'user-a', status: TelegramConnectionStatus.AWAITING_CODE,
+      encryptedSession: 'encrypted:session-string', phoneNumber: 'encrypted:+998901234567', encryptedPhoneCodeHash: 'encrypted:hash',
+      codeSentAt: new Date(Date.now() - 120_000), codeResendAfterSeconds: null,
+      pendingDelivery: 'telegram_app', pendingNextDelivery: null,
+    });
+    await expect(service.resendCode('user-a')).rejects.toMatchObject({ status: 409 });
+    expect(client.resendCode).not.toHaveBeenCalled();
+  });
+
+  it.each(['CODE_HASH_INVALID', 'EXPIRED_CODE'] as const)('invalidates pending state on %s', async (code) => {
+    prisma.telegramConnection.findUnique.mockResolvedValue({
+      userId: 'user-a', status: TelegramConnectionStatus.AWAITING_CODE,
+      encryptedSession: 'encrypted:session-string', phoneNumber: 'encrypted:+998901234567', encryptedPhoneCodeHash: 'encrypted:hash',
+      codeSentAt: null, codeResendAfterSeconds: null, pendingDelivery: 'sms', pendingNextDelivery: 'call',
+    });
+    client.resendCode.mockRejectedValue(new TelegramAdapterError(code));
+    await expect(service.resendCode('user-a')).rejects.toMatchObject({ status: 400 });
+    expect(prisma.telegramConnection.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { userId: 'user-a', status: TelegramConnectionStatus.AWAITING_CODE },
+      data: expect.objectContaining({ encryptedSession: null, encryptedPhoneCodeHash: null, status: TelegramConnectionStatus.DISCONNECTED }),
+    }));
+  });
+
+  it('restarts the login safely when Telegram returns AUTH_RESTART', async () => {
+    const connection = {
+      userId: 'user-a', status: TelegramConnectionStatus.AWAITING_CODE,
+      encryptedSession: 'encrypted:session-string', phoneNumber: 'encrypted:+998901234567', encryptedPhoneCodeHash: 'encrypted:hash',
+      codeSentAt: null, codeResendAfterSeconds: null, pendingDelivery: 'sms', pendingNextDelivery: 'call',
+    };
+    prisma.telegramConnection.findUnique.mockResolvedValue(connection);
+    client.resendCode.mockRejectedValue(new TelegramAdapterError('AUTH_RESTART'));
+    client.beginLogin.mockResolvedValue({ session: 'fresh-session', phoneCodeHash: 'fresh-hash', delivery: 'telegram_app', nextDelivery: null, timeoutSeconds: null, rawType: 'auth.SentCodeTypeApp', rawNextType: null });
+    prisma.telegramConnection.update.mockResolvedValue(undefined);
+    await expect(service.resendCode('user-a')).resolves.toMatchObject({ status: 'code_required', delivery: 'telegram_app', nextDelivery: null });
+    expect(client.beginLogin).toHaveBeenCalledWith('+998901234567');
+    expect(prisma.telegramConnection.update).toHaveBeenCalledWith(expect.objectContaining({ where: { userId: 'user-a' }, data: expect.objectContaining({ encryptedSession: 'encrypted:fresh-session', encryptedPhoneCodeHash: 'encrypted:fresh-hash' }) }));
   });
 
   it('scopes connected operations to the authenticated user connection', async () => {

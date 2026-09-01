@@ -52,13 +52,14 @@ export class TeleprotoTelegramClientService extends TelegramClientService {
 
   async beginLogin(phoneNumber: string): Promise<TelegramSentCode> {
     const client = this.client('');
+    let connected = false;
     try {
       await client.connect();
+      connected = true;
       const sentCode = await this.requestSentCode(client, phoneNumber);
       return { session: this.savedSession(client), ...this.describeSentCode(sentCode) };
     } catch (error) {
-      if (error instanceof TelegramAdapterError) throw error;
-      throw classifyTelegramError(error);
+      throw this.withAuthContext(error, connected, Boolean(this.savedSession(client)));
     } finally {
       await client.disconnect().catch(() => undefined);
     }
@@ -66,21 +67,22 @@ export class TeleprotoTelegramClientService extends TelegramClientService {
 
   async resendCode(input: { session: string; phoneNumber: string; phoneCodeHash: string }): Promise<TelegramSentCode> {
     const client = this.client(input.session);
+    let connected = false;
     try {
       await client.connect();
+      connected = true;
       const result = await client.invoke(new Api.auth.ResendCode({ phoneNumber: input.phoneNumber, phoneCodeHash: input.phoneCodeHash }));
       if (!(result instanceof Api.auth.SentCode)) throw new TelegramAdapterError('UNAVAILABLE');
       return { session: this.savedSession(client), ...this.describeSentCode(result) };
     } catch (error) {
-      if (error instanceof TelegramAdapterError) throw error;
-      throw classifyTelegramError(error);
+      throw this.withAuthContext(error, connected, Boolean(input.session));
     } finally {
       await client.disconnect().catch(() => undefined);
     }
   }
 
   /** Raw `auth.SendCode` invocation (bypasses the high-level `sendCode()` helper, which discards delivery metadata). */
-  private async requestSentCode(client: TelegramClient, phoneNumber: string): Promise<Api.auth.SentCode> {
+  private async requestSentCode(client: TelegramClient, phoneNumber: string, authRestartAttempted = false): Promise<Api.auth.SentCode> {
     const credentials = this.credentials();
     let result: Api.auth.TypeSentCode;
     try {
@@ -91,7 +93,7 @@ export class TeleprotoTelegramClientService extends TelegramClientService {
         settings: new Api.CodeSettings({}),
       }));
     } catch (error) {
-      if ((error as { errorMessage?: string }).errorMessage === 'AUTH_RESTART') return this.requestSentCode(client, phoneNumber);
+      if ((error as { errorMessage?: string }).errorMessage === 'AUTH_RESTART' && !authRestartAttempted) return this.requestSentCode(client, phoneNumber, true);
       throw error;
     }
     if (!(result instanceof Api.auth.SentCode)) throw new TelegramAdapterError('UNAVAILABLE');
@@ -128,8 +130,10 @@ export class TeleprotoTelegramClientService extends TelegramClientService {
 
   async verifyCode(input: { session: string; phoneNumber: string; phoneCodeHash: string; code: string }): Promise<{ status: 'connected' | 'password_required'; session: string; account?: TelegramAccount }> {
     const client = this.client(input.session);
+    let connected = false;
     try {
       await client.connect();
+      connected = true;
       try {
         await client.invoke(new Api.auth.SignIn({ phoneNumber: input.phoneNumber, phoneCodeHash: input.phoneCodeHash, phoneCode: input.code }));
       } catch (error) {
@@ -139,8 +143,7 @@ export class TeleprotoTelegramClientService extends TelegramClientService {
       }
       return { status: 'connected', session: this.savedSession(client), account: await this.account(client) };
     } catch (error) {
-      if (error instanceof TelegramAdapterError) throw error;
-      throw classifyTelegramError(error);
+      throw this.withAuthContext(error, connected, Boolean(input.session));
     } finally {
       await client.disconnect().catch(() => undefined);
     }
@@ -345,6 +348,11 @@ export class TeleprotoTelegramClientService extends TelegramClientService {
 
   private savedSession(client: TelegramClient): string {
     return (client.session as StringSession).save();
+  }
+
+  private withAuthContext(error: unknown, clientConnected: boolean, authSessionExists: boolean): TelegramAdapterError {
+    const classified = classifyTelegramError(error);
+    return new TelegramAdapterError(classified.code, classified.retryAfterSeconds, classified.rpcErrorMessage, classified.rpcCode, clientConnected, authSessionExists);
   }
 
   private async account(client: TelegramClient): Promise<TelegramAccount> {

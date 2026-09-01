@@ -334,6 +334,8 @@ model TelegramConnection {
   // Bookkeeping for resend-code flood/timeout enforcement; never the code itself.
   codeSentAt             DateTime?
   codeResendAfterSeconds Int?
+  pendingDelivery        String?                  @db.VarChar(32)
+  pendingNextDelivery    String?                  @db.VarChar(32)
   status                 TelegramConnectionStatus @default(DISCONNECTED)
   connectedAt            DateTime?
   lastValidatedAt        DateTime?

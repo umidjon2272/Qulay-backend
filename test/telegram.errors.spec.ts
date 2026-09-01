@@ -26,6 +26,22 @@ describe('Telegram error mapping', () => {
     expect(classifyTelegramError({ errorMessage: 'UPDATE_APP_TO_LOGIN' }).code).toBe('UPDATE_APP_TO_LOGIN');
     expect(classifyTelegramError({ errorMessage: 'FLOOD_WAIT_30' })).toMatchObject({ code: 'FLOOD_WAIT', retryAfterSeconds: 30 });
     expect(classifyTelegramError({ errorMessage: 'PHONE_CODE_EXPIRED' }).code).toBe('EXPIRED_CODE');
+    expect(classifyTelegramError({ errorMessage: 'PHONE_CODE_HASH_INVALID' }).code).toBe('CODE_HASH_INVALID');
+    expect(classifyTelegramError({ errorMessage: 'PHONE_CODE_HASH_EMPTY' }).code).toBe('CODE_HASH_INVALID');
+    expect(classifyTelegramError({ errorMessage: 'SEND_CODE_UNAVAILABLE' }).code).toBe('RESEND_UNAVAILABLE');
+    expect(classifyTelegramError({ errorMessage: 'AUTH_RESTART' }).code).toBe('AUTH_RESTART');
+  });
+
+  it('maps resend-unavailable and auth-restart without a generic 503', () => {
+    expect(mapTelegramError(new TelegramAdapterError('RESEND_UNAVAILABLE')).getStatus()).toBe(409);
+    expect(mapTelegramError(new TelegramAdapterError('AUTH_RESTART')).getStatus()).toBe(409);
+  });
+
+  it('redacts unexpected long tokens and phone-like values from diagnostic RPC messages', () => {
+    const classified = classifyTelegramError({ errorMessage: 'RPC_FAIL +998901234567 abcdefghijklmnopqrstuvwxyz123456' });
+    expect(classified.rpcErrorMessage).toContain('[REDACTED]');
+    expect(classified.rpcErrorMessage).not.toContain('+998901234567');
+    expect(classified.rpcErrorMessage).not.toContain('abcdefghijklmnopqrstuvwxyz123456');
   });
 
   it.each(['AUTH_KEY_UNREGISTERED', 'SESSION_REVOKED', 'USER_DEACTIVATED', 'AUTH_KEY_INVALID'])(

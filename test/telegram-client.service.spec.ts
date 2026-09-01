@@ -83,6 +83,15 @@ describe('TeleprotoTelegramClientService', () => {
     await expect(service.beginLogin('+998901234567')).rejects.toMatchObject({ code: 'FLOOD_WAIT', retryAfterSeconds: 30 });
   });
 
+  it.each([
+    ['SEND_CODE_UNAVAILABLE', 'RESEND_UNAVAILABLE'],
+    ['PHONE_CODE_HASH_INVALID', 'CODE_HASH_INVALID'],
+    ['PHONE_CODE_HASH_EMPTY', 'CODE_HASH_INVALID'],
+  ])('classifies %s during resend as %s', async (rpcError, code) => {
+    invokeSpy.mockRejectedValueOnce(Object.assign(new Error(rpcError), { errorMessage: rpcError }));
+    await expect(service.resendCode({ session: '', phoneNumber: '+998901234567', phoneCodeHash: 'hash' })).rejects.toMatchObject({ code });
+  });
+
   describe('verifyCode', () => {
     it('signs in and returns the connected account on a correct code', async () => {
       invokeSpy.mockResolvedValueOnce(undefined);
