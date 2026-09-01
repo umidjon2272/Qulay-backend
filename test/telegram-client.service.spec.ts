@@ -1,6 +1,7 @@
 import { ConfigService } from '@nestjs/config';
 import { Api, TelegramClient } from 'telegram';
 import { returnBigInt } from 'telegram/Helpers';
+import { StringSession } from 'telegram/sessions';
 import { GramJsTelegramClientService } from '../src/telegram/telegram-client.service';
 
 describe('GramJsTelegramClientService', () => {
@@ -82,6 +83,43 @@ describe('GramJsTelegramClientService', () => {
     expect(output).not.toContain('+998901234567');
     expect(output).not.toContain('private-hash');
     expect(output).not.toContain('test-hash');
+  });
+
+  it('starts QR login with an isolated session and returns a base64url token without padding', async () => {
+    invokeSpy.mockResolvedValueOnce(new Api.auth.LoginToken({ expires: 2_000_000_000, token: Buffer.from([251, 255, 0]) }));
+    const result = await service.beginQrLogin();
+    expect(connectSpy).toHaveBeenCalledTimes(1);
+    expect(invokeSpy.mock.calls[0][0]).toBeInstanceOf(Api.auth.ExportLoginToken);
+    expect(invokeSpy.mock.calls[0][0]).toMatchObject({ apiId: 12345, apiHash: 'test-hash', exceptIds: [] });
+    expect(result).toMatchObject({ status: 'pending', qrUrl: 'tg://login?token=-_8A', expiresAt: '2033-05-18T03:33:20.000Z' });
+    expect(JSON.stringify(result)).not.toContain('test-hash');
+  });
+
+  it('switches DC and imports LoginTokenMigrateTo before returning the refreshed QR', async () => {
+    jest.spyOn(service as any, 'client').mockReturnValue(new TelegramClient(new StringSession(''), 12345, 'test-hash', { connectionRetries: 1 }));
+    const switchDc = jest.spyOn(TelegramClient.prototype, '_switchDC').mockResolvedValue(true);
+    invokeSpy
+      .mockResolvedValueOnce(new Api.auth.LoginTokenMigrateTo({ dcId: 4, token: Buffer.from('migration-token') }))
+      .mockResolvedValueOnce(new Api.auth.LoginToken({ expires: 2_000_000_000, token: Buffer.from('fresh-token') }));
+    await expect(service.pollQrLogin('persisted-session')).resolves.toMatchObject({ status: 'pending' });
+    expect(switchDc).toHaveBeenCalledWith(4);
+    expect(invokeSpy.mock.calls[1][0]).toBeInstanceOf(Api.auth.ImportLoginToken);
+  });
+
+  it('turns LoginTokenSuccess into a reusable authorized session and account', async () => {
+    jest.spyOn(service as any, 'client').mockReturnValue(new TelegramClient(new StringSession(''), 12345, 'test-hash', { connectionRetries: 1 }));
+    invokeSpy.mockResolvedValueOnce(new Api.auth.LoginTokenSuccess({
+      authorization: new Api.auth.Authorization({ user: new Api.User({ id: returnBigInt(42), firstName: 'Aziz', username: 'aziz' }) }),
+    }));
+    jest.spyOn(TelegramClient.prototype, 'getMe').mockResolvedValue(new Api.User({ id: returnBigInt(42), firstName: 'Aziz', username: 'aziz' }) as never);
+    await expect(service.pollQrLogin('persisted-session')).resolves.toMatchObject({
+      status: 'connected', account: { telegramUserId: '42', username: 'aziz', displayName: 'Aziz' },
+    });
+  });
+
+  it('preserves the existing 2FA completion flow when QR authorization requests a password', async () => {
+    invokeSpy.mockRejectedValueOnce(Object.assign(new Error('SESSION_PASSWORD_NEEDED'), { errorMessage: 'SESSION_PASSWORD_NEEDED' }));
+    await expect(service.beginQrLogin()).resolves.toMatchObject({ status: 'password_required' });
   });
 
   it('normalizes sentCodeTypeSms', async () => {

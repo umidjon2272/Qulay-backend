@@ -6,7 +6,7 @@ import { TelegramAdapterError } from '../src/telegram/telegram.errors';
 describe('TelegramIntegrationService', () => {
   const prisma = {
     telegramConnection: {
-      findUnique: jest.fn(), upsert: jest.fn(), update: jest.fn(), updateMany: jest.fn(),
+      findUnique: jest.fn(), create: jest.fn(), upsert: jest.fn(), update: jest.fn(), updateMany: jest.fn(),
     },
   } as any;
   const crypto = {
@@ -15,7 +15,7 @@ describe('TelegramIntegrationService', () => {
     maskPhone: jest.fn(() => '+99****67'),
   } as any;
   const client = {
-    beginLogin: jest.fn(), resendCode: jest.fn(), verifyCode: jest.fn(), verifyPassword: jest.fn(), logout: jest.fn(),
+    beginLogin: jest.fn(), beginQrLogin: jest.fn(), checkQrLogin: jest.fn(), pollQrLogin: jest.fn(), resendCode: jest.fn(), verifyCode: jest.fn(), verifyPassword: jest.fn(), logout: jest.fn(),
     validateSession: jest.fn(), search: jest.fn(), chats: jest.fn(), resolvePeer: jest.fn(), sendMessage: jest.fn(),
   } as any;
   const contacts = { listForUser: jest.fn().mockResolvedValue({ items: [] }) } as any;
@@ -50,6 +50,46 @@ describe('TelegramIntegrationService', () => {
       }),
     }));
     expect(JSON.stringify(prisma.telegramConnection.upsert.mock.calls[0])).not.toContain('CODE-SECRET');
+  });
+
+  it('persists a user-scoped encrypted QR session and never stores the raw token URL', async () => {
+    prisma.telegramConnection.findUnique.mockResolvedValue(null);
+    client.beginQrLogin.mockResolvedValue({ status: 'pending', session: 'qr-auth-session', qrUrl: 'tg://login?token=private-token', expiresAt: '2030-01-01T00:00:30.000Z' });
+    prisma.telegramConnection.upsert.mockResolvedValue(undefined);
+    await expect(service.startQrLogin('user-a')).resolves.toEqual({ status: 'pending', qrUrl: 'tg://login?token=private-token', expiresAt: '2030-01-01T00:00:30.000Z' });
+    expect(prisma.telegramConnection.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      where: { userId: 'user-a' },
+      create: expect.objectContaining({ userId: 'user-a', encryptedSession: 'encrypted:qr-auth-session', pendingDelivery: 'qr', status: TelegramConnectionStatus.AWAITING_CODE }),
+    }));
+    expect(JSON.stringify(prisma.telegramConnection.upsert.mock.calls)).not.toContain('private-token');
+  });
+
+  it('isolates simultaneous QR starts by authenticated Qulay user id', async () => {
+    prisma.telegramConnection.findUnique.mockResolvedValue(null);
+    client.beginQrLogin
+      .mockResolvedValueOnce({ status: 'pending', session: 'session-a', qrUrl: 'tg://login?token=token-a', expiresAt: '2030-01-01T00:00:30.000Z' })
+      .mockResolvedValueOnce({ status: 'pending', session: 'session-b', qrUrl: 'tg://login?token=token-b', expiresAt: '2030-01-01T00:00:30.000Z' });
+    await service.startQrLogin('user-a');
+    await service.startQrLogin('user-b');
+    expect(prisma.telegramConnection.upsert).toHaveBeenNthCalledWith(1, expect.objectContaining({ where: { userId: 'user-a' }, create: expect.objectContaining({ encryptedSession: 'encrypted:session-a' }) }));
+    expect(prisma.telegramConnection.upsert).toHaveBeenNthCalledWith(2, expect.objectContaining({ where: { userId: 'user-b' }, create: expect.objectContaining({ encryptedSession: 'encrypted:session-b' }) }));
+  });
+
+  it('restores the encrypted pending QR session after restart and refreshes an expired token', async () => {
+    prisma.telegramConnection.findUnique.mockResolvedValue({ userId: 'user-a', encryptedSession: 'encrypted:qr-auth-session', pendingDelivery: 'qr', status: TelegramConnectionStatus.AWAITING_CODE, codeSentAt: new Date(0), codeResendAfterSeconds: 1 });
+    client.pollQrLogin.mockResolvedValue({ status: 'pending', session: 'qr-auth-session-2', qrUrl: 'tg://login?token=refreshed', expiresAt: '2030-01-01T00:01:00.000Z' });
+    await expect(service.qrStatus('user-a')).resolves.toMatchObject({ status: 'pending', qrUrl: 'tg://login?token=refreshed' });
+    expect(client.pollQrLogin).toHaveBeenCalledWith('qr-auth-session');
+    expect(prisma.telegramConnection.upsert).toHaveBeenCalledWith(expect.objectContaining({ where: { userId: 'user-a' } }));
+  });
+
+  it('finalizes QR success into the existing encrypted connected-session architecture', async () => {
+    const connection = { userId: 'user-a', encryptedSession: 'encrypted:pending-session', pendingDelivery: 'qr', phoneNumber: null, status: TelegramConnectionStatus.AWAITING_CODE };
+    prisma.telegramConnection.findUnique.mockResolvedValue(connection);
+    client.pollQrLogin.mockResolvedValue({ status: 'connected', session: 'authorized-session', account: { telegramUserId: '42', username: 'aziz', displayName: 'Aziz', phoneNumber: null } });
+    prisma.telegramConnection.update.mockResolvedValue(undefined);
+    await expect(service.qrStatus('user-a')).resolves.toEqual({ status: 'success' });
+    expect(prisma.telegramConnection.update).toHaveBeenCalledWith(expect.objectContaining({ where: { userId: 'user-a' }, data: expect.objectContaining({ encryptedSession: 'encrypted:authorized-session', status: TelegramConnectionStatus.CONNECTED, pendingDelivery: null }) }));
   });
 
   it('resends the code, respecting the stored timeout, and normalizes the response', async () => {

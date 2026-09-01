@@ -1,6 +1,6 @@
 import { BadRequestException, ConflictException, HttpException, HttpStatus, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 
-export type TelegramErrorCode = 'INVALID_PHONE' | 'INVALID_CODE' | 'EXPIRED_CODE' | 'CODE_HASH_INVALID' | 'RESEND_UNAVAILABLE' | 'AUTH_RESTART' | 'ALREADY_AUTHORIZED' | 'WRONG_PASSWORD' | 'FLOOD_WAIT' | 'PHONE_NUMBER_FLOOD' | 'SMS_CODE_CREATE_FAILED' | 'UPDATE_APP_TO_LOGIN' | 'CONNECTION_EXPIRED' | 'PEER_NOT_FOUND' | 'UNAVAILABLE' | 'SEND_FAILED' | 'NOT_CONFIGURED';
+export type TelegramErrorCode = 'INVALID_PHONE' | 'INVALID_CODE' | 'EXPIRED_CODE' | 'QR_TOKEN_EXPIRED' | 'CODE_HASH_INVALID' | 'RESEND_UNAVAILABLE' | 'AUTH_RESTART' | 'ALREADY_AUTHORIZED' | 'WRONG_PASSWORD' | 'FLOOD_WAIT' | 'PHONE_NUMBER_FLOOD' | 'SMS_CODE_CREATE_FAILED' | 'UPDATE_APP_TO_LOGIN' | 'CONNECTION_EXPIRED' | 'PEER_NOT_FOUND' | 'UNAVAILABLE' | 'SEND_FAILED' | 'NOT_CONFIGURED';
 
 export class TelegramAdapterError extends Error {
   constructor(
@@ -22,6 +22,7 @@ export function mapTelegramError(error: unknown): HttpException {
       case 'INVALID_PHONE': return new BadRequestException('Invalid Telegram phone number');
       case 'INVALID_CODE': return new BadRequestException('Invalid Telegram code');
       case 'EXPIRED_CODE': return new BadRequestException("Telegram kodi eskirgan. Yangi kod so'rang.");
+      case 'QR_TOKEN_EXPIRED': return new ConflictException('Telegram QR kodi eskirgan. Yangi QR kod so\'rang.');
       case 'CODE_HASH_INVALID': return new BadRequestException("Telegram login holati eskirgan. Yangi kod so'rang.");
       case 'RESEND_UNAVAILABLE': return new ConflictException('Telegram bu kod uchun qayta yuborishni taklif qilmadi. Yangi ulanishni boshlang.');
       case 'AUTH_RESTART': return new ConflictException('Telegram login jarayonini qayta boshlashni talab qildi. Yangi kod so\'rang.');
@@ -55,6 +56,7 @@ export function classifyTelegramError(error: unknown): TelegramAdapterError {
   if (message.includes('UPDATE_APP_TO_LOGIN')) return new TelegramAdapterError('UPDATE_APP_TO_LOGIN');
   if (message.includes('PHONE_NUMBER_INVALID')) return new TelegramAdapterError('INVALID_PHONE');
   if (message.includes('PHONE_CODE_EXPIRED')) return details('EXPIRED_CODE');
+  if (message.includes('AUTH_TOKEN_EXPIRED')) return details('QR_TOKEN_EXPIRED');
   if (message.includes('PHONE_CODE_HASH_EMPTY') || message.includes('PHONE_CODE_HASH_INVALID')) return details('CODE_HASH_INVALID');
   if (message.includes('PHONE_CODE_INVALID') || message.includes('PHONE_CODE_EMPTY')) return new TelegramAdapterError('INVALID_CODE');
   if (message.includes('PASSWORD_HASH_INVALID')) return new TelegramAdapterError('WRONG_PASSWORD');

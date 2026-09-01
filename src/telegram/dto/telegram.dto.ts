@@ -10,8 +10,6 @@ export class ConnectTelegramDto {
   phoneNumber!: string;
 }
 
-/** Temporary authenticated production diagnostic; remove after delivery verification. */
-export class TelegramDiagnosticSendCodeDto extends ConnectTelegramDto {}
 
 export class VerifyTelegramCodeDto {
   @Transform(({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value))

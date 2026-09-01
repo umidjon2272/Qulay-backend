@@ -25,9 +25,16 @@ export type TelegramSentCodeMeta = {
 };
 
 export type TelegramSentCode = { session: string; phoneCodeHash: string } & TelegramSentCodeMeta;
+export type TelegramQrResult =
+  | { status: 'pending'; session: string; qrUrl?: string; expiresAt?: string }
+  | { status: 'connected'; session: string; account: TelegramAccount }
+  | { status: 'password_required'; session: string };
 
 export abstract class TelegramClientService {
   abstract beginLogin(phoneNumber: string, userScopeId?: string): Promise<TelegramSentCode>;
+  abstract beginQrLogin(): Promise<TelegramQrResult>;
+  abstract checkQrLogin(session: string): Promise<TelegramQrResult>;
+  abstract pollQrLogin(session: string): Promise<TelegramQrResult>;
   abstract resendCode(input: { session: string; phoneNumber: string; phoneCodeHash: string }): Promise<TelegramSentCode>;
   abstract verifyCode(input: { session: string; phoneNumber: string; phoneCodeHash: string; code: string }): Promise<{ status: 'connected' | 'password_required'; session: string; account?: TelegramAccount }>;
   abstract verifyPassword(input: { session: string; password: string }): Promise<{ session: string; account: TelegramAccount }>;
@@ -77,6 +84,62 @@ export class GramJsTelegramClientService extends TelegramClientService {
     } finally {
       await client.disconnect().catch(() => undefined);
     }
+  }
+
+  async beginQrLogin(): Promise<TelegramQrResult> {
+    return this.qrLogin('');
+  }
+
+  async pollQrLogin(session: string): Promise<TelegramQrResult> {
+    if (!session) throw new TelegramAdapterError('CONNECTION_EXPIRED');
+    return this.qrLogin(session);
+  }
+
+  async checkQrLogin(session: string): Promise<TelegramQrResult> {
+    if (!session) throw new TelegramAdapterError('CONNECTION_EXPIRED');
+    const client = this.client(session);
+    try {
+      await client.connect();
+      if (await client.checkAuthorization()) return { status: 'connected', session: this.savedSession(client), account: await this.account(client) };
+      return { status: 'pending', session: this.savedSession(client) };
+    } catch (error) {
+      throw this.withAuthContext(error, true, Boolean(this.savedSession(client)));
+    } finally {
+      await client.disconnect().catch(() => undefined);
+    }
+  }
+
+  private async qrLogin(session: string): Promise<TelegramQrResult> {
+    const client = this.client(session);
+    let connected = false;
+    try {
+      await client.connect();
+      connected = true;
+      if (await client.checkAuthorization()) return { status: 'connected', session: this.savedSession(client), account: await this.account(client) };
+      const result = await this.exportQrToken(client);
+      if (result instanceof Api.auth.LoginTokenSuccess) return { status: 'connected', session: this.savedSession(client), account: await this.account(client) };
+      if (!(result instanceof Api.auth.LoginToken)) throw new TelegramAdapterError('UNAVAILABLE');
+      return {
+        status: 'pending',
+        session: this.savedSession(client),
+        qrUrl: `tg://login?token=${Buffer.from(result.token).toString('base64url')}`,
+        expiresAt: new Date(result.expires * 1000).toISOString(),
+      };
+    } catch (error) {
+      const message = `${(error as { errorMessage?: string }).errorMessage ?? ''} ${(error as Error).message ?? ''}`.toUpperCase();
+      if (message.includes('SESSION_PASSWORD_NEEDED')) return { status: 'password_required', session: this.savedSession(client) };
+      throw this.withAuthContext(error, connected, Boolean(this.savedSession(client)));
+    } finally {
+      await client.disconnect().catch(() => undefined);
+    }
+  }
+
+  private async exportQrToken(client: TelegramClient): Promise<Api.auth.TypeLoginToken> {
+    const credentials = this.credentials();
+    const result = await client.invoke(new Api.auth.ExportLoginToken({ apiId: credentials.apiId, apiHash: credentials.apiHash, exceptIds: [] }));
+    if (!(result instanceof Api.auth.LoginTokenMigrateTo)) return result;
+    await client._switchDC(result.dcId);
+    return client.invoke(new Api.auth.ImportLoginToken({ token: result.token }));
   }
 
   private logSendCodeState(event: string, client: TelegramClient, clientInstanceId: string, userScopeId: string, isUserAuthorized: boolean, sessionEmptyBeforeSendCode: boolean): void {

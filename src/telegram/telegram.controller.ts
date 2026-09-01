@@ -2,9 +2,8 @@ import { Body, Controller, Delete, Get, Post, Query, UseGuards } from '@nestjs/c
 import { AuthenticatedUser } from '../auth/types/jwt-payload.type';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
-import { ConnectTelegramDto, SendTelegramMessageDto, TelegramChatsQueryDto, TelegramDiagnosticSendCodeDto, TelegramSearchQueryDto, VerifyTelegramCodeDto, VerifyTelegramPasswordDto } from './dto/telegram.dto';
+import { ConnectTelegramDto, SendTelegramMessageDto, TelegramChatsQueryDto, TelegramSearchQueryDto, VerifyTelegramCodeDto, VerifyTelegramPasswordDto } from './dto/telegram.dto';
 import { TelegramIntegrationService } from './telegram-integration.service';
-import { TelegramDiagnosticService } from './telegram-diagnostic.service';
 import { SecurityRateLimitService } from '../common/security/security-rate-limit.service';
 import { RateLimitException } from '../common/security/rate-limit.exception';
 
@@ -14,14 +13,18 @@ export class TelegramController {
   constructor(
     private readonly telegram: TelegramIntegrationService,
     private readonly rateLimiter: SecurityRateLimitService,
-    private readonly diagnostic: TelegramDiagnosticService,
   ) {}
 
-  /** Temporary authenticated production diagnostic; remove after Telegram delivery verification. */
-  @Post('diagnostic-send-code')
-  diagnosticSendCode(@CurrentUser() user: AuthenticatedUser, @Body() dto: TelegramDiagnosticSendCodeDto) {
-    this.assertAllowed('telegram-diagnostic-send-code', user.sub, 2);
-    return this.diagnostic.sendCode(dto.phoneNumber);
+  @Post('qr/start')
+  startQrLogin(@CurrentUser() user: AuthenticatedUser) {
+    this.assertAllowed('telegram-qr-start', user.sub, 5);
+    return this.telegram.startQrLogin(user.sub);
+  }
+
+  @Get('qr/status')
+  qrStatus(@CurrentUser() user: AuthenticatedUser) {
+    this.assertAllowed('telegram-qr-status', user.sub, 120);
+    return this.telegram.qrStatus(user.sub);
   }
 
   @Post('connect')

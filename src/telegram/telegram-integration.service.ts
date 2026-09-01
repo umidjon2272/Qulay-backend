@@ -6,11 +6,12 @@ import { ContactsService } from '../contacts/contacts.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { TelegramChatsQueryDto, TelegramSearchQueryDto } from './dto/telegram.dto';
 import { isTelegramAuthInvalid, mapTelegramError, TelegramAdapterError, telegramErrorCode } from './telegram.errors';
-import { TelegramClientService, TelegramPeer, TelegramSentCode } from './telegram-client.service';
+import { TelegramClientService, TelegramPeer, TelegramQrResult, TelegramSentCode } from './telegram-client.service';
 import { TelegramCryptoService } from './telegram-crypto.service';
 
 type ConnectedConnection = TelegramConnection & { encryptedSession: string };
 type CodeRequiredResponse = { status: 'code_required'; delivery: TelegramSentCode['delivery']; nextDelivery: TelegramSentCode['nextDelivery']; timeoutSeconds: TelegramSentCode['timeoutSeconds'] };
+type QrResponse = { status: 'pending'; qrUrl?: string; expiresAt?: string } | { status: 'success' | 'password_required' | 'error' };
 
 @Injectable()
 export class TelegramIntegrationService {
@@ -66,6 +67,70 @@ export class TelegramIntegrationService {
       await this.markError(userId);
       throw mapTelegramError(error);
     }
+  }
+
+  async startQrLogin(userId: string): Promise<QrResponse> {
+    this.assertConfigured();
+    const existing = await this.prisma.telegramConnection.findUnique({ where: { userId } });
+    if (existing?.status === TelegramConnectionStatus.CONNECTED) throw new BadRequestException('Telegram account is already connected');
+    try {
+      return this.persistQrResult(userId, existing, await this.telegramClient.beginQrLogin());
+    } catch (error) {
+      await this.markError(userId);
+      throw mapTelegramError(error);
+    }
+  }
+
+  async qrStatus(userId: string): Promise<QrResponse> {
+    this.assertConfigured();
+    const connection = await this.prisma.telegramConnection.findUnique({ where: { userId } });
+    if (connection?.status === TelegramConnectionStatus.CONNECTED) return { status: 'success' };
+    if (!connection?.encryptedSession || connection.pendingDelivery !== 'qr') return { status: 'error' };
+    try {
+      const expiresAt = connection.codeSentAt && connection.codeResendAfterSeconds
+        ? connection.codeSentAt.getTime() + connection.codeResendAfterSeconds * 1000
+        : 0;
+      const session = this.crypto.decrypt(connection.encryptedSession);
+      const result = Date.now() >= expiresAt
+        ? await this.telegramClient.pollQrLogin(session)
+        : await this.telegramClient.checkQrLogin(session);
+      return this.persistQrResult(userId, connection, result);
+    } catch (error) {
+      if (telegramErrorCode(error) === 'QR_TOKEN_EXPIRED') return this.persistQrResult(userId, connection, await this.telegramClient.pollQrLogin(this.crypto.decrypt(connection.encryptedSession)));
+      await this.prisma.telegramConnection.updateMany({ where: { userId }, data: { lastErrorAt: new Date(), lastErrorCode: telegramErrorCode(error) } });
+      throw mapTelegramError(error);
+    }
+  }
+
+  private async persistQrResult(userId: string, connection: TelegramConnection | null, result: TelegramQrResult): Promise<QrResponse> {
+    if (result.status === 'connected') {
+      if (connection) await this.finalizeConnection(userId, connection, result.session, result.account);
+      else {
+        await this.prisma.telegramConnection.create({ data: {
+          userId, encryptedSession: this.crypto.encrypt(result.session), phoneNumber: result.account.phoneNumber ? this.crypto.encrypt(result.account.phoneNumber) : null,
+          telegramUserId: result.account.telegramUserId, username: result.account.username, displayName: result.account.displayName,
+          status: TelegramConnectionStatus.CONNECTED, connectedAt: new Date(), lastValidatedAt: new Date(), lastUsedAt: new Date(),
+        } });
+        await this.activityLog.record({ userId, action: ACTIVITY_ACTIONS.TELEGRAM_CONNECTED, entityType: 'TELEGRAM_CONNECTION', metadata: { source: 'TELEGRAM', telegramUserId: result.account.telegramUserId, username: result.account.username } });
+      }
+      return { status: 'success' };
+    }
+    const now = new Date();
+    if (result.status === 'password_required') {
+      await this.prisma.telegramConnection.upsert({ where: { userId }, create: { userId, encryptedSession: this.crypto.encrypt(result.session), pendingDelivery: 'qr', status: TelegramConnectionStatus.AWAITING_PASSWORD, lastUsedAt: now }, update: { encryptedSession: this.crypto.encrypt(result.session), pendingDelivery: 'qr', status: TelegramConnectionStatus.AWAITING_PASSWORD, lastUsedAt: now } });
+      return { status: 'password_required' };
+    }
+    if (!result.qrUrl || !result.expiresAt) {
+      await this.prisma.telegramConnection.update({ where: { userId }, data: { encryptedSession: this.crypto.encrypt(result.session), lastUsedAt: now } });
+      return { status: 'pending' };
+    }
+    const expiresAt = new Date(result.expiresAt);
+    const ttl = Math.max(1, Math.ceil((expiresAt.getTime() - now.getTime()) / 1000));
+    await this.prisma.telegramConnection.upsert({ where: { userId },
+      create: { userId, encryptedSession: this.crypto.encrypt(result.session), codeSentAt: now, codeResendAfterSeconds: ttl, pendingDelivery: 'qr', status: TelegramConnectionStatus.AWAITING_CODE, lastUsedAt: now },
+      update: { phoneNumber: null, encryptedSession: this.crypto.encrypt(result.session), encryptedPhoneCodeHash: null, codeSentAt: now, codeResendAfterSeconds: ttl, pendingDelivery: 'qr', pendingNextDelivery: null, telegramUserId: null, username: null, displayName: null, status: TelegramConnectionStatus.AWAITING_CODE, connectedAt: null, lastUsedAt: now },
+    });
+    return { status: 'pending', qrUrl: result.qrUrl, expiresAt: result.expiresAt };
   }
 
   async resendCode(userId: string): Promise<CodeRequiredResponse> {
