@@ -94,16 +94,35 @@ export class AiAgentService {
       messages.push(result.message);
       const pendingCalls: Array<{ toolName: string; input: Record<string, unknown>; preview: unknown }> = [];
       for (const call of toolCalls) {
-        const input = this.parseToolInput(call.function.arguments);
-        const execution = await this.execution.execute(userId, { tool: call.function.name, input, confirmed: false, requestId: call.id }, { locale: user.language, timezone: user.timezone });
-        if (execution.status === 'confirmation_required') {
-          pendingCalls.push({ toolName: call.function.name, input, preview: execution.preview });
-          continue;
+        try {
+          const input = this.parseToolInput(call.function.arguments);
+          const execution = await this.execution.execute(
+            userId,
+            { tool: call.function.name, input, confirmed: false, requestId: call.id },
+            { locale: user.language, timezone: user.timezone },
+          );
+
+          if (execution.status === 'confirmation_required') {
+            pendingCalls.push({ toolName: call.function.name, input, preview: execution.preview });
+            continue;
+          }
+
+          await this.usage.logToolUsage({ userId, model: 'tool-registry' });
+          messages.push({
+            role: 'tool',
+            tool_call_id: call.id,
+            content: JSON.stringify({ ok: true, data: execution.data }),
+          });
+        } catch (error) {
+          // Tool xatosi butun chatni generic error bilan yiqitmasin.
+          // Model faqat xavfsiz, foydalanuvchiga aytish mumkin bo'lgan natijani ko'radi.
+          messages.push({
+            role: 'tool',
+            tool_call_id: call.id,
+            content: JSON.stringify(this.safeToolFailure(call.function.name, error, user.language)),
+          });
         }
-        await this.usage.logToolUsage({ userId, model: 'tool-registry' });
-        messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(execution.data) });
-      }
-      if (pendingCalls.length) {
+      }      if (pendingCalls.length) {
         const batch = pendingCalls.length > 1;
         const pending = await this.prisma.pendingAgentAction.create({ data: { userId, conversationId: conversation.id,
           toolName: batch ? '__batch__' : pendingCalls[0].toolName,
@@ -118,8 +137,19 @@ export class AiAgentService {
         return { conversationId: conversation.id, message: prompt, pendingConfirmation: { id: pending.id, tool: pending.toolName, preview: pending.preview, expiresAt: pending.expiresAt } };
       }
     }
-    throw new ConflictException('AI juda ko‘p amal chaqirdi. So‘rovni soddaroq yozing.');
-  }
+    const fallback = user.language === 'ru'
+      ? 'РЇ РЅРµ СЃРјРѕРі РЅР°РґС‘Р¶РЅРѕ Р·Р°РІРµСЂС€РёС‚СЊ СЌС‚РѕС‚ Р·Р°РїСЂРѕСЃ. РЈС‚РѕС‡РЅРёС‚Рµ РѕРґРёРЅ РєР»СЋС‡РµРІРѕР№ РјРѕРјРµРЅС‚ РёР»Рё РЅР°РїРёС€РёС‚Рµ РЅРµРјРЅРѕРіРѕ РёРЅР°С‡Рµ.'
+      : 'Bu soвЂrovni hozir ishonchli yakunlay olmadim. Bitta muhim joyini aniqlashtiring yoki biroz boshqacha yozing.';
+    await this.prisma.message.create({
+      data: { conversationId: conversation.id, role: MessageRole.ASSISTANT, content: fallback },
+    });
+    await this.activityLog.record({
+      userId,
+      action: ACTIVITY_ACTIONS.AI_AGENT_MESSAGE,
+      entityType: 'CONVERSATION',
+      entityId: conversation.id,
+    });
+    return { conversationId: conversation.id, message: fallback, pendingConfirmation: null };  }
 
   async confirm(userId: string, actionId: string, confirmed: boolean) {
     const action = await this.prisma.pendingAgentAction.findFirst({ where: { id: actionId, userId } });
@@ -172,21 +202,61 @@ export class AiAgentService {
   }
 
   private systemPrompt(user: { firstName: string; lastName: string; timezone: string; language: string; memoryEnabled: boolean }, memories: Array<{ key: string; value: string; type: string; isVerified: boolean; confidence: number; contact: { displayName: string } | null }>) {
-    const memoryLines = memories.map((memory) => `- [${memory.type}] ${memory.key}: ${memory.value}${memory.contact ? ` (${memory.contact.displayName})` : ''}${memory.isVerified ? ' [tasdiqlangan]' : ` [taxmin ${memory.confidence}%]`}`).join('\n');
-    const responseLanguage = user.language === 'ru' ? 'rus tilida' : "o‘zbek tilida";
-    return `Siz Qulay AI — tadbirkorning shaxsiy ish agentisiz. Foydalanuvchi: ${user.firstName} ${user.lastName}. Til: ${user.language}. Vaqt zonasi: ${user.timezone}.
-Qoidalar:
-1. Foydalanuvchiga qisqa, aniq va tabiiy ${responseLanguage} javob bering. Boshqa tilni aralashtirmang.
-2. Mavjud tool bo‘lsa, bajarilgan deb yolg‘on aytmang — tool’dan foydalaning.
-3. Har qanday WRITE tool uchun tasdiqlash shart. Tasdiqsiz pul, vazifa, uchrashuv, xotira yoki xabar yozmang.
-4. Taxminiy xotirani fakt deb ko‘rsatmang. Qarama-qarshi ma’lumot bo‘lsa, foydalanuvchidan aniqlashtiring.
-5. Pul bo‘yicha UZS va USD ni aralashtirmang. Foyda = daromad - xarajat.
-6. Bir so‘rovdagi bir nechta ishni rejalab, tool’lar orqali ketma-ket bajaring.
+    const memoryLines = memories
+      .map((memory) => `- [${memory.type}] ${memory.key}: ${memory.value}${memory.contact ? ` (${memory.contact.displayName})` : ''}${memory.isVerified ? ' [tasdiqlangan]' : ` [taxmin ${memory.confidence}%]`}`)
+      .join('\n');
+    const responseLanguage = user.language === 'ru' ? 'rus tilida' : "oвЂzbek tilida";
 
-Uzoq muddatli xotira:
-${memoryLines || '- Hozircha saqlangan xotira yo‘q.'}`;
+    return `Siz Qulay AI вЂ” foydalanuvchini tabiiy tilda tushunadigan shaxsiy ish agentisiz.
+Foydalanuvchi: ${user.firstName} ${user.lastName}. Til: ${user.language}. Vaqt zonasi: ${user.timezone}.
+
+ASOSIY MAQSAD:
+Foydalanuvchi mukammal yozishi shart emas. U tez, xato, slang, qisqartma, tinish belgilarisiz yoki ogвЂzaki uslubda yozishi mumkin. Avval yozuvni emas, uning asl MAQSADINI tushuning.
+
+TUSHUNISH QOIDALARI:
+1. OвЂzbekcha xato yozuv, tushib qolgan harf, chat uslubi va fonetik yozuvni kontekstdan tiklashga harakat qiling.
+2. Misollar: "kere"в‰€"kerak", "qber"в‰€"qilib ber", "topda"в‰€"top va", "yozvori"в‰€"yozib yubor", "manga"в‰€"menga". Bu yopiq lugвЂat emas.
+3. MaвЂ™no yetarlicha aniq boвЂlsa, imlo xatosi sabab foydalanuvchini toвЂxtatmang.
+4. Faqat xavfsiz bajarish uchun zarur maвЂ™lumot yetishmasa yoki ikki jiddiy talqin boвЂlsa BITTA qisqa savol bilan aniqlashtiring.
+5. "unga", "oвЂshanga", "usha odam", "u aka", "oldingi odam" kabi referentlarni suhbat tarixidagi eng yaqin aniq shaxs yoki obyekt bilan bogвЂlashga harakat qiling. Noaniq boвЂlsa taxmin qilib notoвЂgвЂri odamga amal qilmang.
+
+HAQIQAT VA TOOL QOIDALARI:
+1. Real ishni faqat mavjud tool orqali bajaring.
+2. Tool ishlatmasdan "topdim", "yubordim", "yaratdim", "oвЂchirdim" yoki "bajardim" demang.
+3. Tool boвЂsh natija qaytarsa, aniq "topilmadi" deb ayting. Hech narsani uydirmang.
+4. Tool xato qaytarsa, shu amal bajarilmagan. Bir xil muvaffaqiyatsiz toolвЂ™ni bir xil argument bilan qayta-qayta chaqirmang.
+5. Tool vaqtincha ishlamasa, foydalanuvchiga sodda sabab ayting. Ichki exception, stack trace, JSON yoki tool nomlarini koвЂrsatmang.
+6. Sizda kerakli tool boвЂlmasa: "Buni hozir bajara olmayman" deb aniq ayting va mavjud boвЂlsa eng yaqin yordamni taklif qiling.
+7. Qila olmaydigan ishni bajarilgandek koвЂrsatmang.
+
+TELEGRAM:
+1. Odam yoki chat topish uchun avval search_telegram_chats ishlating.
+2. Natija 0 ta boвЂlsa: Telegramda bunday kontakt/chat topilmaganini ayting; kerak boвЂlsa ism yoki @usernameвЂ™ni soвЂrang.
+3. Bir nechta mos natija boвЂlsa va qaysi biri ekani noaniq boвЂlsa, qisqa variantlar bilan aniqlashtiring.
+4. Bitta aniq natija topilib, user unga xabar yuborishni ham soвЂragan boвЂlsa, aynan tool qaytargan real peerId bilan send_telegram_message tayyorlang.
+5. peerId, username yoki Telegram akkauntni hech qachon uydirmang.
+6. Xabar yuborish har doim WRITE va foydalanuvchi tasdigвЂini talab qiladi.
+
+KOвЂP BOSQICHLI BUYRUQ:
+Masalan "Shamshod akani topda unga pul tejash kere aka deb yoz":
+1) Shamshod akani qidiring;
+2) real natijani tekshiring;
+3) topilmasa topilmadi deb ayting;
+4) topilsa oвЂsha peerIdga "pul tejash kere aka" mazmunidagi xabarni tayyorlang;
+5) yuborishdan oldin tasdiq soвЂrang.
+
+WRITE:
+Har qanday WRITE tool uchun aniq tasdiq shart. Tasdiqsiz Telegram xabari yubormang, vazifa/eslatma/uchrashuv/kontakt/xotira/moliya yozuvi yaratmang, oвЂzgartirmang yoki oвЂchirmang.
+
+JAVOB:
+Qisqa, tabiiy va ${responseLanguage} gapiring. Foydalanuvchining xato yozuvini masxara qilmang va keraksiz tuzatmang. Generic "muammo yuz berdi" oвЂrniga imkon qadar aniq natija ayting.
+
+MOLIYA:
+UZS va USD ni aralashtirmang. Tool bermagan raqamni taxmin qilmang. Foyda = daromad - xarajat.
+
+UZOQ MUDDATLI XOTIRA:
+${memoryLines || '- Hozircha saqlangan xotira yoвЂq.'}`;
   }
-
   private toProviderRole(role: MessageRole): 'user' | 'assistant' | 'tool' {
     if (role === MessageRole.ASSISTANT) return 'assistant';
     if (role === MessageRole.TOOL) return 'tool';
@@ -203,21 +273,124 @@ ${memoryLines || '- Hozircha saqlangan xotira yo‘q.'}`;
     }
   }
 
+  private safeToolFailure(toolName: string, error: unknown, language: string) {
+    const raw = this.extractSafeErrorText(error).toUpperCase();
+    const isRu = language === 'ru';
+
+    let code = 'TOOL_FAILED';
+    let message = isRu ? 'РќРµ СѓРґР°Р»РѕСЃСЊ РІС‹РїРѕР»РЅРёС‚СЊ СЌС‚Рѕ РґРµР№СЃС‚РІРёРµ.' : 'Bu amalni bajarib boвЂlmadi.';
+
+    if (raw.includes('PEER_NOT_FOUND') || raw.includes('NOT FOUND') || raw.includes('TOPILMADI')) {
+      code = 'NOT_FOUND';
+      message = isRu
+        ? 'РќСѓР¶РЅС‹Р№ Telegram-РєРѕРЅС‚Р°РєС‚ РёР»Рё РѕР±СЉРµРєС‚ РЅРµ РЅР°Р№РґРµРЅ.'
+        : 'Kerakli Telegram kontakt yoki obyekt topilmadi.';
+    } else if (raw.includes('NOT CONNECTED') || raw.includes('DISCONNECTED')) {
+      code = 'NOT_CONNECTED';
+      message = isRu ? 'Telegram СЃРµР№С‡Р°СЃ РЅРµ РїРѕРґРєР»СЋС‡С‘РЅ.' : 'Telegram hozir ulanmagan.';
+    } else if (raw.includes('UNAVAILABLE') || raw.includes('TEMPORAR') || raw.includes('TIMEOUT')) {
+      code = 'TEMPORARILY_UNAVAILABLE';
+      message = isRu
+        ? 'РЎРµСЂРІРёСЃ РІСЂРµРјРµРЅРЅРѕ РЅРµРґРѕСЃС‚СѓРїРµРЅ. РџРѕРїСЂРѕР±СѓР№С‚Рµ РїРѕР·Р¶Рµ.'
+        : 'Xizmat vaqtincha ishlamayapti. Birozdan keyin qayta urinib koвЂring.';
+    } else if (raw.includes('INVALID')) {
+      code = 'INVALID_INPUT';
+      message = isRu
+        ? 'РџР°СЂР°РјРµС‚СЂС‹ РґРµР№СЃС‚РІРёСЏ СЃС„РѕСЂРјРёСЂРѕРІР°РЅС‹ РЅРµРІРµСЂРЅРѕ.'
+        : 'Amal parametrlari notoвЂgвЂri shakllandi.';
+    }
+
+    return { ok: false, tool: toolName, code, message };
+  }
+
+  private extractSafeErrorText(error: unknown): string {
+    if (!error || typeof error !== 'object') return String(error ?? '');
+
+    const value = error as {
+      message?: unknown;
+      code?: unknown;
+      response?: unknown;
+      getResponse?: () => unknown;
+    };
+
+    const parts: string[] = [];
+    if (typeof value.code === 'string') parts.push(value.code);
+    if (typeof value.message === 'string') parts.push(value.message);
+
+    try {
+      const response = typeof value.getResponse === 'function' ? value.getResponse() : value.response;
+      if (typeof response === 'string') {
+        parts.push(response);
+      } else if (response && typeof response === 'object') {
+        const objectResponse = response as { message?: unknown; code?: unknown };
+        if (typeof objectResponse.code === 'string') parts.push(objectResponse.code);
+        if (typeof objectResponse.message === 'string') parts.push(objectResponse.message);
+        if (Array.isArray(objectResponse.message)) {
+          parts.push(...objectResponse.message.filter((item): item is string => typeof item === 'string'));
+        }
+      }
+    } catch {
+      // Xatoni o'qishning o'zi agentni yiqitmasligi kerak.
+    }
+
+    return parts.join(' ').slice(0, 500);
+  }
+
   private confirmationPrompt(tool: string, preview: unknown, language = 'uz'): string {
     if (language === 'ru') {
-      const labels: Record<string, string> = { create_task: 'Создать задачу?', create_reminder: 'Создать напоминание?', create_meeting: 'Создать встречу?', create_note: 'Сохранить заметку?', save_memory: 'Сохранить это в памяти AI?', create_finance_transaction: 'Сохранить финансовую запись?', send_telegram_message: 'Отправить сообщение в Telegram?', create_google_calendar_event: 'Создать событие в Google Календаре?', update_google_calendar_event: 'Обновить событие Google Календаря?', delete_google_calendar_event: 'Удалить событие Google Календаря?' };
-      const details = preview && typeof preview === 'object' ? `\n${JSON.stringify(preview)}` : '';
-      return `${labels[tool] ?? 'Выполнить это действие?'}${details}`;
+      const labels: Record<string, string> = {
+        create_task: 'РЎРѕР·РґР°С‚СЊ Р·Р°РґР°С‡Сѓ?',
+        create_reminder: 'РЎРѕР·РґР°С‚СЊ РЅР°РїРѕРјРёРЅР°РЅРёРµ?',
+        create_meeting: 'РЎРѕР·РґР°С‚СЊ РІСЃС‚СЂРµС‡Сѓ?',
+        create_note: 'РЎРѕС…СЂР°РЅРёС‚СЊ Р·Р°РјРµС‚РєСѓ?',
+        create_contact: 'РЎРѕС…СЂР°РЅРёС‚СЊ РєРѕРЅС‚Р°РєС‚?',
+        save_memory: 'РЎРѕС…СЂР°РЅРёС‚СЊ СЌС‚Рѕ РІ РїР°РјСЏС‚Рё AI?',
+        update_contact: 'РћР±РЅРѕРІРёС‚СЊ РєРѕРЅС‚Р°РєС‚?',
+        delete_contact: 'РЈРґР°Р»РёС‚СЊ РєРѕРЅС‚Р°РєС‚?',
+        update_memory: 'РћР±РЅРѕРІРёС‚СЊ РїР°РјСЏС‚СЊ AI?',
+        delete_memory: 'РЈРґР°Р»РёС‚СЊ СЌС‚Рѕ РёР· РїР°РјСЏС‚Рё AI?',
+        create_finance_transaction: 'РЎРѕС…СЂР°РЅРёС‚СЊ С„РёРЅР°РЅСЃРѕРІСѓСЋ Р·Р°РїРёСЃСЊ?',
+        send_telegram_message: 'РћС‚РїСЂР°РІРёС‚СЊ СЃРѕРѕР±С‰РµРЅРёРµ РІ Telegram?',
+        create_google_calendar_event: 'РЎРѕР·РґР°С‚СЊ СЃРѕР±С‹С‚РёРµ Google РљР°Р»РµРЅРґР°СЂСЏ?',
+        update_google_calendar_event: 'РћР±РЅРѕРІРёС‚СЊ СЃРѕР±С‹С‚РёРµ Google РљР°Р»РµРЅРґР°СЂСЏ?',
+        delete_google_calendar_event: 'РЈРґР°Р»РёС‚СЊ СЃРѕР±С‹С‚РёРµ Google РљР°Р»РµРЅРґР°СЂСЏ?',
+      };
+      return `${labels[tool] ?? 'Р’С‹РїРѕР»РЅРёС‚СЊ СЌС‚Рѕ РґРµР№СЃС‚РІРёРµ?'}${this.formatConfirmationPreview(tool, preview, 'ru')}`;
     }
+
     const labels: Record<string, string> = {
-      create_task: 'Vazifa yaratilsinmi?', create_reminder: 'Eslatma yaratilsinmi?', create_meeting: 'Uchrashuv yaratilsinmi?',
-      create_note: 'Qayd saqlansinmi?', create_contact: 'Kontakt saqlansinmi?', save_memory: 'Bu ma’lumot AI xotirasiga saqlansinmi?',
-      update_contact: 'Kontakt ma’lumoti tuzatilsinmi?', delete_contact: 'Kontakt o‘chirilsinmi?',
-      update_memory: 'AI xotirasidagi ma’lumot tuzatilsinmi?', delete_memory: 'Bu ma’lumot AI xotirasidan unutulsinmi?',
-      create_finance_transaction: 'Moliyaviy yozuv saqlansinmi?', send_telegram_message: 'Telegram xabari yuborilsinmi?',
-      create_google_calendar_event: 'Google Calendar hodisasi yaratilsinmi?', update_google_calendar_event: 'Google Calendar hodisasi yangilansinmi?', delete_google_calendar_event: 'Google Calendar hodisasi o‘chirilsinmi?',
+      create_task: 'Vazifa yaratilsinmi?',
+      create_reminder: 'Eslatma yaratilsinmi?',
+      create_meeting: 'Uchrashuv yaratilsinmi?',
+      create_note: 'Qayd saqlansinmi?',
+      create_contact: 'Kontakt saqlansinmi?',
+      save_memory: 'Bu maвЂ™lumot AI xotirasiga saqlansinmi?',
+      update_contact: 'Kontakt maвЂ™lumoti tuzatilsinmi?',
+      delete_contact: 'Kontakt oвЂchirilsinmi?',
+      update_memory: 'AI xotirasidagi maвЂ™lumot tuzatilsinmi?',
+      delete_memory: 'Bu maвЂ™lumot AI xotirasidan unutulsinmi?',
+      create_finance_transaction: 'Moliyaviy yozuv saqlansinmi?',
+      send_telegram_message: 'Telegram xabari yuborilsinmi?',
+      create_google_calendar_event: 'Google Calendar hodisasi yaratilsinmi?',
+      update_google_calendar_event: 'Google Calendar hodisasi yangilansinmi?',
+      delete_google_calendar_event: 'Google Calendar hodisasi oвЂchirilsinmi?',
     };
-    const details = preview && typeof preview === 'object' ? `\n${JSON.stringify(preview)}` : '';
-    return `${labels[tool] ?? 'Ushbu amal bajarilsinmi?'}${details}`;
+    return `${labels[tool] ?? 'Ushbu amal bajarilsinmi?'}${this.formatConfirmationPreview(tool, preview, 'uz')}`;
+  }
+
+  private formatConfirmationPreview(tool: string, preview: unknown, language: 'uz' | 'ru'): string {
+    if (!preview || typeof preview !== 'object') return '';
+
+    const value = preview as Record<string, unknown>;
+    if (tool === 'send_telegram_message') {
+      const recipient = typeof value.recipient === 'string' ? value.recipient : '';
+      const text = typeof value.text === 'string' ? value.text : '';
+      if (language === 'ru') {
+        return `\nРџРѕР»СѓС‡Р°С‚РµР»СЊ: ${recipient || 'Telegram'}${text ? `\nРЎРѕРѕР±С‰РµРЅРёРµ: ${text}` : ''}`;
+      }
+      return `\nQabul qiluvchi: ${recipient || 'Telegram'}${text ? `\nXabar: ${text}` : ''}`;
+    }
+
+    return `\n${JSON.stringify(preview)}`;
   }
 }

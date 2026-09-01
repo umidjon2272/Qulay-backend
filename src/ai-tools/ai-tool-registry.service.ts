@@ -402,13 +402,20 @@ export class AIToolRegistryService {
     this.register(this.base<SendTelegramMessageToolInput, unknown>({
       name: 'send_telegram_message', description: 'Send a Telegram message after explicit user confirmation.', category: AIToolCategory.SYSTEM,
       sideEffect: 'WRITE', validate: SendTelegramMessageToolInput, inputSchema: schema({ peerId: { type: 'string' }, text: { type: 'string' } }, ['peerId', 'text']),
-      // Preview itself resolves/validates the recipient. Confirmed execution also
-      // resolves the peer inside sendMessage(), so a separate authorize hook here
-      // would open a second Telegram client and resolve the same peer twice.
-      preview: (context, input) => this.telegramIntegrationService.prepareTelegramMessage(context.userId, input.peerId, input.text),
+      preview: async (context, input) => {
+        const prepared = await this.telegramIntegrationService.prepareTelegramMessage(context.userId, input.peerId, input.text);
+        const recipient = prepared.recipient.username
+          ? `${prepared.recipient.displayName} (${prepared.recipient.username})`
+          : prepared.recipient.displayName;
+        return {
+          recipient,
+          peerId: prepared.recipient.peerId,
+          text: prepared.text,
+          confirmationRequired: true,
+        };
+      },
       execute: (context, input) => this.telegramIntegrationService.sendMessage(context.userId, input.peerId, input.text),
     }));
-
     this.register(this.base<CreateGoogleCalendarEventToolInput, unknown>({
       name: 'create_google_calendar_event', description: 'Create a Google Calendar event after explicit confirmation.', category: AIToolCategory.GOOGLE,
       sideEffect: 'WRITE', validate: CreateGoogleCalendarEventToolInput, inputSchema: schema({ title: { type: 'string' }, start: { type: 'string' }, end: { type: 'string' }, description: { type: 'string' }, attendees: { type: 'array' }, location: { type: 'string' }, calendarId: { type: 'string' } }, ['title', 'start', 'end']),
