@@ -83,21 +83,80 @@ export class TelegramIntegrationService {
 
   async qrStatus(userId: string): Promise<QrResponse> {
     this.assertConfigured();
-    const connection = await this.prisma.telegramConnection.findUnique({ where: { userId } });
-    if (connection?.status === TelegramConnectionStatus.CONNECTED) return { status: 'success' };
-    if (!connection?.encryptedSession || connection.pendingDelivery !== 'qr') return { status: 'error' };
-    try {
-      const expiresAt = connection.codeSentAt && connection.codeResendAfterSeconds
+
+    const connection = await this.prisma.telegramConnection.findUnique({
+      where: { userId },
+    });
+
+    if (connection?.status === TelegramConnectionStatus.CONNECTED) {
+      return { status: 'success' };
+    }
+
+    if (!connection?.encryptedSession || connection.pendingDelivery !== 'qr') {
+      return { status: 'error' };
+    }
+
+    const session = this.crypto.decrypt(connection.encryptedSession);
+
+    const expiresAt =
+      connection.codeSentAt && connection.codeResendAfterSeconds
         ? connection.codeSentAt.getTime() + connection.codeResendAfterSeconds * 1000
-        : 0;
-      const session = this.crypto.decrypt(connection.encryptedSession);
-      const result = Date.now() >= expiresAt
-        ? await this.telegramClient.pollQrLogin(session)
-        : await this.telegramClient.checkQrLogin(session);
+        : null;
+
+    try {
+      // IMPORTANT:
+      // First reconnect with the SAME persisted Telegram auth-key/session.
+      // If Telegram already accepted the QR (the device appears in Telegram
+      // Devices), checkAuthorization() can now finalize the integration.
+      const result = await this.telegramClient.checkQrLogin(session);
+
+      if (result.status !== 'pending') {
+        return this.persistQrResult(userId, connection, result);
+      }
+
+      // Do not rotate the visible QR token on every frontend status poll.
+      // Export a fresh token only after the current one has expired.
+      if (expiresAt !== null && Date.now() >= expiresAt) {
+        const refreshed = await this.telegramClient.pollQrLogin(session);
+        return this.persistQrResult(userId, connection, refreshed);
+      }
+
       return this.persistQrResult(userId, connection, result);
     } catch (error) {
-      if (telegramErrorCode(error) === 'QR_TOKEN_EXPIRED') return this.persistQrResult(userId, connection, await this.telegramClient.pollQrLogin(this.crypto.decrypt(connection.encryptedSession)));
-      await this.prisma.telegramConnection.updateMany({ where: { userId }, data: { lastErrorAt: new Date(), lastErrorCode: telegramErrorCode(error) } });
+      const errorCode = telegramErrorCode(error);
+
+      this.logger.warn({
+        event: 'telegram_qr_status_error',
+        operation: 'qr-status',
+        errorCode,
+        sessionExists: true,
+        pendingDelivery: connection.pendingDelivery,
+        qrExpired: expiresAt !== null ? Date.now() >= expiresAt : null,
+      });
+
+      if (errorCode === 'QR_TOKEN_EXPIRED') {
+        const refreshed = await this.telegramClient.pollQrLogin(session);
+        return this.persistQrResult(userId, connection, refreshed);
+      }
+
+      await this.prisma.telegramConnection.updateMany({
+        where: { userId },
+        data: {
+          lastErrorAt: new Date(),
+          lastErrorCode: errorCode,
+        },
+      });
+
+      // A temporary Telegram/DC/network failure while polling QR status must
+      // not kill the login flow. The frontend can keep polling and the next
+      // request can observe the now-authorized saved session.
+      if (
+        errorCode === 'UNAVAILABLE' &&
+        (expiresAt === null || Date.now() < expiresAt)
+      ) {
+        return { status: 'pending' };
+      }
+
       throw mapTelegramError(error);
     }
   }

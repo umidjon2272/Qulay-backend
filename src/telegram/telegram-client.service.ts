@@ -98,12 +98,44 @@ export class GramJsTelegramClientService extends TelegramClientService {
   async checkQrLogin(session: string): Promise<TelegramQrResult> {
     if (!session) throw new TelegramAdapterError('CONNECTION_EXPIRED');
     const client = this.client(session);
+    let connected = false;
     try {
       await client.connect();
-      if (await client.checkAuthorization()) return { status: 'connected', session: this.savedSession(client), account: await this.account(client) };
-      return { status: 'pending', session: this.savedSession(client) };
+      connected = true;
+
+      const authorized = await client.checkAuthorization();
+
+      this.logger.log({
+        event: 'telegram_qr_status_checked',
+        sessionExists: true,
+        clientConnected: true,
+        authorized,
+        selectedDcId: client.session.dcId || null,
+      });
+
+      if (authorized) {
+        const account = await this.account(client);
+
+        this.logger.log({
+          event: 'telegram_qr_authorized',
+          clientConnected: true,
+          selectedDcId: client.session.dcId || null,
+          telegramUserIdExists: Boolean(account.telegramUserId),
+        });
+
+        return {
+          status: 'connected',
+          session: this.savedSession(client),
+          account,
+        };
+      }
+
+      return {
+        status: 'pending',
+        session: this.savedSession(client),
+      };
     } catch (error) {
-      throw this.withAuthContext(error, true, Boolean(this.savedSession(client)));
+      throw this.withAuthContext(error, connected, Boolean(this.savedSession(client)));
     } finally {
       await client.disconnect().catch(() => undefined);
     }
