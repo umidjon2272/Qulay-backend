@@ -33,6 +33,8 @@ export type ProviderResponse = {
   model: string;
 };
 
+export type ProviderStreamEvent = { type: 'text_delta'; delta: string } | { type: 'response_started' };
+
 /**
  * Thin seam over the OpenAI Responses API. Keeps the Chat-Completions-shaped
  * ProviderMessage/ProviderTool/ProviderResponse contract so AiAgentService's
@@ -49,7 +51,7 @@ export class AiProviderService {
     return Boolean(this.config.get<string>('ai.apiKey'));
   }
 
-  async complete(messages: ProviderMessage[], tools: ProviderTool[]): Promise<ProviderResponse> {
+  async complete(messages: ProviderMessage[], tools: ProviderTool[], onEvent?: (event: ProviderStreamEvent) => void, signal?: AbortSignal): Promise<ProviderResponse> {
     const apiKey = this.config.get<string>('ai.apiKey');
     if (!apiKey) throw new ServiceUnavailableException('AI hali sozlanmagan. OPENAI_API_KEY ni Render Environment’ga qo‘ying.');
     const model = this.config.get<string>('ai.model', 'gpt-5-mini');
@@ -58,14 +60,28 @@ export class AiProviderService {
     const client = new OpenAI({ apiKey, baseURL, timeout, maxRetries: 2 });
 
     try {
-      const response = await client.responses.create({
+      const input = {
         model,
         input: toResponseInput(messages),
         tools: tools.map(toResponseTool),
-        tool_choice: 'auto',
+        tool_choice: 'auto' as const,
         store: false,
-        include: ['reasoning.encrypted_content'],
-      });
+        include: ['reasoning.encrypted_content'] as Array<'reasoning.encrypted_content'>,
+      };
+      let response: OpenAIResponse;
+      if (onEvent) {
+        const stream = await client.responses.create({ ...input, stream: true }, { signal });
+        let completed: OpenAIResponse | undefined;
+        for await (const event of stream) {
+          if (event.type === 'response.created') onEvent({ type: 'response_started' });
+          if (event.type === 'response.output_text.delta' && event.delta) onEvent({ type: 'text_delta', delta: event.delta });
+          if (event.type === 'response.completed') completed = event.response;
+        }
+        if (!completed) throw new ServiceUnavailableException('AI oqimi yakunlanmadi.');
+        response = completed;
+      } else {
+        response = await client.responses.create({ ...input, stream: false }, { signal });
+      }
       if (response.error) {
         this.logger.error(`OpenAI Responses API returned an error: ${response.error.code} ${response.error.message}`);
         throw new ServiceUnavailableException('AI xizmatida vaqtinchalik xatolik.');

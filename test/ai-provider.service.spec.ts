@@ -59,6 +59,24 @@ describe('AiProviderService', () => {
       });
     });
 
+    it('forwards real provider deltas and returns the completed response', async () => {
+      const completed = { error: null, output: [], output_text: 'Salom', usage: { input_tokens: 2, output_tokens: 1 }, model: 'gpt-5-mini' };
+      responsesCreateMock.mockResolvedValue({
+        async *[Symbol.asyncIterator]() {
+          yield { type: 'response.created' };
+          yield { type: 'response.output_text.delta', delta: 'Sa' };
+          yield { type: 'response.output_text.delta', delta: 'lom' };
+          yield { type: 'response.completed', response: completed };
+        },
+      });
+      const events: unknown[] = [];
+      const service = new AiProviderService(config);
+      const result = await service.complete([{ role: 'user', content: 'salom' }], [], event => events.push(event));
+      expect(events).toEqual([{ type: 'response_started' }, { type: 'text_delta', delta: 'Sa' }, { type: 'text_delta', delta: 'lom' }]);
+      expect(result.message.content).toBe('Salom');
+      expect(responsesCreateMock.mock.calls[0][0].stream).toBe(true);
+    });
+
     it('maps function_call output items into ProviderToolCall entries', async () => {
       responsesCreateMock.mockResolvedValue({
         error: null,

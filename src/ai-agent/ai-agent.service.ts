@@ -16,6 +16,10 @@ import { AgentChatDto } from './dto/agent-chat.dto';
 
 const MAX_TOOL_ROUNDS = 6;
 
+export type AgentStreamEvent =
+  | { type: 'status'; status: 'preparing' | 'checking_income' | 'searching_tasks' | 'waiting_confirmation' | 'executing' }
+  | { type: 'delta'; delta: string };
+
 @Injectable()
 export class AiAgentService {
   constructor(
@@ -55,7 +59,8 @@ export class AiAgentService {
     return result.count;
   }
 
-  async chat(userId: string, dto: AgentChatDto) {
+  async chat(userId: string, dto: AgentChatDto, emit?: (event: AgentStreamEvent) => void, signal?: AbortSignal) {
+    emit?.({ type: 'status', status: 'preparing' });
     await this.subscriptions.assertAiAllowed(userId);
     const conversation = await this.resolveConversation(userId, dto.conversationId, dto.message);
     if (dto.conversationId && typeof conversation.title === 'string' && this.isGreetingTitle(conversation.title) && !this.isGreetingTitle(dto.message)) {
@@ -68,6 +73,7 @@ export class AiAgentService {
     });
     const decision = confirmationReply(dto.message);
     if (pending && decision !== null) {
+      emit?.({ type: 'status', status: 'executing' });
       const outcome = await this.confirm(userId, pending.id, decision);
       return { conversationId: conversation.id, message: outcome.message, pendingConfirmation: null, resolvedActionId: pending.id, resolvedActionStatus: outcome.status };
     }
@@ -92,6 +98,7 @@ export class AiAgentService {
     // A clear all-time question must read the ledger even if the model would
     // otherwise answer using yesterday's conversation or today's zero balance.
     if (allTimeFinanceQuestion(dto.message)) {
+      emit?.({ type: 'status', status: 'checking_income' });
       const callId = `finance-${randomUUID()}`;
       messages.push({ role: 'assistant', content: null, tool_calls: [{ id: callId, type: 'function', function: { name: 'get_all_time_finance', arguments: '{}' } }] });
       try {
@@ -107,7 +114,18 @@ export class AiAgentService {
     }
 
     for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
-      const result = await this.provider.complete(messages, tools);
+      let partialText = '';
+      let result;
+      try {
+        result = await this.provider.complete(messages, tools, emit ? event => {
+          if (event.type === 'text_delta') { partialText += event.delta; emit({ type: 'delta', delta: event.delta }); }
+        } : undefined, signal);
+      } catch (error) {
+        if (signal?.aborted && partialText.trim()) {
+          await this.prisma.message.create({ data: { conversationId: conversation.id, role: MessageRole.ASSISTANT, content: partialText.trim(), isComplete: false } });
+        }
+        throw error;
+      }
       await this.usage.logTextUsage({ userId, model: result.model, inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens });
       const toolCalls = result.message.tool_calls ?? [];
       if (toolCalls.length === 0) {
@@ -121,6 +139,7 @@ export class AiAgentService {
       const pendingCalls: Array<{ toolName: string; input: Record<string, unknown>; preview: unknown }> = [];
       for (const call of toolCalls) {
         try {
+          emit?.({ type: 'status', status: /task/i.test(call.function.name) ? 'searching_tasks' : /finance|income|expense/i.test(call.function.name) ? 'checking_income' : 'executing' });
           const resolved = financeReadOverride(call.function.name, this.parseToolInput(call.function.arguments), dto.message);
           const input = resolved.input;
           const execution = await this.execution.execute(
@@ -152,6 +171,7 @@ export class AiAgentService {
         }
       }
       if (pendingCalls.length) {
+        emit?.({ type: 'status', status: 'waiting_confirmation' });
         // A correction supersedes the previous proposal; stale cards cannot execute it.
         await this.prisma.pendingAgentAction.updateMany({ where: { userId, conversationId: conversation.id, status: AgentActionStatus.PENDING }, data: { status: AgentActionStatus.CANCELLED } });
         const batch = pendingCalls.length > 1;

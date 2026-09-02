@@ -56,6 +56,14 @@ describe('AI conversation to durable action flow', () => {
     expect(prompt).toContain('Asia/Tashkent'); expect(prompt).toContain('Bugun=');
     expect(execution.execute).not.toHaveBeenCalled();
   });
+  it('stores an aborted partial answer as incomplete', async () => {
+    const abort = new AbortController();
+    provider.complete.mockImplementation(async (_messages: unknown, _tools: unknown, emit: (event: { type: string; delta: string }) => void) => {
+      emit({ type: 'text_delta', delta: 'Yarim javob' }); abort.abort(); throw new Error('aborted');
+    });
+    await expect(service.chat('user-a', { conversationId: 'conversation-1', message: 'uzun javob' }, () => undefined, abort.signal)).rejects.toThrow('aborted');
+    expect(prisma.message.create).toHaveBeenCalledWith({ data: expect.objectContaining({ role: 'ASSISTANT', content: 'Yarim javob', isComplete: false }) });
+  });
   it('reads all-time totals even when the model tries to answer without a tool', async () => {
     execution.execute.mockResolvedValue({status:'success',data:{period:'ALL_TIME',byCurrency:[{currency:'UZS',totalIncome:'500000.00'}]}});
     provider.complete.mockResolvedValue({ message:{role:'assistant',content:'Barcha davr: 500 000 so‘m.'},model:'test',usage:{inputTokens:1,outputTokens:1} });

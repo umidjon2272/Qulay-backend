@@ -1,5 +1,5 @@
 import { ConfigService } from '@nestjs/config';
-import { AiVoiceService } from '../src/ai-agent/ai-voice.service';
+import { AiVoiceService, prepareUzbekSpeech } from '../src/ai-agent/ai-voice.service';
 
 const transcribe = jest.fn();
 const speak = jest.fn();
@@ -31,8 +31,13 @@ describe('Voice service', () => {
   it('returns real provider audio without an API key in the browser response', async () => {
     speak.mockResolvedValue({ arrayBuffer: async () => Buffer.from('audio bytes') });
     const result = await service.speak('owner-a', 'Amal bajarildi.');
-    expect(result.mimeType).toBe('audio/mpeg');
+    expect(result.mimeType).toBe('audio/wav');
     expect(Buffer.from(result.audio, 'base64').toString()).toBe('audio bytes');
     expect(JSON.stringify(result)).not.toContain('test-only-key');
+  });
+  it('prepares Uzbek currency for speech without changing the stored value', () => {
+    const original = '2026-09-02 kuni 500 000 UZS daromad';
+    expect(prepareUzbekSpeech(original)).toBe('ikki ming yigirma olti-yil ikki-sentabr kuni besh yuz ming so‘m daromad');
+    expect(original).toContain('500 000 UZS');
   });
 });

@@ -60,6 +60,8 @@ export const envValidationSchema = Joi.object({
   OPENAI_TRANSCRIBE_MODEL: Joi.string().min(1).default('gpt-4o-mini-transcribe'),
   OPENAI_TTS_MODEL: Joi.string().min(1).default('gpt-4o-mini-tts'),
   OPENAI_TTS_VOICE: Joi.string().min(1).default('coral'),
+  OPENAI_REALTIME_MODEL: Joi.string().min(1).optional(),
+  OPENAI_REALTIME_VOICE: Joi.string().valid('alloy', 'ash', 'ballad', 'coral', 'echo', 'marin', 'sage', 'shimmer', 'verse', 'cedar').default('marin'),
   OPENAI_BASE_URL: Joi.string().uri().default('https://api.openai.com/v1'),
   AI_TIMEOUT_MS: Joi.number().integer().min(5000).max(120000).default(45000),
   EMAIL_PROVIDER: Joi.string().lowercase().valid('noop', 'resend').default('noop'),

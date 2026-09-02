@@ -1,0 +1,1 @@
+ALTER TABLE "Message" ADD COLUMN "isComplete" BOOLEAN NOT NULL DEFAULT true;

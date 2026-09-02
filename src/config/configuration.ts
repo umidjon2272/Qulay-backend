@@ -47,6 +47,8 @@ export default () => ({
     transcribeModel: process.env.OPENAI_TRANSCRIBE_MODEL ?? 'gpt-4o-mini-transcribe',
     ttsModel: process.env.OPENAI_TTS_MODEL ?? 'gpt-4o-mini-tts',
     ttsVoice: process.env.OPENAI_TTS_VOICE ?? 'coral',
+    realtimeModel: process.env.OPENAI_REALTIME_MODEL,
+    realtimeVoice: process.env.OPENAI_REALTIME_VOICE ?? 'marin',
     baseUrl: process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1',
     timeoutMs: Number.parseInt(process.env.AI_TIMEOUT_MS ?? '45000', 10),
   },

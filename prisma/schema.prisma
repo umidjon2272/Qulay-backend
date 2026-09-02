@@ -478,6 +478,7 @@ model Message {
   conversationId String       @db.Uuid
   role           MessageRole  @default(USER)
   content        String       @db.Text
+  isComplete     Boolean      @default(true)
   createdAt      DateTime     @default(now())
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
