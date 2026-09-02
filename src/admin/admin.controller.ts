@@ -33,4 +33,5 @@ export class AdminController {
   @Get('settings') settings() { return this.admin.getSettings(); }
   @Patch('settings/platform') platformSettings(@CurrentUser() actor: AuthenticatedUser, @Body() dto: UpdateAdminPlatformSettingsDto) { return this.admin.updatePlatformSettings(actor.sub, dto); }
   @Post('diagnostics/telegram-login') telegramLogin(@CurrentUser() actor: AuthenticatedUser) { return this.telegramLoginDiagnostic.run(actor.sub); }
+  @Get('diagnostics/telegram-runtime') telegramRuntime() { return this.telegramLoginDiagnostic.runtimeInfo(); }
 }

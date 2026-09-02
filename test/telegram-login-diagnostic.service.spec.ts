@@ -18,6 +18,24 @@ describe('TelegramLoginDiagnosticService', () => {
     expect(client.beginLogin).not.toHaveBeenCalled();
   });
 
+  it('reports commit, Node, package-lock and internal GramJS versions without requesting a code', () => {
+    const client = { beginLogin: jest.fn() };
+    const service = new TelegramLoginDiagnosticService(new ConfigService({ telegram: {}, deploymentVersion: '831dc7ce097f' }), client as never);
+    const info = service.runtimeInfo();
+    expect(info).toMatchObject({
+      deploymentVersion: '831dc7ce097f',
+      nodeVersion: process.version,
+      nodeEngine: '22.x',
+      telegram: {
+        declaredRange: '^2.26.22', lockedVersion: '2.26.22', installedPackageVersion: '2.26.22',
+        gramJsRuntimeVersion: '2.26.21', lockMatchesInstalled: true,
+      },
+    });
+    expect(client.beginLogin).not.toHaveBeenCalled();
+    expect(JSON.stringify(info)).not.toContain('apiHash');
+    expect(JSON.stringify(info)).not.toContain('phone');
+  });
+
   it('uses only TEST_TELEGRAM_PHONE, returns no auth material, and blocks repetition', async () => {
     const client = { beginLogin: jest.fn().mockResolvedValue(result) };
     const service = new TelegramLoginDiagnosticService(new ConfigService({ telegram: { loginDiagnosticEnabled: true, testPhone: '+998901234567' }, deploymentVersion: 'commit123' }), client as never);

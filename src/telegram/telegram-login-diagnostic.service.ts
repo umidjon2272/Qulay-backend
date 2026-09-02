@@ -1,6 +1,10 @@
 import { ConflictException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { createRequire } from 'node:module';
+import { version as gramJsRuntimeVersion } from 'telegram';
 import { classifyTelegramError } from './telegram.errors';
 import { TelegramClientService } from './telegram-client.service';
 
@@ -15,6 +19,25 @@ export class TelegramLoginDiagnosticService {
 
   status() {
     return { enabled: this.config.get<boolean>('telegram.loginDiagnosticEnabled', false), deploymentVersion: this.config.get<string>('deploymentVersion', 'unknown') };
+  }
+
+  runtimeInfo() {
+    const requireFromHere = createRequire(__filename);
+    const installed = requireFromHere('telegram/package.json') as { version?: string };
+    const lock = this.readLockMetadata();
+    const deploymentVersion = this.config.get<string>('deploymentVersion', 'unknown');
+    return {
+      deploymentVersion,
+      nodeVersion: process.version,
+      nodeEngine: lock.nodeEngine,
+      telegram: {
+        declaredRange: lock.declaredRange,
+        lockedVersion: lock.lockedVersion,
+        installedPackageVersion: installed.version ?? 'unknown',
+        gramJsRuntimeVersion,
+        lockMatchesInstalled: Boolean(lock.lockedVersion && lock.lockedVersion === installed.version),
+      },
+    };
   }
 
   async run(actorId: string): Promise<{ accepted: true; diagnosticId: string; deploymentVersion: string }> {
@@ -41,5 +64,21 @@ export class TelegramLoginDiagnosticService {
     } finally {
       this.running = false;
     }
+  }
+
+  private readLockMetadata(): { declaredRange: string | null; lockedVersion: string | null; nodeEngine: string | null } {
+    for (const path of [join(process.cwd(), 'package-lock.json'), join(process.cwd(), 'backend', 'package-lock.json')]) {
+      try {
+        const lock = JSON.parse(readFileSync(path, 'utf8')) as { packages?: Record<string, { version?: string; dependencies?: Record<string, string>; engines?: { node?: string } }> };
+        return {
+          declaredRange: lock.packages?.['']?.dependencies?.telegram ?? null,
+          lockedVersion: lock.packages?.['node_modules/telegram']?.version ?? null,
+          nodeEngine: lock.packages?.['']?.engines?.node ?? null,
+        };
+      } catch {
+        // Try the next known project-root layout. No filesystem path is returned.
+      }
+    }
+    return { declaredRange: null, lockedVersion: null, nodeEngine: null };
   }
 }
