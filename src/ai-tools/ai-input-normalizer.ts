@@ -42,8 +42,8 @@ export function normalizeToolInput(tool: string, input: Record<string, unknown>,
   const normalized = { ...input };
   // Optional null values from model function calls must be omitted before DTO conversion.
   for (const key of Object.keys(normalized)) if (normalized[key] === null) delete normalized[key];
-  if (tool === 'create_finance_transaction') {
-    normalized.amount = normalizeAmount(normalized.amount);
+  if (tool === 'create_finance_transaction' || tool === 'update_finance_transaction') {
+    if (normalized.amount !== undefined) normalized.amount = normalizeAmount(normalized.amount);
     const types: Record<string, string> = { daromad: 'INCOME', kirim: 'INCOME', prihod: 'INCOME', income: 'INCOME', xarajat: 'EXPENSE', chiqim: 'EXPENSE', rashod: 'EXPENSE', expense: 'EXPENSE' };
     if (typeof normalized.type === 'string') normalized.type = types[normalized.type.toLowerCase()] ?? normalized.type.toUpperCase();
     if (typeof normalized.currency === 'string') {
@@ -51,14 +51,41 @@ export function normalizeToolInput(tool: string, input: Record<string, unknown>,
       normalized.currency = ['SOM', 'SOМ', 'SUM', 'СУМ'].includes(currency) ? 'UZS' : currency;
     }
     if (normalized.date !== undefined && normalized.transactionDate === undefined) { normalized.transactionDate = normalized.date; delete normalized.date; }
-    if (normalized.transactionDate === undefined) normalized.transactionDate = now.toISOString();
+    if (normalized.transactionDate === undefined && tool === 'create_finance_transaction') normalized.transactionDate = now.toISOString();
     else if (typeof normalized.transactionDate === 'string') {
       const key = resolveDateKey(normalized.transactionDate, timezone, now);
       if (key) normalized.transactionDate = zonedDayRange(key, timezone).start.toISOString();
     }
   }
   if (typeof normalized.date === 'string') normalized.date = resolveDateKey(normalized.date, timezone, now) ?? normalized.date;
+  if (['get_finance_summary', 'compare_finance_periods'].includes(tool)) {
+    for (const field of ['from', 'to', 'currentFrom', 'currentTo', 'previousFrom', 'previousTo']) {
+      if (typeof normalized[field] !== 'string') continue;
+      const key = resolveDateKey(normalized[field] as string, timezone, now);
+      if (key) { const range = zonedDayRange(key, timezone); normalized[field] = (field.toLowerCase().endsWith('to') ? range.end : range.start).toISOString(); }
+    }
+  }
   return normalized;
+}
+
+/** Only constrain finance READ tools, based on an explicit latest-message period. */
+export function financeReadOverride(tool: string, input: Record<string, unknown>, message: string): { tool: string; input: Record<string, unknown> } {
+  const text = message.normalize('NFKC').toLowerCase();
+  const allTime = /(?:^|\s)(?:umumiy|obshi|obshe|jami|hammasi|all[ -]?time)(?:\s|[?!. ,]|$)|barcha\s+(?:vaqt|davr|sana)|за\s+вс[её]\s+время|общий|общая|итого/u.test(text);
+  const explicitPeriod = /bugun|kecha|ertaga|shu\s+(?:oy|hafta|yil)|o[‘’']?tgan\s+(?:oy|hafta|yil)|\d{4}-\d{2}-\d{2}|\d{1,2}[.\/]\d{1,2}|yanvar|fevral|mart|aprel|may\b|iyun|iyul|avgust|sent[ya]*br|oktabr|noyabr|dekabr|сегодня|вчера|месяц|недел|\bгод/u.test(text);
+  if (allTime && !explicitPeriod && ['get_today_finance', 'get_finance_summary', 'get_all_time_finance'].includes(tool)) {
+    return { tool: 'get_all_time_finance', input: input.currency ? { currency: input.currency } : {} };
+  }
+  return { tool, input };
+}
+
+/** High-confidence read guard; ordinary advice and requests to write are left to the model. */
+export function allTimeFinanceQuestion(message: string): boolean {
+  const text = message.toLowerCase();
+  return /daromad|kirim|xarajat|chiqim|foyda|zarar|доход|расход|прибыл/u.test(text)
+    && /qancha|qanca|qanch|nech|сколько|jami|итого/u.test(text)
+    && !/qo[‘’']?sh|qush|yarat|kirit|yoz|o[‘’']?chir|yubor|создай|добавь|удали/u.test(text)
+    && financeReadOverride('get_today_finance', {}, text).tool === 'get_all_time_finance';
 }
 
 /** Exact standalone replies only: “ha, lekin 600 ming” is a correction, never approval. */

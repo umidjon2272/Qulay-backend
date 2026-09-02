@@ -56,6 +56,19 @@ describe('AI conversation to durable action flow', () => {
     expect(prompt).toContain('Asia/Tashkent'); expect(prompt).toContain('Bugun=');
     expect(execution.execute).not.toHaveBeenCalled();
   });
+  it('reads all-time totals even when the model tries to answer without a tool', async () => {
+    execution.execute.mockResolvedValue({status:'success',data:{period:'ALL_TIME',byCurrency:[{currency:'UZS',totalIncome:'500000.00'}]}});
+    provider.complete.mockResolvedValue({ message:{role:'assistant',content:'Barcha davr: 500 000 so‘m.'},model:'test',usage:{inputTokens:1,outputTokens:1} });
+    await service.chat('user-a',{conversationId:'conversation-1',message:'obshi daromad qancha bold'});
+    expect(execution.execute).toHaveBeenCalledWith('user-a',expect.objectContaining({tool:'get_all_time_finance',input:{},confirmed:false}),expect.anything());
+    expect(JSON.stringify(provider.complete.mock.calls[0][0])).toContain('500000.00');
+  });
+  it('does not report no income when the all-time database read fails', async () => {
+    execution.execute.mockRejectedValue(new Error('offline'));
+    const result = await service.chat('user-a',{conversationId:'conversation-1',message:'umumiy daromad qancha'});
+    expect(result.message).toContain('yozuvlari yo‘q degani emas');
+    expect(provider.complete).not.toHaveBeenCalled();
+  });
   it('gives the model field-level validation errors so it can fix input instead of asking the same question', async () => {
     provider.complete.mockResolvedValueOnce(toolCall('create_finance_transaction', { amount: 'bad' })).mockResolvedValueOnce({ message: { role: 'assistant', content: 'Summa qancha?' }, model: 'test', usage: { inputTokens: 1, outputTokens: 1 } });
     execution.execute.mockRejectedValue(new BadRequestException({ message: 'Invalid tool input', errors: ['amount: amount must be a number string'] }));

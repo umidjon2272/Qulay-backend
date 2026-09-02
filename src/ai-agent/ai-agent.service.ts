@@ -1,4 +1,4 @@
-import { confirmationReply } from '../ai-tools/ai-input-normalizer';
+import { confirmationReply, financeReadOverride, allTimeFinanceQuestion } from '../ai-tools/ai-input-normalizer';
 import { dateKeyInTimezone } from '../common/date.utils';
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { AgentActionStatus, MemoryStatus, MessageRole, NotificationChannel, NotificationStatus, NotificationType, Prisma } from '@prisma/client';
@@ -89,6 +89,23 @@ export class AiAgentService {
       function: { name: tool.name, description: `${tool.description}${tool.requiresConfirmation ? ' Call this function to PREPARE the action now. The server will show one confirmation card; do not ask for confirmation in text before calling it.' : ''}`, parameters: tool.inputSchema },
     }));
 
+    // A clear all-time question must read the ledger even if the model would
+    // otherwise answer using yesterday's conversation or today's zero balance.
+    if (allTimeFinanceQuestion(dto.message)) {
+      const callId = `finance-${randomUUID()}`;
+      messages.push({ role: 'assistant', content: null, tool_calls: [{ id: callId, type: 'function', function: { name: 'get_all_time_finance', arguments: '{}' } }] });
+      try {
+        const result = await this.execution.execute(userId, { tool: 'get_all_time_finance', input: {}, confirmed: false, requestId: callId }, { locale: user.language, timezone: user.timezone });
+        if (result.status !== 'success') throw new Error('Finance read did not complete');
+        await this.usage.logToolUsage({ userId, model: 'tool-registry' });
+        messages.push({ role: 'tool', tool_call_id: callId, content: JSON.stringify({ ok: true, tool: 'get_all_time_finance', data: result.data }) });
+      } catch {
+        const answer = user.language === 'ru' ? 'Не удалось получить общие данные по финансам. Это не означает, что записей нет. Попробуйте ещё раз.' : 'Umumiy moliya ma’lumotlarini hozir yuklay olmadim. Bu daromad yozuvlari yo‘q degani emas. Qayta urinib ko‘ring.';
+        await this.prisma.message.create({ data: { conversationId: conversation.id, role: MessageRole.ASSISTANT, content: answer } });
+        return { conversationId: conversation.id, message: answer, pendingConfirmation: null };
+      }
+    }
+
     for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
       const result = await this.provider.complete(messages, tools);
       await this.usage.logTextUsage({ userId, model: result.model, inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens });
@@ -104,10 +121,11 @@ export class AiAgentService {
       const pendingCalls: Array<{ toolName: string; input: Record<string, unknown>; preview: unknown }> = [];
       for (const call of toolCalls) {
         try {
-          const input = this.parseToolInput(call.function.arguments);
+          const resolved = financeReadOverride(call.function.name, this.parseToolInput(call.function.arguments), dto.message);
+          const input = resolved.input;
           const execution = await this.execution.execute(
             userId,
-            { tool: call.function.name, input, confirmed: false, requestId: call.id },
+            { tool: resolved.tool, input, confirmed: false, requestId: call.id },
             { locale: user.language, timezone: user.timezone },
           );
 
@@ -117,11 +135,11 @@ export class AiAgentService {
           }
 
           await this.usage.logToolUsage({ userId, model: 'tool-registry' });
-          await this.prisma.message.create({ data: { conversationId: conversation.id, role: MessageRole.TOOL, content: JSON.stringify({ tool: call.function.name, data: execution.data }).slice(0, 18000) } });
+          await this.prisma.message.create({ data: { conversationId: conversation.id, role: MessageRole.TOOL, content: JSON.stringify({ tool: resolved.tool, data: execution.data }).slice(0, 18000) } });
           messages.push({
             role: 'tool',
             tool_call_id: call.id,
-            content: JSON.stringify({ ok: true, data: execution.data }),
+            content: JSON.stringify({ ok: true, tool: resolved.tool, data: execution.data }),
           });
         } catch (error) {
           // Tool xatosi butun chatni generic error bilan yiqitmasin.
@@ -235,7 +253,7 @@ export class AiAgentService {
   private conversationTitle(message: string): string {
     const clean = message.replace(/\s+/g, ' ').trim();
     if (/telegram|xabar|yubor/i.test(clean)) return 'Telegram xabarlari';
-    if (/daromad|kirim/i.test(clean)) return 'Bugungi daromad';
+    if (/daromad|kirim/i.test(clean)) return /bugun/i.test(clean) ? 'Bugungi daromad' : 'Daromadlar';
     if (/xarajat|chiqim/i.test(clean)) return 'Xarajatlar';
     if (/vazifa|task/i.test(clean)) return 'Vazifalar';
     return clean.slice(0, 60) || 'Yangi suhbat';
@@ -292,9 +310,11 @@ Foydalanuvchi xato, sheva, qisqartma yoki ovoz orqali gapirishi mumkin. So‘zma
 Umumiy savollar, tushuntirish, tarjima, biznes va marketing maslahatlariga odatiy suhbatdosh sifatida javob bering. Platformadan tashqari savolning o‘zi rad etishga sabab emas. Oddiy maslahat uchun tool shart emas.
 
 TAHLIL:
+"Umumiy/obshi/jami/barcha davr" uchun get_all_time_finance ishlating: boshlanish sanasini taxmin qilmang, oldingi "bugun" filtrini ko‘chirmang. "Bugun" uchun get_today_finance, aniq sana/oy/hafta uchun get_finance_summary. "Bugungi jami" — bugun, "umumiy" — barcha sanalar. Har javobda qaysi davr hisoblanganini ayting. Valyutalarni bir-biriga qo‘shmang. Tool xatosi, bo‘sh javob va nol summa uch xil holat: xatoda "daromad yo‘q" demang. Bugun nol bo‘lishi oldingi yozuvlar yo‘q degani emas.
 Real daromad, xarajat va natijalar haqida so‘ralsa avval tegishli tool bilan ma’lumot oling. Davr va valyutani aniq ajrating, kerak bo‘lsa oldingi davr bilan solishtiring. Daromad minus qayd etilgan xarajatlar — qaydlar bo‘yicha natija; tannarx va boshqa sarflar to‘liq bo‘lmasa buni sof foyda deb taqdim etmang. Sabab va taxminni ajrating; tavsiya aniq, bajarish mumkin bo‘lsin. Mavjud bo‘lmagan modul ma’lumotlarini uydirmang.
 
 AMALLAR VA BITTA TASDIQ:
+Bo‘limlar bitta ish maydoni: vazifa/eslatma/uchrashuv/qayd/kontakt/moliya/fayl va ulangan Telegram/Google toollaridan foydalaning. Tahrirlash, yakunlash, qayta ochish yoki o‘chirishdan oldin list/search/get bilan aniq obyekt IDsi va joriy holatini oling. "Shuni/o‘sha odamga" kontekstdan olinadi; ikki mos obyekt bo‘lsa aniqlashtiring. Ro‘yxatdagi meta.total sahifadagi items.length bilan bir xil bo‘lmasligi mumkin; keyingi sahifalar borligini yashirmang. Platforma admini, tarif va xavfsizlik sozlamalarini o‘zgartiradigan tool yo‘q bo‘lsa buni bajardim demang.
 Muhim ish uchun toolni darhol chaqirib AMALNI TAYYORLANG. Avval matnda “tasdiqlaysizmi?” deb so‘ramang. Backend tasdiqlash kartasi va tugmalarini o‘zi chiqaradi. Tasdiq kerak bo‘lsa hech narsa hali bajarilmagan. User tasdiqlaganda saqlangan payload bajariladi; qayta tasdiq so‘ralmaydi.
 So‘rovni tushunish → kerakli ma’lumotni qidirish → tekshirish → write toolni tayyorlash. Moliya, xabar yuborish, vazifa, uchrashuv va o‘chirishda shu yo‘l. Telegramda search_telegram_chats bilan real qabul qiluvchini toping; keyin send_telegram_message. Qabul qiluvchi noaniq bo‘lsa taxmin qilmang.
 Bir nechta mustaqil amallarni bir turda tayyorlash mumkin. Tool javobidagi IDga bog‘liq keyingi qadam uchun avval natijani kuting. Bir xil amalga qayta-qayta tool chaqirmang. Tool xatosida validation maydonlarini tuzatib qayta urinishingiz mumkin; muvaffaqiyatli write takrorlanmasin. Tool bajarilmaguncha “bajardim” demang.

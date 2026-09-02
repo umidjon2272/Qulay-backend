@@ -93,6 +93,12 @@ export class FinanceService {
     };
   }
 
+  async getForUser(userId: string, id: string) {
+    const row = await this.prisma.financeTransaction.findFirst({ where: { id, userId }, include: this.transactionInclude });
+    if (!row) throw new NotFoundException('Finance transaction was not found');
+    return this.serializeTransaction(row);
+  }
+
   async getTransactionForUser(userId: string, id: string) {
     const transaction = await this.prisma.financeTransaction.findFirst({
       where: { id, userId },
@@ -323,6 +329,27 @@ export class FinanceService {
     return this.getPeriodSummary(userId, period.from, period.to, query.currency);
   }
 
+  /** No date window and no page limit. Never add unlike currencies together. */
+  async getAllTimeSummaryForUser(userId: string, currency?: FinanceCurrency) {
+    const rows = await this.prisma.financeTransaction.groupBy({
+      by: ['currency', 'type'], where: { userId, ...(currency ? { currency } : {}) },
+      _sum: { amount: true }, _count: { _all: true },
+    });
+    const currencies = [...new Set(rows.map(row => row.currency))].sort();
+    if (!currencies.length && currency) currencies.push(currency);
+    return {
+      period: 'ALL_TIME', from: null, to: null,
+      transactionCount: rows.reduce((count, row) => count + row._count._all, 0),
+      byCurrency: currencies.map(item => {
+        const income = rows.find(row => row.currency === item && row.type === FinanceTransactionType.INCOME);
+        const expense = rows.find(row => row.currency === item && row.type === FinanceTransactionType.EXPENSE);
+        const totalIncome = this.decimal(income?._sum.amount);
+        const totalExpense = this.decimal(expense?._sum.amount);
+        return { currency: item, totalIncome: this.formatDecimal(totalIncome), totalExpense: this.formatDecimal(totalExpense), netProfit: this.formatDecimal(totalIncome.minus(totalExpense)), incomeCount: income?._count._all ?? 0, expenseCount: expense?._count._all ?? 0 };
+      }),
+    };
+  }
+
   async getPeriodSummary(userId: string, from: Date, to: Date, currency?: FinanceCurrency) {
     const resolvedCurrency = await this.resolveCurrency(userId, { from, to }, currency);
     const where: Prisma.FinanceTransactionWhereInput = {
@@ -373,6 +400,7 @@ export class FinanceService {
     return {
       date: today,
       timezone: user.timezone,
+      currency: summary.currency,
       todayIncome: summary.totalIncome,
       todayExpense: summary.totalExpense,
       todayProfit: summary.netProfit,

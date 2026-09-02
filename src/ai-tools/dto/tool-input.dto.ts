@@ -20,7 +20,11 @@ export class TodayPlanInput {
   @IsOptional() @IsString() @Matches(dateKey) date?: string;
 }
 
-export class TasksToolInput {
+export class PagedToolInput {
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100000) page?: number;
+}
+
+export class TasksToolInput extends PagedToolInput {
   @IsOptional() @IsEnum(TaskStatus) status?: TaskStatus;
   @IsOptional() @IsEnum(TaskPriority) priority?: TaskPriority;
   @IsOptional() @IsString() @Matches(dateKey) date?: string;
@@ -28,14 +32,14 @@ export class TasksToolInput {
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) limit?: number;
 }
 
-export class RemindersToolInput {
+export class RemindersToolInput extends PagedToolInput {
   @IsOptional() @IsEnum(TaskPriority) priority?: TaskPriority;
   @IsOptional() @IsString() @Matches(dateKey) date?: string;
   @IsOptional() @IsString() @MaxLength(200) search?: string;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) limit?: number;
 }
 
-export class MeetingsToolInput {
+export class MeetingsToolInput extends PagedToolInput {
   @IsOptional() @IsString() @Matches(dateKey) date?: string;
   @IsOptional() @IsISO8601({ strict: true, strictSeparator: true }) @Matches(dateTimeWithTimezone) from?: string;
   @IsOptional() @IsISO8601({ strict: true, strictSeparator: true }) @Matches(dateTimeWithTimezone) to?: string;
@@ -43,7 +47,7 @@ export class MeetingsToolInput {
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) limit?: number;
 }
 
-export class NotesToolInput {
+export class NotesToolInput extends PagedToolInput {
   @IsOptional() @IsString() @MaxLength(200) search?: string;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) limit?: number;
 }

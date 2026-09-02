@@ -12,16 +12,23 @@ export class MessagesService {
   async listForConversation(userId: string, conversationId: string, query: MessageQueryDto) {
     await this.getConversationForUser(userId, conversationId);
     const where: Prisma.MessageWhereInput = { conversationId, role: { in: [MessageRole.USER, MessageRole.ASSISTANT] } };
+    if (query.before) {
+      const anchor = await this.prisma.message.findFirst({ where: { ...where, id: query.before }, select: { id: true, createdAt: true } });
+      if (!anchor) throw new NotFoundException('Message cursor was not found');
+      where.OR = [{ createdAt: { lt: anchor.createdAt } }, { createdAt: anchor.createdAt, id: { lt: anchor.id } }];
+    }
     const [items, total] = await Promise.all([
       this.prisma.message.findMany({
         where,
-        orderBy: { createdAt: 'desc' },
-        skip: paginationSkip(query.page, query.limit),
-        take: query.limit,
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        skip: query.before ? 0 : paginationSkip(query.page, query.limit),
+        take: query.limit + 1,
       }),
       this.prisma.message.count({ where }),
     ]);
-    return { items: items.reverse(), meta: paginationMeta(query.page, query.limit, total) };
+    const hasMore = items.length > query.limit;
+    const page = items.slice(0, query.limit).reverse();
+    return { items: page, meta: { ...paginationMeta(query.page, query.limit, total), hasMore, nextCursor: hasMore ? page[0]?.id ?? null : null } };
   }
 
   async createForConversation(userId: string, conversationId: string, dto: CreateMessageDto) {

@@ -11,6 +11,8 @@ import { ContactQueryDto } from '../contacts/dto/contact-query.dto';
 import { FinanceService } from '../finance/finance.service';
 import { FinanceToolsService } from '../finance/finance-tools.service';
 import { CreateFinanceTransactionDto } from '../finance/dto/create-finance-transaction.dto';
+import { FinanceTransactionQueryDto } from '../finance/dto/transaction-query.dto';
+import { EntityToolInput, UpdateTaskToolInput, UpdateReminderToolInput, UpdateMeetingToolInput, UpdateNoteToolInput, UpdateTransactionToolInput } from './dto/workspace-tool-input.dto';
 import { CreateMemoryDto } from '../memory/dto/create-memory.dto';
 import { UpdateMemoryDto } from '../memory/dto/update-memory.dto';
 import { MemoryService } from '../memory/memory.service';
@@ -62,6 +64,7 @@ function schema(
 
 async function validateInput<T>(input: unknown, dtoClass: Class<T>): Promise<T> {
   assertToolObject(input);
+  if (dtoClass === EmptyToolInput && Object.keys(input).length === 0) return new dtoClass();
   const instance = plainToInstance(dtoClass, input);
   const errors = await validate(instance as object, {
     whitelist: true,
@@ -114,6 +117,7 @@ export class AIToolRegistryService {
     @Optional() private readonly filesService?: FilesService,
   ) {
     this.registerTools();
+    this.registerWorkspaceTools();
   }
 
   listMetadata(): Array<Pick<AIToolMetadata, 'name' | 'category' | 'requiresConfirmation' | 'sideEffect'>> {
@@ -139,6 +143,47 @@ export class AIToolRegistryService {
     this.tools.set(tool.name, tool as AIToolDefinition<unknown, unknown>);
   }
 
+  private registerWorkspaceTools() {
+    // All entity reads and writes use the same ownership-checked services as the UI.
+    const entities = [
+      { name: 'task', category: AIToolCategory.TASK, get: (u: string, id: string) => this.tasksService.getForUser(u, id), remove: (u: string, id: string) => this.tasksService.deleteForUser(u, id) },
+      { name: 'reminder', category: AIToolCategory.REMINDER, get: (u: string, id: string) => this.remindersService.getForUser(u, id), remove: (u: string, id: string) => this.remindersService.deleteForUser(u, id) },
+      { name: 'meeting', category: AIToolCategory.MEETING, get: (u: string, id: string) => this.meetingsService.getForUser(u, id), remove: (u: string, id: string) => this.meetingsService.deleteForUser(u, id) },
+      { name: 'note', category: AIToolCategory.NOTE, get: (u: string, id: string) => this.notesService.getForUser(u, id), remove: (u: string, id: string) => this.notesService.deleteForUser(u, id) },
+      { name: 'finance_transaction', category: AIToolCategory.FINANCE, get: (u: string, id: string) => this.financeService.getForUser(u, id), remove: (u: string, id: string) => this.financeService.deleteForUser(u, id) },
+    ];
+    for (const entity of entities) {
+      this.register(this.base<EntityToolInput, unknown>({ name: `get_${entity.name}`, description: `Read one owned ${entity.name} by its real ID. Search first; never invent IDs.`, category: entity.category, sideEffect: 'READ', validate: EntityToolInput, inputSchema: schema({ id: { type: 'string' } }, ['id']), execute: (ctx, input) => entity.get(ctx.userId, input.id) }));
+      this.register(this.base({ name: `delete_${entity.name}`, description: `Delete one owned ${entity.name} after confirmation. Search/read first to identify the exact record.`, category: entity.category, sideEffect: 'WRITE', validate: EntityToolInput, inputSchema: schema({ id: { type: 'string' } }, ['id']),
+        authorize: async (ctx, input) => { await entity.get(ctx.userId, input.id); },
+        preview: async (ctx, input) => { const current = await entity.get(ctx.userId, input.id); return { id: input.id, title: current.title, operation: 'delete', warning: ctx.locale === 'ru' ? 'Удаление нельзя отменить в этом чате.' : 'O‘chirilgan yozuvni bu chat orqali tiklab bo‘lmaydi.' }; },
+        execute: (ctx, input) => entity.remove(ctx.userId, input.id),
+      }));
+    }
+    const update = <T extends EntityToolInput>(name: string, category: AIToolCategory, dto: Class<T>, properties: AIToolInputSchema['properties'], get: (u: string, id: string) => Promise<{ title: string }>, run: (u: string, id: string, patch: Omit<T, 'id'>) => Promise<unknown>) => {
+      this.register(this.base({ name, description: `Update an owned record after confirmation. Get its real id using the corresponding list/read tool; include ONLY fields the user asked to change.`, category, sideEffect: 'WRITE', validate: dto,
+        inputSchema: schema({ id: { type: 'string' }, ...properties }, ['id']),
+        authorize: async (ctx, { id, ...patch }) => { if (!Object.values(patch).some(value => value !== undefined)) throw new BadRequestException('No changes provided'); await get(ctx.userId, id); },
+        preview: async (ctx, { id, ...patch }) => ({ id, title: (await get(ctx.userId, id)).title, changes: patch }),
+        execute: (ctx, { id, ...patch }) => run(ctx.userId, id, patch),
+      }));
+    };
+    update('update_task', AIToolCategory.TASK, UpdateTaskToolInput, { title: { type: 'string' }, description: { type: 'string' }, dueDate: { type: 'string', description: 'ISO datetime with timezone' }, priority: { type: 'string', enum: Object.values(TaskPriority) }, status: { type: 'string', enum: Object.values(TaskStatus) } }, (u,id) => this.tasksService.getForUser(u,id), (u,id,p) => this.tasksService.updateForUser(u,id,p));
+    update('update_reminder', AIToolCategory.REMINDER, UpdateReminderToolInput, { title: { type: 'string' }, description: { type: 'string' }, remindAt: { type: 'string', description: 'ISO datetime with timezone' }, priority: { type: 'string', enum: Object.values(TaskPriority) } }, (u,id) => this.remindersService.getForUser(u,id), (u,id,p) => this.remindersService.updateForUser(u,id,p));
+    update('update_meeting', AIToolCategory.MEETING, UpdateMeetingToolInput, { title: { type: 'string' }, description: { type: 'string' }, startsAt: { type: 'string' }, endsAt: { type: 'string' }, participant: { type: 'string' }, contactId: { type: 'string' }, location: { type: 'string' }, status: { type: 'string', enum: Object.values(MeetingStatus) } }, (u,id) => this.meetingsService.getForUser(u,id), (u,id,p) => this.meetingsService.updateForUser(u,id,p));
+    update('update_note', AIToolCategory.NOTE, UpdateNoteToolInput, { title: { type: 'string' }, content: { type: 'string' }, contactId: { type: 'string' } }, (u,id) => this.notesService.getForUser(u,id), (u,id,p) => this.notesService.updateForUser(u,id,p));
+    update('update_finance_transaction', AIToolCategory.FINANCE, UpdateTransactionToolInput, { title: { type: 'string' }, amount: { type: 'string' }, type: { type: 'string', enum: Object.values(FinanceTransactionType) }, currency: { type: 'string', enum: Object.values(FinanceCurrency) }, transactionDate: { type: 'string' }, categoryId: { type: 'string' }, accountId: { type: 'string' }, contactId: { type: 'string' }, description: { type: 'string' } }, (u,id) => this.financeService.getForUser(u,id), (u,id,p) => this.financeService.updateForUser(u,id,p));
+    for (const action of [
+      { name: 'complete_task', category: AIToolCategory.TASK, get: (u:string,id:string) => this.tasksService.getForUser(u,id), run: (u:string,id:string) => this.tasksService.completeForUser(u,id) },
+      { name: 'reopen_task', category: AIToolCategory.TASK, get: (u:string,id:string) => this.tasksService.getForUser(u,id), run: (u:string,id:string) => this.tasksService.reopenForUser(u,id) },
+      { name: 'complete_reminder', category: AIToolCategory.REMINDER, get: (u:string,id:string) => this.remindersService.getForUser(u,id), run: (u:string,id:string) => this.remindersService.completeForUser(u,id) },
+      { name: 'cancel_meeting', category: AIToolCategory.MEETING, get: (u:string,id:string) => this.meetingsService.getForUser(u,id), run: (u:string,id:string) => this.meetingsService.cancelForUser(u,id) },
+    ]) this.register(this.base<EntityToolInput, unknown>({ name: action.name, description: `${action.name} for one owned record after confirmation. Search first for its exact ID.`, category: action.category, sideEffect: 'WRITE', validate: EntityToolInput, inputSchema: schema({ id: { type: 'string' } }, ['id']), authorize: async (ctx,input) => { await action.get(ctx.userId,input.id); }, preview: async (ctx,input) => ({ id: input.id, title: (await action.get(ctx.userId,input.id)).title, operation: action.name }), execute: (ctx,input) => action.run(ctx.userId,input.id) }));
+    this.register(this.base({ name: 'get_finance_transactions', description: 'Search saved finance transactions, including old records. With no from/to returns all dates, paginated. Use summaries (not this page) to compute totals.', category: AIToolCategory.FINANCE, sideEffect: 'READ', validate: FinanceTransactionQueryDto, inputSchema: schema({ search: { type: 'string' }, from: { type: 'string' }, to: { type: 'string' }, type: { type: 'string', enum: Object.values(FinanceTransactionType) }, currency: { type: 'string', enum: Object.values(FinanceCurrency) }, page: { type: 'integer' }, limit: { type: 'integer' } }), execute: (ctx,input) => this.financeService.listTransactionsForUser(ctx.userId,input) }));
+    this.register(this.base({ name: 'get_finance_categories', description: 'List owned finance categories and their IDs before linking a transaction.', category: AIToolCategory.FINANCE, sideEffect: 'READ', validate: EmptyToolInput, inputSchema: schema({}), execute: ctx => this.financeService.listCategoriesForUser(ctx.userId,{}) }));
+    this.register(this.base({ name: 'get_finance_accounts', description: 'List owned finance accounts and currencies before linking a transaction.', category: AIToolCategory.FINANCE, sideEffect: 'READ', validate: EmptyToolInput, inputSchema: schema({}), execute: ctx => this.financeService.listAccountsForUser(ctx.userId) }));
+  }
+
   private base<TInput, TResult>(config: {
     name: string;
     description: string;
@@ -154,7 +199,9 @@ export class AIToolRegistryService {
       name: config.name,
       description: config.description,
       category: config.category,
-      inputSchema: config.inputSchema,
+      inputSchema: ['get_tasks', 'get_reminders', 'get_meetings', 'get_notes'].includes(config.name)
+        ? { ...config.inputSchema, properties: { ...config.inputSchema.properties, page: { type: 'integer', description: 'Page number, starting at 1. Fetch further pages when meta.total exceeds returned items.' } } }
+        : config.inputSchema,
       requiresConfirmation: config.sideEffect === 'WRITE' && !['save_memory', 'update_memory'].includes(config.name),
       sideEffect: config.sideEffect,
       permission: 'USER_SCOPED',
@@ -259,9 +306,15 @@ export class AIToolRegistryService {
     }));
 
     this.register(this.base<FinanceSummaryToolInput, unknown>({
-      name: 'get_finance_summary', description: 'Get a Decimal-safe finance summary for a period.', category: AIToolCategory.FINANCE,
+      name: 'get_finance_summary', description: 'Get finance totals for an explicit date range in the user timezone (date-only from/to are inclusive days). For umumiy/obshi/all-time use get_all_time_finance, never invent a start date.', category: AIToolCategory.FINANCE,
       sideEffect: 'READ', validate: FinanceSummaryToolInput, inputSchema: schema({ from: { type: 'string' }, to: { type: 'string' }, currency: { type: 'string' } }, ['from', 'to', 'currency']),
       execute: (context, input) => { const period = assertPeriod(input.from, input.to); return this.financeToolsService.getPeriodSummary(context.userId, period.from, period.to, input.currency); },
+    }));
+
+    this.register(this.base<TodayFinanceToolInput, unknown>({
+      name: 'get_all_time_finance', description: 'Get ALL saved income, expenses and net totals across ALL dates, including old records. Use for umumiy, obshi, jami, all-time, за всё время. Returns separate totals per currency; no date parameters. A failed read is not zero income.', category: AIToolCategory.FINANCE,
+      sideEffect: 'READ', validate: TodayFinanceToolInput, inputSchema: schema({ currency: { type: 'string', enum: Object.values(FinanceCurrency) } }),
+      execute: (context, input) => this.financeService.getAllTimeSummaryForUser(context.userId, input.currency),
     }));
 
     this.register(this.base<TodayFinanceToolInput, unknown>({
