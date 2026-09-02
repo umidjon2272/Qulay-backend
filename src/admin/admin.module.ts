@@ -6,9 +6,10 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
 import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
+import { TelegramModule } from '../telegram/telegram.module';
 
 @Module({
-  imports: [PrismaModule, CommonModule, ActivityLogModule, NotificationsModule, SubscriptionsModule],
+  imports: [PrismaModule, CommonModule, ActivityLogModule, NotificationsModule, SubscriptionsModule, TelegramModule],
   controllers: [AdminController],
   providers: [AdminService],
 })

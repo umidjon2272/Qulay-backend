@@ -22,6 +22,7 @@ export type TelegramSentCodeMeta = {
   /** Raw GramJS/MTProto constructor name (e.g. "auth.SentCodeTypeApp") for safe, non-PII logging. */
   rawType: string;
   rawNextType: string | null;
+  selectedDcId: number | null;
 };
 
 export type TelegramSentCode = { session: string; phoneCodeHash: string } & TelegramSentCodeMeta;
@@ -83,7 +84,7 @@ export class GramJsTelegramClientService extends TelegramClientService {
         returnedType: sentCode.type?.className ?? 'unknown', nextType: sentCode.nextType?.className ?? null,
         timeoutSeconds: sentCode.timeout ?? null,
       });
-      return { session: this.savedSession(client), ...this.describeSentCode(sentCode) };
+      return { session: this.savedSession(client), ...this.describeSentCode(sentCode), selectedDcId: client.session.dcId || null };
     } catch (error) {
       throw this.withAuthContext(error, connected, Boolean(this.savedSession(client)));
     } finally {
@@ -380,7 +381,7 @@ export class GramJsTelegramClientService extends TelegramClientService {
       connected = true;
       const result = await client.invoke(new Api.auth.ResendCode({ phoneNumber: input.phoneNumber, phoneCodeHash: input.phoneCodeHash }));
       if (!(result instanceof Api.auth.SentCode)) throw new TelegramAdapterError('UNAVAILABLE');
-      return { session: this.savedSession(client), ...this.describeSentCode(result) };
+      return { session: this.savedSession(client), ...this.describeSentCode(result), selectedDcId: client.session.dcId || null };
     } catch (error) {
       throw this.withAuthContext(error, connected, Boolean(input.session));
     } finally {
@@ -415,6 +416,7 @@ export class GramJsTelegramClientService extends TelegramClientService {
       timeoutSeconds: sentCode.timeout ?? null,
       rawType: sentCode.type?.className ?? 'unknown',
       rawNextType: sentCode.nextType?.className ?? null,
+      selectedDcId: null,
     };
   }
 

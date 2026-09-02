@@ -3,6 +3,7 @@ export default () => ({
   trustProxy: process.env.TRUST_PROXY === 'true',
   requestBodyLimit: process.env.REQUEST_BODY_LIMIT ?? '1mb',
   port: Number.parseInt(process.env.PORT ?? '3000', 10),
+  deploymentVersion: (process.env.RENDER_GIT_COMMIT ?? process.env.DEPLOYMENT_VERSION ?? process.env.npm_package_version ?? 'unknown').slice(0, 12),
   frontendUrl: process.env.FRONTEND_URL,
   jwt: {
     accessSecret: process.env.JWT_ACCESS_SECRET,
@@ -30,6 +31,8 @@ export default () => ({
     apiId: process.env.TELEGRAM_API_ID === undefined ? undefined : Number.parseInt(process.env.TELEGRAM_API_ID, 10),
     apiHash: process.env.TELEGRAM_API_HASH,
     sessionEncryptionKey: process.env.TELEGRAM_SESSION_ENCRYPTION_KEY,
+    loginDiagnosticEnabled: process.env.TELEGRAM_LOGIN_DIAGNOSTIC_ENABLED === 'true',
+    testPhone: process.env.TEST_TELEGRAM_PHONE,
   },
   google: {
     configured: [process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, process.env.GOOGLE_REDIRECT_URI, process.env.GOOGLE_TOKEN_ENCRYPTION_KEY].every(Boolean),

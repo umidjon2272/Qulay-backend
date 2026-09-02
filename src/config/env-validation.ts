@@ -48,6 +48,9 @@ export const envValidationSchema = Joi.object({
   TELEGRAM_API_ID: Joi.number().integer().positive().optional(),
   TELEGRAM_API_HASH: Joi.string().min(1).optional(),
   TELEGRAM_SESSION_ENCRYPTION_KEY: Joi.string().pattern(/^[a-fA-F0-9]{64}$/).optional(),
+  TELEGRAM_LOGIN_DIAGNOSTIC_ENABLED: Joi.boolean().truthy('true').falsy('false').default(false),
+  TEST_TELEGRAM_PHONE: Joi.string().pattern(/^\+[1-9]\d{7,14}$/).optional(),
+  DEPLOYMENT_VERSION: Joi.string().max(100).optional(),
   GOOGLE_CLIENT_ID: Joi.string().min(1).optional(),
   GOOGLE_CLIENT_SECRET: Joi.string().min(1).optional(),
   GOOGLE_REDIRECT_URI: Joi.string().uri().optional(),
@@ -82,6 +85,7 @@ export const envValidationSchema = Joi.object({
   if (googleResult !== value) return googleResult;
 
   if (value.JWT_ACCESS_SECRET === value.JWT_REFRESH_SECRET) return helpers.error('jwt.secrets.same');
+  if (value.TELEGRAM_LOGIN_DIAGNOSTIC_ENABLED && !value.TEST_TELEGRAM_PHONE) return helpers.error('telegram.diagnostic.phone');
   if (value.NODE_ENV === 'production' && value.AUTH_TIMING_LOGS) return helpers.error('auth.timing.production');
   if (value.NODE_ENV === 'production' && !value.OPENAI_API_KEY) return helpers.error('ai.openai.production');
   if (value.EMAIL_PROVIDER === 'resend' && (!value.RESEND_API_KEY || !value.EMAIL_FROM)) return helpers.error('email.resend.missing');
@@ -91,6 +95,7 @@ export const envValidationSchema = Joi.object({
   'integration.telegram.partial': 'Telegram integration requires all of: TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_SESSION_ENCRYPTION_KEY. Missing: {{#missing}}',
   'integration.google.partial': 'Google integration requires all of: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI, GOOGLE_TOKEN_ENCRYPTION_KEY. Missing: {{#missing}}',
   'jwt.secrets.same': 'JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must be different',
+  'telegram.diagnostic.phone': 'TEST_TELEGRAM_PHONE is required when TELEGRAM_LOGIN_DIAGNOSTIC_ENABLED=true',
   'auth.timing.production': 'AUTH_TIMING_LOGS must be disabled in production',
   'ai.openai.production': 'OPENAI_API_KEY is required in production',
   'email.resend.missing': 'EMAIL_PROVIDER=resend requires RESEND_API_KEY and EMAIL_FROM',

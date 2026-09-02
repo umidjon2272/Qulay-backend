@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, ParseEnumPipe, ParseUUIDPipe, Patch, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseEnumPipe, ParseUUIDPipe, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { SubscriptionTier, UserRole } from '@prisma/client';
 import { AuthenticatedUser } from '../auth/types/jwt-payload.type';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -7,12 +7,13 @@ import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { AdminActivityQueryDto, AdminFilesQueryDto, AdminRangeQueryDto, AdminRoleDto, AdminStatusDto, AdminUsersQueryDto, AssignUserSubscriptionDto, UpdateAdminPlatformSettingsDto, UpdateSubscriptionPlanDto } from './dto/admin-query.dto';
 import { AdminService } from './admin.service';
+import { TelegramLoginDiagnosticService } from '../telegram/telegram-login-diagnostic.service';
 
 @Controller('admin')
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(UserRole.ADMIN)
 export class AdminController {
-  constructor(private readonly admin: AdminService) {}
+  constructor(private readonly admin: AdminService, private readonly telegramLoginDiagnostic: TelegramLoginDiagnosticService) {}
 
   @Get('overview') overview(@Query() query: AdminRangeQueryDto) { return this.admin.getOverview(query.range); }
   @Get('users') users(@Query() query: AdminUsersQueryDto) { return this.admin.listUsers(query); }
@@ -31,4 +32,5 @@ export class AdminController {
   @Get('system') system() { return this.admin.getSystemHealth(); }
   @Get('settings') settings() { return this.admin.getSettings(); }
   @Patch('settings/platform') platformSettings(@CurrentUser() actor: AuthenticatedUser, @Body() dto: UpdateAdminPlatformSettingsDto) { return this.admin.updatePlatformSettings(actor.sub, dto); }
+  @Post('diagnostics/telegram-login') telegramLogin(@CurrentUser() actor: AuthenticatedUser) { return this.telegramLoginDiagnostic.run(actor.sub); }
 }

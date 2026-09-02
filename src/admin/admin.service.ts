@@ -230,7 +230,7 @@ export class AdminService {
   async getSystemHealth() {
     const started = Date.now(); let db: { status: string; latencyMs: number } = { status: 'ok', latencyMs: 0 };
     try { await this.prisma.$queryRaw`SELECT 1`; db = { status: 'ok', latencyMs: Date.now() - started }; } catch { db = { status: 'unreachable', latencyMs: Date.now() - started }; }
-    return { api: { status: 'ok' }, database: db, notificationWorker: this.worker.health(), uptimeSeconds: Math.floor(process.uptime()), environment: this.config.get<string>('nodeEnv', 'development'), version: process.env.npm_package_version ?? null, migrations: { status: 'managed_by_prisma' }, integrations: await this.getIntegrations() };
+    return { api: { status: 'ok' }, database: db, notificationWorker: this.worker.health(), uptimeSeconds: Math.floor(process.uptime()), environment: this.config.get<string>('nodeEnv', 'development'), version: this.config.get<string>('deploymentVersion', 'unknown'), migrations: { status: 'managed_by_prisma' }, integrations: await this.getIntegrations() };
   }
 
   async getSettings() {
@@ -263,7 +263,7 @@ export class AdminService {
         },
       },
       notifications: { workerStatus: this.worker.health().status, intervalSeconds: Math.round(worker.intervalMs / 1000), batchSize: worker.batchSize, retryLimit: worker.retryLimit },
-      integrations: { telegram: { configured: telegram.configured }, google: { configured: google.configured }, openai: { configured: Boolean(process.env.OPENAI_API_KEY) } },
+      integrations: { telegram: { configured: telegram.configured, loginDiagnosticEnabled: this.config.get<boolean>('telegram.loginDiagnosticEnabled', false) }, google: { configured: google.configured }, openai: { configured: Boolean(process.env.OPENAI_API_KEY) } },
       storage: {
         provider: storage.provider,
         maxFileSizeBytes: storage.maxSizeBytes,
