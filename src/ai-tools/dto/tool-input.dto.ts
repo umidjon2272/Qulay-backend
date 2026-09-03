@@ -14,7 +14,7 @@ const dateTimeWithTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/;
 const dateKey = /^\d{4}-\d{2}-\d{2}$/;
 const trim = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value);
 
-export class EmptyToolInput {}
+export class EmptyToolInput { }
 
 export class TodayPlanInput {
   @IsOptional() @IsString() @Matches(dateKey) date?: string;
@@ -137,7 +137,27 @@ export class SearchGoogleDriveFilesToolInput {
   @IsOptional() @IsString() @MaxLength(200) mimeType?: string;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) limit?: number;
 }
+export class ListFilesToolInput extends PagedToolInput {
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  mimeType?: string;
 
+  @IsOptional()
+  @IsString()
+  folderId?: string;
+
+  @IsOptional()
+  @IsEnum(['UPLOAD', 'GOOGLE_DRIVE', 'TELEGRAM', 'SYSTEM'])
+  source?: 'UPLOAD' | 'GOOGLE_DRIVE' | 'TELEGRAM' | 'SYSTEM';
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number;
+}
 export class SearchFilesToolInput {
   @Transform(trim) @IsString() @MinLength(1) @MaxLength(200) query!: string;
   @IsOptional() @IsString() @MaxLength(200) mimeType?: string;
@@ -190,7 +210,7 @@ export class CreateNoteToolInput {
   @IsOptional() @IsUUID('4') contactId?: string;
 }
 
-export class CreateContactToolInput extends CreateContactDto {}
+export class CreateContactToolInput extends CreateContactDto { }
 
 export class UpdateContactToolInput extends UpdateContactDto {
   @IsUUID('4') contactId!: string;

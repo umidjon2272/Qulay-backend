@@ -10,7 +10,7 @@ describe('AI tool registry and execution', () => {
     createForUser: jest.fn().mockResolvedValue(task),
     getForUser: jest.fn().mockResolvedValue(task),
     updateForUser: jest.fn().mockResolvedValue(task),
-    deleteForUser: jest.fn().mockResolvedValue({message:'deleted'}),
+    deleteForUser: jest.fn().mockResolvedValue({ message: 'deleted' }),
     completeForUser: jest.fn().mockResolvedValue(task),
   };
   const remindersService = { listForUser: jest.fn() };
@@ -47,7 +47,11 @@ describe('AI tool registry and execution', () => {
 
   it('lists all first-party tools with confirmation metadata', () => {
     const tools = registry.listMetadata();
-    expect(tools).toHaveLength(58);
+    expect(tools).toHaveLength(59);
+    expect(tools.find((tool) => tool.name === 'list_files')).toMatchObject({
+      sideEffect: 'READ',
+      requiresConfirmation: false,
+    });
     expect(tools.find((tool) => tool.name === 'get_file_content')).toMatchObject({ sideEffect: 'READ', requiresConfirmation: false });
     expect(tools.find((tool) => tool.name === 'get_tasks')).toMatchObject({ sideEffect: 'READ', requiresConfirmation: false });
     expect(tools.find((tool) => tool.name === 'create_task')).toMatchObject({ sideEffect: 'WRITE', requiresConfirmation: true });
@@ -57,26 +61,26 @@ describe('AI tool registry and execution', () => {
     expect(() => registry.get('does_not_exist')).toThrow(NotFoundException);
   });
   it('exposes all new mutations only behind confirmation', () => {
-    for (const name of ['update_task','delete_task','complete_task','reopen_task','update_reminder','complete_reminder','delete_reminder','update_meeting','cancel_meeting','delete_meeting','update_note','delete_note','update_finance_transaction','delete_finance_transaction']) {
-      expect(registry.get(name)).toMatchObject({sideEffect:'WRITE',requiresConfirmation:true,permission:'USER_SCOPED'});
+    for (const name of ['update_task', 'delete_task', 'complete_task', 'reopen_task', 'update_reminder', 'complete_reminder', 'delete_reminder', 'update_meeting', 'cancel_meeting', 'delete_meeting', 'update_note', 'delete_note', 'update_finance_transaction', 'delete_finance_transaction']) {
+      expect(registry.get(name)).toMatchObject({ sideEffect: 'WRITE', requiresConfirmation: true, permission: 'USER_SCOPED' });
     }
   });
   it('uses real user ownership before preparing deletion', async () => {
     tasksService.getForUser.mockRejectedValueOnce(new NotFoundException('Task was not found'));
-    await expect(execution.execute('other-user',{tool:'delete_task',input:{id:'00000000-0000-4000-8000-000000000001'},confirmed:false})).rejects.toThrow('Task was not found');
+    await expect(execution.execute('other-user', { tool: 'delete_task', input: { id: '00000000-0000-4000-8000-000000000001' }, confirmed: false })).rejects.toThrow('Task was not found');
     expect(tasksService.deleteForUser).not.toHaveBeenCalled();
   });
   it('prepares task changes, then executes only after confirmation', async () => {
-    const input={id:'00000000-0000-4000-8000-000000000001',title:'Updated'};
-    expect(await execution.execute('user-a',{tool:'update_task',input,confirmed:false})).toMatchObject({status:'confirmation_required',preview:{changes:{title:'Updated'}}});
+    const input = { id: '00000000-0000-4000-8000-000000000001', title: 'Updated' };
+    expect(await execution.execute('user-a', { tool: 'update_task', input, confirmed: false })).toMatchObject({ status: 'confirmation_required', preview: { changes: { title: 'Updated' } } });
     expect(tasksService.updateForUser).not.toHaveBeenCalled();
-    await execution.execute('user-a',{tool:'update_task',input,confirmed:true});
-    expect(tasksService.updateForUser).toHaveBeenCalledWith('user-a',input.id,expect.objectContaining({title:'Updated'}));
+    await execution.execute('user-a', { tool: 'update_task', input, confirmed: true });
+    expect(tasksService.updateForUser).toHaveBeenCalledWith('user-a', input.id, expect.objectContaining({ title: 'Updated' }));
   });
   it('supports later pages without raising page size past 100', async () => {
-    await execution.execute('user-a',{tool:'get_tasks',input:{page:3,limit:50},confirmed:false});
-    expect(tasksService.listForUser).toHaveBeenCalledWith('user-a',expect.objectContaining({page:3,limit:50}));
-    await expect(execution.execute('user-a',{tool:'get_tasks',input:{limit:101},confirmed:false})).rejects.toThrow();
+    await execution.execute('user-a', { tool: 'get_tasks', input: { page: 3, limit: 50 }, confirmed: false });
+    expect(tasksService.listForUser).toHaveBeenCalledWith('user-a', expect.objectContaining({ page: 3, limit: 50 }));
+    await expect(execution.execute('user-a', { tool: 'get_tasks', input: { limit: 101 }, confirmed: false })).rejects.toThrow();
   });
 
   it('executes a read tool and returns normalized data', async () => {

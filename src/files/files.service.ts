@@ -94,9 +94,52 @@ export class FilesService {
     return { items: items.map(serializeFile), meta: paginationMeta(query.page, query.limit, total) };
   }
 
-  searchForUser(userId: string, query: string, filters: Partial<Pick<FileQueryDto, 'mimeType' | 'folderId' | 'source' | 'limit'>> = {}) {
-    return this.listForUser(userId, { page: 1, limit: filters.limit ?? 20, search: query, mimeType: filters.mimeType, folderId: filters.folderId, source: filters.source });
+async searchForUser(
+  userId: string,
+  query: string,
+  filters: Partial<
+    Pick<FileQueryDto, 'mimeType' | 'folderId' | 'source' | 'limit'>
+  > = {},
+) {
+  const cleanQuery = query.trim();
+
+  const runSearch = (search: string) =>
+    this.listForUser(userId, {
+      page: 1,
+      limit: filters.limit ?? 20,
+      search,
+      mimeType: filters.mimeType,
+      folderId: filters.folderId,
+      source: filters.source,
+    });
+
+  const direct = await runSearch(cleanQuery);
+
+  if (direct.meta.total > 0) {
+    return direct;
   }
+
+  const variants = [
+    cleanQuery.replace(/\s+/g, '.'),
+    cleanQuery.replace(/\s+/g, ''),
+    cleanQuery.replace(/[._-]+/g, ' '),
+  ].filter(
+    (value, index, array) =>
+      value &&
+      value !== cleanQuery &&
+      array.indexOf(value) === index,
+  );
+
+  for (const variant of variants) {
+    const result = await runSearch(variant);
+
+    if (result.meta.total > 0) {
+      return result;
+    }
+  }
+
+  return direct;
+}
 
   async getForUser(userId: string, id: string) {
     const file = await this.prisma.userFile.findFirst({ where: { id, userId, status: { not: FileStatus.DELETED } }, select: FILE_PUBLIC_SELECT });
