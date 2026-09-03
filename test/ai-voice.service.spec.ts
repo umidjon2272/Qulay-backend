@@ -53,7 +53,7 @@ describe('Voice service', () => {
       const result = await service.createRealtimeSession('owner-a');
       const options = fetchMock.mock.calls[0][1]!;
       const body = JSON.parse(options.body as string);
-      expect(body.session.audio.input.turn_detection).toEqual({ type: 'semantic_vad', eagerness: 'medium', create_response: false, interrupt_response: true });
+      expect(body.session.audio.input.turn_detection).toEqual({ type: 'semantic_vad', eagerness: 'high', create_response: false, interrupt_response: true });
       expect(options.signal).toBeDefined();
       expect(result).toMatchObject({ clientSecret: 'ephemeral-only', enabled: true });
       expect(JSON.stringify(result)).not.toContain('test-only-key');

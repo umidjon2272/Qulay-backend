@@ -47,8 +47,8 @@ export class AiVoiceService {
         model, voice: requestedVoice ?? this.config.get<string>('ai.ttsVoice', 'coral'), input: russian ? text : prepareUzbekSpeech(text),
         response_format: 'wav',
         ...(!model.startsWith('tts-1') ? { instructions: russian
-          ? 'Говорите по-русски естественно, ясно и доброжелательно, в бодром разговорном темпе без затянутых пауз. Сохраняйте имена, даты и суммы, не добавляйте слов.'
-          : 'O‘zbekcha matnni muloyim, tiniq va tabiiy suhbat ohangida, tetik suhbat tezligida ayting. Ismlar, sanalar va asl moliyaviy qiymatlarni o‘zgartirmang. UZS ni so‘m deb ayting. Sun’iy diktor ohangi, ortiqcha pauza va cho‘zishdan saqlaning.' } : {}),
+          ? 'Говорите по-русски естественно и ясно, примерно на 20 процентов быстрее обычного разговорного темпа. Начинайте сразу, делайте очень короткие паузы и не растягивайте слова. Сохраняйте имена, даты и суммы без изменений.'
+          : 'O‘zbekcha matnni tabiiy va tiniq ayting. Odatdagi suhbatdan taxminan 20 foiz tezroq gapiring. Darhol gapirishni boshlang, pauzalarni juda qisqa qiling. Ismlar, sanalar va moliyaviy qiymatlarni o‘zgartirmang. UZS ni so‘m deb ayting. So‘zlarni cho‘zmang va sun’iy diktor ohangidan saqlaning.' } : {}),
       });
       const buffer = Buffer.from(await response.arrayBuffer());
       await this.usage.logVoiceUsage({ userId, model, audioSeconds: Math.max(1, Math.ceil(text.length / 14)) });
@@ -73,7 +73,7 @@ export class AiVoiceService {
         audio: {
           input: {
             transcription: { model: this.config.get<string>('ai.transcribeModel', 'gpt-4o-mini-transcribe'), language: user?.language === 'ru' ? 'ru' : 'uz' },
-            turn_detection: { type: 'semantic_vad', eagerness: 'medium', create_response: false, interrupt_response: true },
+            turn_detection: { type: 'semantic_vad', eagerness: 'high', create_response: false, interrupt_response: true },
           },
           output: { voice: this.config.get<string>('ai.realtimeVoice', 'marin') },
         },
