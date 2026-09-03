@@ -9,6 +9,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { CreateFolderDto, UpdateFolderDto } from './dto/folder.dto';
 import { FileQueryDto } from './dto/file-query.dto';
+import { UpdateFileDto } from './dto/update-file.dto';
 import { FileStorageAdapter, FILE_STORAGE_ADAPTER } from './storage/file-storage-adapter';
 import { ALLOWED_FILE_MIME_TYPES, assertSafeFilename, validateAndSniffMime } from './storage/mime-sniffing';
 import { FileContentExtractionService } from './extractors/file-content-extraction.service';
@@ -54,6 +55,7 @@ export class FilesService {
     const checksum = createHash('sha256').update(file.buffer).digest('hex');
 
     await this.storage.upload({ key: storageKey, body: file.buffer, contentType: mimeType });
+    let stored = false;
     try {
       const created = await this.prisma.userFile.create({
         data: {
@@ -63,10 +65,11 @@ export class FilesService {
         },
         select: FILE_PUBLIC_SELECT,
       });
-      await this.activityLog.record({ userId, action: ACTIVITY_ACTIONS.FILE_UPLOADED, entityType: 'FILE', entityId: created.id, metadata: { fileId: created.id, mimeType, source: FileSource.UPLOAD } });
+      stored = true;
+      await this.activityLog.record({ userId, action: ACTIVITY_ACTIONS.FILE_UPLOADED, entityType: 'FILE', entityId: created.id, metadata: { fileId: created.id, mimeType, source: FileSource.UPLOAD } }).catch(() => undefined);
       return this.extractAndStore(userId, created.id, mimeType, file.buffer);
     } catch (error) {
-      await this.storage.delete(storageKey).catch(() => undefined);
+      if (!stored) await this.storage.delete(storageKey).catch(() => undefined);
       throw error;
     }
   }
@@ -75,7 +78,7 @@ export class FilesService {
     const search = query.search?.trim();
     const where: Prisma.UserFileWhereInput = {
       userId, status: query.status ?? FileStatus.ACTIVE, mimeType: query.mimeType, source: query.source,
-      folderId: query.folderId,
+      folderId: query.folderId === 'root' ? null : query.folderId,
       ...(search ? { OR: [
         { originalName: { contains: search, mode: 'insensitive' } },
         { extension: { contains: search, mode: 'insensitive' } },
@@ -125,19 +128,34 @@ export class FilesService {
     if (!file) throw new NotFoundException('File was not found');
     if (file.source === FileSource.UPLOAD) await this.storage.delete(file.storageKey);
     const deleted = await this.prisma.userFile.update({ where: { id: file.id }, data: { status: FileStatus.DELETED, deletedAt: new Date() }, select: FILE_PUBLIC_SELECT });
-    await this.activityLog.record({ userId, action: ACTIVITY_ACTIONS.FILE_DELETED, entityType: 'FILE', entityId: id, metadata: { fileId: id, mimeType: file.mimeType, source: file.source } });
+    await this.activityLog.record({ userId, action: ACTIVITY_ACTIONS.FILE_DELETED, entityType: 'FILE', entityId: id, metadata: { fileId: id, mimeType: file.mimeType, source: file.source } }).catch(() => undefined);
     return { message: 'File deleted successfully', file: serializeFile(deleted) };
   }
 
   async listFoldersForUser(userId: string) {
-    return this.prisma.fileFolder.findMany({ where: { userId }, orderBy: [{ parentId: 'asc' }, { name: 'asc' }], include: { _count: { select: { files: true, children: true } } } });
+    return this.prisma.fileFolder.findMany({ where: { userId }, orderBy: [{ parentId: 'asc' }, { name: 'asc' }], include: { _count: { select: { files: { where: { status: FileStatus.ACTIVE } }, children: true } } } });
+  }
+
+  async updateForUser(userId: string, id: string, dto: UpdateFileDto) {
+    const file = await this.getForUser(userId, id);
+    if (dto.folderId) await this.getFolderForUser(userId, dto.folderId);
+    if (dto.originalName !== undefined) {
+      assertSafeFilename(dto.originalName);
+      if (extensionOf(dto.originalName) !== file.extension) throw new BadRequestException('File extension cannot be changed');
+    }
+    const updated = await this.prisma.userFile.update({ where: { id: file.id }, data: {
+      originalName: dto.originalName, label: dto.originalName === undefined ? undefined : null,
+      folderId: dto.folderId,
+    }, select: FILE_PUBLIC_SELECT });
+    await this.activityLog.record({ userId, action: 'FILE_UPDATED', entityType: 'FILE', entityId: id }).catch(() => undefined);
+    return serializeFile(updated);
   }
 
   async createFolderForUser(userId: string, dto: CreateFolderDto) {
     if (dto.parentId) await this.getFolderForUser(userId, dto.parentId);
     try {
       const folder = await this.prisma.fileFolder.create({ data: { userId, name: dto.name, parentId: dto.parentId } });
-      await this.activityLog.record({ userId, action: ACTIVITY_ACTIONS.FOLDER_CREATED, entityType: 'FILE_FOLDER', entityId: folder.id });
+      await this.activityLog.record({ userId, action: ACTIVITY_ACTIONS.FOLDER_CREATED, entityType: 'FILE_FOLDER', entityId: folder.id }).catch(() => undefined);
       return folder;
     } catch (error) { throw mapFolderError(error); }
   }
@@ -148,7 +166,7 @@ export class FilesService {
     if (dto.parentId) await this.assertParentAllowed(userId, id, dto.parentId);
     try {
       const updated = await this.prisma.fileFolder.update({ where: { id: folder.id }, data: { name: dto.name, parentId: dto.parentId === undefined ? undefined : dto.parentId } });
-      await this.activityLog.record({ userId, action: ACTIVITY_ACTIONS.FOLDER_UPDATED, entityType: 'FILE_FOLDER', entityId: id });
+      await this.activityLog.record({ userId, action: ACTIVITY_ACTIONS.FOLDER_UPDATED, entityType: 'FILE_FOLDER', entityId: id }).catch(() => undefined);
       return updated;
     } catch (error) { throw mapFolderError(error); }
   }
@@ -161,7 +179,7 @@ export class FilesService {
       this.prisma.userFile.updateMany({ where: { userId, folderId: id }, data: { folderId: null } }),
       this.prisma.fileFolder.delete({ where: { id: folder.id } }),
     ]);
-    await this.activityLog.record({ userId, action: ACTIVITY_ACTIONS.FOLDER_DELETED, entityType: 'FILE_FOLDER', entityId: id });
+    await this.activityLog.record({ userId, action: ACTIVITY_ACTIONS.FOLDER_DELETED, entityType: 'FILE_FOLDER', entityId: id }).catch(() => undefined);
     return { message: 'Folder deleted; contained files moved to root' };
   }
 
@@ -204,7 +222,7 @@ export class FilesService {
       const extractedText = await this.extraction.extract(mimeType, buffer);
       if (!extractedText) throw new Error('Faylda o‘qiladigan matn topilmadi');
       const file = await this.prisma.userFile.update({ where: { id: fileId }, data: { extractionStatus: FileExtractionStatus.READY, extractedText, extractedAt: new Date(), extractionError: null }, select: FILE_PUBLIC_SELECT });
-      await this.activityLog.record({ userId, action: ACTIVITY_ACTIONS.FILE_CONTENT_EXTRACTED, entityType: 'FILE', entityId: fileId, metadata: { mimeType, characters: extractedText.length } });
+      await this.activityLog.record({ userId, action: ACTIVITY_ACTIONS.FILE_CONTENT_EXTRACTED, entityType: 'FILE', entityId: fileId, metadata: { mimeType, characters: extractedText.length } }).catch(() => undefined);
       return serializeFile(file);
     } catch (error) {
       const message = error instanceof Error ? error.message.slice(0, 200) : 'Fayl matnini ajratib bo‘lmadi';

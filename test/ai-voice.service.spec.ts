@@ -40,4 +40,23 @@ describe('Voice service', () => {
     expect(prepareUzbekSpeech(original)).toBe('ikki ming yigirma olti-yil ikki-sentabr kuni besh yuz ming so‘m daromad');
     expect(original).toContain('500 000 UZS');
   });
+  it('keeps Russian speech in Russian without Uzbek numeral rewriting', async () => {
+    prisma.user.findUnique.mockResolvedValueOnce({ language: 'ru' });
+    speak.mockResolvedValue({ arrayBuffer: async () => Buffer.from('audio') });
+    await service.speak('owner-a', 'Доход 500000 UZS');
+    expect(speak).toHaveBeenCalledWith(expect.objectContaining({ input: 'Доход 500000 UZS', instructions: expect.stringContaining('по-русски') }));
+  });
+  it('creates an authenticated, bounded VAD session without enabling automatic actions', async () => {
+    service = new AiVoiceService(new ConfigService({ ai: { apiKey: 'test-only-key', realtimeModel: 'configured-model' } }), usage as any, subscriptions as any, prisma as any);
+    const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue({ ok: true, json: async () => ({ value: 'ephemeral-only', expires_at: 999 }) } as any);
+    try {
+      const result = await service.createRealtimeSession('owner-a');
+      const options = fetchMock.mock.calls[0][1]!;
+      const body = JSON.parse(options.body as string);
+      expect(body.session.audio.input.turn_detection).toEqual({ type: 'semantic_vad', eagerness: 'medium', create_response: false, interrupt_response: true });
+      expect(options.signal).toBeDefined();
+      expect(result).toMatchObject({ clientSecret: 'ephemeral-only', enabled: true });
+      expect(JSON.stringify(result)).not.toContain('test-only-key');
+    } finally { fetchMock.mockRestore(); }
+  });
 });

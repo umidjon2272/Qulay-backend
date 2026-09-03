@@ -16,6 +16,7 @@ export class NotificationSchedulerService {
       title: `Vazifa: ${task.title}`,
       message: 'Vazifa muddati keldi.',
       entityType: 'TASK', entityId: task.id, scheduledAt: task.dueDate,
+      metadata: { systemLabel: 'TASK', originalTitle: task.title, systemBody: true },
     }] : []);
   }
 
@@ -25,6 +26,7 @@ export class NotificationSchedulerService {
       title: `Eslatma: ${reminder.title}`,
       message: reminder.description || 'Eslatma vaqti keldi.',
       entityType: 'REMINDER', entityId: reminder.id, scheduledAt: reminder.remindAt,
+      metadata: { systemLabel: 'REMINDER', originalTitle: reminder.title, systemBody: !reminder.description },
     }] : []);
   }
 
@@ -39,14 +41,14 @@ export class NotificationSchedulerService {
         title: `Uchrashuv yaqin: ${meeting.title}`,
         message: `${minutes} daqiqadan keyin uchrashuv boshlanadi.`,
         entityType: 'MEETING', entityId: meeting.id, scheduledAt: reminderAt,
-        metadata: { kind: 'REMINDER', minutesBefore: minutes },
+        metadata: { kind: 'REMINDER', minutesBefore: minutes, systemLabel: 'MEETING_SOON', originalTitle: meeting.title, systemBody: true },
       });
       drafts.push({
         type: NotificationType.MEETING,
         title: `Uchrashuv: ${meeting.title}`,
         message: 'Uchrashuv boshlanmoqda.',
         entityType: 'MEETING', entityId: meeting.id, scheduledAt: meeting.startsAt,
-        metadata: { kind: 'START' },
+        metadata: { kind: 'START', systemLabel: 'MEETING', originalTitle: meeting.title, systemBody: true },
       });
     }
     return this.replaceEntityNotifications(userId, 'MEETING', meeting.id, drafts);

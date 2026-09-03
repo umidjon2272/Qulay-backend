@@ -7,7 +7,7 @@ describe('AI conversation to durable action flow', () => {
   const toolCall = (name: string, input: unknown) => ({ message: { role: 'assistant', content: null, tool_calls: [{ id: 'call-1', function: { name, arguments: JSON.stringify(input) } }] }, model: 'test', usage: { inputTokens: 1, outputTokens: 1 } });
   beforeEach(() => {
     actions = [];
-    prisma = {
+    prisma = { agentPreference: { findUnique: jest.fn().mockResolvedValue(null) },
       user: { findUnique: jest.fn().mockResolvedValue(user) }, userMemory: { findMany: jest.fn().mockResolvedValue([]) },
       conversation: { findFirst: jest.fn().mockResolvedValue({ id: 'conversation-1' }), update: jest.fn().mockResolvedValue({}) },
       message: { create: jest.fn().mockResolvedValue({}), findMany: jest.fn().mockResolvedValue([{ role: 'USER', content: 'bugunga 500 min daromad qush' }]) },
@@ -39,6 +39,29 @@ describe('AI conversation to durable action flow', () => {
     expect(execution.execute).toHaveBeenCalledTimes(2);
     expect(actions[0].status).toBe('EXECUTED');
   });
+  it('does not persist temporary transcript text', async () => {
+    prisma.agentPreference.findUnique.mockResolvedValue({ saveHistory: false });
+    prisma.conversation.findFirst.mockResolvedValue({ id: 'conversation-1', isTemporary: true });
+    provider.complete.mockResolvedValue({ message: { role: 'assistant', content: 'Salom!' }, model: 'test', usage: { inputTokens: 1, outputTokens: 1 } });
+    await service.chat('user-a', { conversationId: 'conversation-1', message: 'salom' });
+    expect(prisma.message.create).not.toHaveBeenCalled();
+    expect(prisma.message.findMany).not.toHaveBeenCalled();
+  });
+  it('does not persist temporary confirmation text after process cache loss', async () => {
+    prisma.conversation.findFirst.mockResolvedValue({ id: 'conversation-1', isTemporary: true });
+    actions.push({ id: 'a', userId: 'user-a', conversationId: 'conversation-1', status: 'PENDING', expiresAt: new Date(Date.now() + 60000), input: {}, toolName: 'create_task', idempotencyKey: 'key' });
+    execution.execute.mockResolvedValue({ status: 'success', data: { id: 'task-1' } });
+    expect((await service.confirm('user-a', 'a', true)).status).toBe('success');
+    expect(prisma.message.create).not.toHaveBeenCalled();
+  });
+  it('does not repeat an identical failed tool request in the same turn', async () => {
+    provider.complete.mockResolvedValueOnce(toolCall('search_telegram_chats', { query: 'missing' }))
+      .mockResolvedValueOnce(toolCall('search_telegram_chats', { query: 'missing' }))
+      .mockResolvedValueOnce({ message: { role: 'assistant', content: 'Qidiruvni bajarib bo‘lmadi.' }, model: 'test', usage: { inputTokens: 1, outputTokens: 1 } });
+    execution.execute.mockRejectedValue(new Error('transport down'));
+    await service.chat('user-a', { conversationId: 'conversation-1', message: 'missing odamni top' });
+    expect(execution.execute).toHaveBeenCalledTimes(1);
+  });
   it('returns one recipient-specific result and reuses it without sending Telegram twice', async () => {
     actions.push({ id: 'telegram-action', userId: 'user-a', conversationId: 'conversation-1', status: 'PENDING', expiresAt: new Date(Date.now() + 60000), input: { peerId: 'user:1', text: 'Salom' }, preview: { recipient: 'Aziz (@aziz)', text: 'Salom' }, toolName: 'send_telegram_message', idempotencyKey: 'telegram-key' });
     execution.execute.mockResolvedValue({ status: 'success', data: { messageId: 'message-1' } });
@@ -51,7 +74,7 @@ describe('AI conversation to durable action flow', () => {
   it('takes recent history and supports normal advice without tools or confirmation', async () => {
     provider.complete.mockResolvedValue({ message: { role: 'assistant', content: 'Reklamani kichik auditoriyada sinang.' }, model: 'test', usage: { inputTokens: 1, outputTokens: 1 } });
     await service.chat('user-a', { conversationId: 'conversation-1', message: 'reklamani qanday yaxshilay' });
-    expect(prisma.message.findMany).toHaveBeenCalledWith(expect.objectContaining({ orderBy: { createdAt: 'desc' } }));
+    expect(prisma.message.findMany).toHaveBeenCalledWith(expect.objectContaining({ orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] }));
     const prompt = provider.complete.mock.calls[0][0][0].content;
     expect(prompt).toContain('Asia/Tashkent'); expect(prompt).toContain('Bugun=');
     expect(execution.execute).not.toHaveBeenCalled();

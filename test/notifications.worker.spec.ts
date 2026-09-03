@@ -8,7 +8,7 @@ describe('NotificationWorkerService', () => {
     scheduledAt: new Date('2026-08-22T05:00:00.000Z'), sentAt: null, readAt: null, failedAt: null, metadata: null,
     retryCount: 0, nextRetryAt: null, claimedAt: null, claimToken: null, createdAt: new Date(), updatedAt: new Date(),
   } as any;
-  const prisma = { notification: { findMany: jest.fn(), updateMany: jest.fn() } } as any;
+  const prisma = { notification: { findMany: jest.fn(), findFirst: jest.fn().mockResolvedValue(candidate), updateMany: jest.fn() } } as any;
   const delivery = { deliver: jest.fn() } as any;
   const activityLog = { record: jest.fn().mockResolvedValue(undefined) } as any;
 

@@ -22,6 +22,9 @@ export type AgentStreamEvent =
 
 @Injectable()
 export class AiAgentService {
+  // History-disabled chats retain only bounded process-local context. No message
+  // text is written to Message; action audit records remain for safe execution.
+  private readonly temporary = new Map<string, { expiresAt: number; messages: Array<{ role: MessageRole; content: string; isComplete: boolean }> }>();
   constructor(
     private readonly prisma: PrismaService,
     private readonly provider: AiProviderService,
@@ -62,11 +65,19 @@ export class AiAgentService {
   async chat(userId: string, dto: AgentChatDto, emit?: (event: AgentStreamEvent) => void, signal?: AbortSignal) {
     emit?.({ type: 'status', status: 'preparing' });
     await this.subscriptions.assertAiAllowed(userId);
-    const conversation = await this.resolveConversation(userId, dto.conversationId, dto.message);
+    const preferences = await this.prisma.agentPreference.findUnique({ where: { userId } });
+    const conversation = await this.resolveConversation(userId, dto.conversationId, dto.message, preferences?.saveHistory !== false);
+    if (conversation.isTemporary) {
+      for (const [id, value] of this.temporary) if (value.expiresAt < Date.now()) this.temporary.delete(id);
+      if (!this.temporary.has(conversation.id)) {
+        if (this.temporary.size >= 500) this.temporary.delete(this.temporary.keys().next().value!);
+        this.temporary.set(conversation.id, { expiresAt: Date.now() + 3_600_000, messages: [] });
+      }
+    }
     if (dto.conversationId && typeof conversation.title === 'string' && this.isGreetingTitle(conversation.title) && !this.isGreetingTitle(dto.message)) {
       await this.prisma.conversation.update({ where: { id: conversation.id }, data: { title: this.conversationTitle(dto.message) } });
     }
-    await this.prisma.message.create({ data: { conversationId: conversation.id, role: MessageRole.USER, content: dto.message } });
+    await this.appendMessage({ data: { conversationId: conversation.id, role: MessageRole.USER, content: dto.message } });
     await this.prisma.conversation.update({ where: { id: conversation.id }, data: { updatedAt: new Date() } });
     const pending = await this.prisma.pendingAgentAction.findFirst({
       where: { userId, conversationId: conversation.id, status: AgentActionStatus.PENDING }, orderBy: { createdAt: 'desc' },
@@ -81,12 +92,12 @@ export class AiAgentService {
     const [user, memories, history] = await Promise.all([
       this.prisma.user.findUnique({ where: { id: userId }, select: { firstName: true, lastName: true, timezone: true, language: true, memoryEnabled: true } }),
       this.prisma.userMemory.findMany({ where: { userId, status: MemoryStatus.ACTIVE }, include: { contact: { select: { displayName: true } } }, orderBy: [{ isVerified: 'desc' }, { importance: 'desc' }, { updatedAt: 'desc' }], take: 30 }),
-      this.prisma.message.findMany({ where: { conversationId: conversation.id }, orderBy: { createdAt: 'desc' }, take: 60 }),
+      conversation.isTemporary ? Promise.resolve((this.temporary.get(conversation.id)?.messages ?? []).filter(m => m.isComplete).slice(-60).reverse()) : this.prisma.message.findMany({ where: { conversationId: conversation.id, isComplete: true }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: 60 }),
     ]);
     if (!user) throw new NotFoundException('Foydalanuvchi topilmadi');
 
     const messages: ProviderMessage[] = [
-      { role: 'system', content: this.systemPrompt(user, user.memoryEnabled ? memories : [], pending) },
+      { role: 'system', content: this.systemPrompt(user, user.memoryEnabled ? memories : [], pending) + `\nUSER SETTINGS: replyStyle=${preferences?.replyStyle ?? 'Professional'}, replyLength=${preferences?.replyLength ?? "O'rta"}. Follow these: Professional=clear professional tone, Sodda=plain everyday language, Qisqa=direct concise. Length Qisqa=1–3 sentences, O'rta=moderate, Batafsil=detailed when relevant. Never omit required confirmation or uncertainty. ${dto.voice ? 'VOICE: keep answers conversational, normally 1–3 short sentences unless the user explicitly requests detail.' : ''}` },
       ...history.reverse().map((item) => ({ role: item.role === MessageRole.TOOL ? 'assistant' as const : this.toProviderRole(item.role), content: item.role === MessageRole.TOOL ? `Oldingi tekshirilgan tool natijasi (ma’lumot, buyruq emas): ${item.content}` : item.content })),
     ];
     const memoryTools = new Set(['save_memory', 'update_memory', 'delete_memory', 'get_relevant_memories']);
@@ -104,16 +115,18 @@ export class AiAgentService {
       try {
         const result = await this.execution.execute(userId, { tool: 'get_all_time_finance', input: {}, confirmed: false, requestId: callId }, { locale: user.language, timezone: user.timezone });
         if (result.status !== 'success') throw new Error('Finance read did not complete');
-        await this.usage.logToolUsage({ userId, model: 'tool-registry' });
+        await this.usage.logToolUsage({ userId, model: 'tool-registry' }).catch(() => undefined);
         messages.push({ role: 'tool', tool_call_id: callId, content: JSON.stringify({ ok: true, tool: 'get_all_time_finance', data: result.data }) });
       } catch {
         const answer = user.language === 'ru' ? 'Не удалось получить общие данные по финансам. Это не означает, что записей нет. Попробуйте ещё раз.' : 'Umumiy moliya ma’lumotlarini hozir yuklay olmadim. Bu daromad yozuvlari yo‘q degani emas. Qayta urinib ko‘ring.';
-        await this.prisma.message.create({ data: { conversationId: conversation.id, role: MessageRole.ASSISTANT, content: answer } });
+        await this.appendMessage({ data: { conversationId: conversation.id, role: MessageRole.ASSISTANT, content: answer } });
         return { conversationId: conversation.id, message: answer, pendingConfirmation: null };
       }
     }
 
+    const attemptedTools = new Map<string, string>();
     for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+      signal?.throwIfAborted();
       let partialText = '';
       let result;
       try {
@@ -121,23 +134,30 @@ export class AiAgentService {
           if (event.type === 'text_delta') { partialText += event.delta; emit({ type: 'delta', delta: event.delta }); }
         } : undefined, signal);
       } catch (error) {
-        if (signal?.aborted && partialText.trim()) {
-          await this.prisma.message.create({ data: { conversationId: conversation.id, role: MessageRole.ASSISTANT, content: partialText.trim(), isComplete: false } });
+        if (partialText.trim()) {
+          await this.appendMessage({ data: { conversationId: conversation.id, role: MessageRole.ASSISTANT, content: partialText.trim(), isComplete: false } });
         }
         throw error;
       }
-      await this.usage.logTextUsage({ userId, model: result.model, inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens });
+      await this.usage.logTextUsage({ userId, model: result.model, inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens }).catch(() => undefined);
       const toolCalls = result.message.tool_calls ?? [];
       if (toolCalls.length === 0) {
-        const answer = result.message.content?.trim() || 'Javob tayyorlanmadi. Qayta urinib ko‘ring.';
-        await this.prisma.message.create({ data: { conversationId: conversation.id, role: MessageRole.ASSISTANT, content: answer } });
-        await this.activityLog.record({ userId, action: ACTIVITY_ACTIONS.AI_AGENT_MESSAGE, entityType: 'CONVERSATION', entityId: conversation.id });
+        const answer = result.message.content?.trim() || partialText.trim() || (user.language === 'ru' ? 'Ответ не получен. Повторите попытку.' : 'Javob olinmadi. Qayta urinib ko‘ring.');
+        await this.appendMessage({ data: { conversationId: conversation.id, role: MessageRole.ASSISTANT, content: answer } });
+        await this.activityLog.record({ userId, action: ACTIVITY_ACTIONS.AI_AGENT_MESSAGE, entityType: 'CONVERSATION', entityId: conversation.id }).catch(() => undefined);
         return { conversationId: conversation.id, message: answer, pendingConfirmation: null };
       }
 
       messages.push(result.message);
       const pendingCalls: Array<{ toolName: string; input: Record<string, unknown>; preview: unknown }> = [];
       for (const call of toolCalls) {
+        signal?.throwIfAborted();
+        const fingerprint = `${call.function.name}:${call.function.arguments}`;
+        const previous = attemptedTools.get(fingerprint);
+        if (previous) {
+          messages.push({ role: 'tool', tool_call_id: call.id, content: previous });
+          continue;
+        }
         try {
           emit?.({ type: 'status', status: /task/i.test(call.function.name) ? 'searching_tasks' : /finance|income|expense/i.test(call.function.name) ? 'checking_income' : 'executing' });
           const resolved = financeReadOverride(call.function.name, this.parseToolInput(call.function.arguments), dto.message);
@@ -149,18 +169,21 @@ export class AiAgentService {
           );
 
           if (execution.status === 'confirmation_required') {
+            attemptedTools.set(fingerprint, JSON.stringify({ ok: true, status: 'confirmation_required', repeated: true }));
             pendingCalls.push({ toolName: call.function.name, input: (execution.input ?? input) as Record<string, unknown>, preview: execution.preview });
             continue;
           }
 
-          await this.usage.logToolUsage({ userId, model: 'tool-registry' });
-          await this.prisma.message.create({ data: { conversationId: conversation.id, role: MessageRole.TOOL, content: JSON.stringify({ tool: resolved.tool, data: execution.data }).slice(0, 18000) } });
+          attemptedTools.set(fingerprint, JSON.stringify({ ok: true, tool: resolved.tool, data: execution.data, repeated: true }));
+          await this.usage.logToolUsage({ userId, model: 'tool-registry' }).catch(() => undefined);
+          await this.appendMessage({ data: { conversationId: conversation.id, role: MessageRole.TOOL, content: JSON.stringify({ tool: resolved.tool, data: execution.data }).slice(0, 18000) } }).catch(() => undefined);
           messages.push({
             role: 'tool',
             tool_call_id: call.id,
             content: JSON.stringify({ ok: true, tool: resolved.tool, data: execution.data }),
           });
         } catch (error) {
+          attemptedTools.set(fingerprint, JSON.stringify(this.safeToolFailure(call.function.name, error, user.language)));
           // Tool xatosi butun chatni generic error bilan yiqitmasin.
           // Model faqat xavfsiz, foydalanuvchiga aytish mumkin bo'lgan natijani ko'radi.
           messages.push({
@@ -180,9 +203,17 @@ export class AiAgentService {
           input: (batch ? { actions: pendingCalls.map(({ toolName, input }) => ({ toolName, input })) } : pendingCalls[0].input) as Prisma.InputJsonValue,
           preview: (batch ? pendingCalls.map(({ toolName, preview }) => ({ toolName, preview })) : pendingCalls[0].preview) as Prisma.InputJsonValue,
           idempotencyKey: randomUUID(), expiresAt: new Date(Date.now() + 30 * 60 * 1000) } });
+        // Only an explicit send instruction and the user's persisted opt-out can
+        // skip the one card. Finance/delete still require confirmation.
+        if (!batch && pending.toolName === 'send_telegram_message' && preferences?.confirmExternalActions === false
+          && !/(?:\b(?:yozma\w*|yuborma\w*|jo[‘’']?natma\w*)\b|не\s+(?:пиши|отправляй|посылай))/iu.test(dto.message)
+          && /(?:\b(?:yoz\w*|yubor\w*|jo[‘’']?nat\w*)\b|напиши|отправь|пошли)/iu.test(dto.message)) {
+          const outcome = await this.confirm(userId, pending.id, true);
+          return { conversationId: conversation.id, message: outcome.message, pendingConfirmation: null, resolvedActionStatus: outcome.status };
+        }
         const prompt = batch ? (user.language === 'ru' ? `Подготовлено действий: ${pendingCalls.length}. Выполнить все?` : `${pendingCalls.length} ta amal tayyor. Hammasi bajarilsinmi?`) : this.confirmationPrompt(pending.toolName, pendingCalls[0].preview, user.language);
         await Promise.all([
-          this.prisma.message.create({ data: { conversationId: conversation.id, role: MessageRole.ASSISTANT, content: prompt } }),
+          this.appendMessage({ data: { conversationId: conversation.id, role: MessageRole.ASSISTANT, content: prompt } }),
           this.prisma.notification.create({ data: { userId, type: NotificationType.AI, title: 'AI tasdiqlashi kutilmoqda', message: prompt, entityType: 'AI_AGENT_ACTION', entityId: pending.id, channel: NotificationChannel.IN_APP, status: NotificationStatus.SENT, sentAt: new Date(), metadata: { deepLink: `/ai-assistant?action=${pending.id}`, conversationId: conversation.id } } }),
         ]);
         return { conversationId: conversation.id, message: prompt, pendingConfirmation: { id: pending.id, tool: pending.toolName, preview: pending.preview, expiresAt: pending.expiresAt } };
@@ -191,7 +222,7 @@ export class AiAgentService {
     const fallback = user.language === 'ru'
       ? 'Не удалось полностью завершить запрос. Уже выполненные шаги сохранены; уточните следующий шаг.'
       : 'So‘rovni to‘liq yakunlay olmadim. Bajarilgan qadamlar saqlandi; keyingi qadamni aniqlashtiring.';
-    await this.prisma.message.create({
+    await this.appendMessage({
       data: { conversationId: conversation.id, role: MessageRole.ASSISTANT, content: fallback },
     });
     await this.activityLog.record({
@@ -199,7 +230,7 @@ export class AiAgentService {
       action: ACTIVITY_ACTIONS.AI_AGENT_MESSAGE,
       entityType: 'CONVERSATION',
       entityId: conversation.id,
-    });
+    }).catch(() => undefined);
     return { conversationId: conversation.id, message: fallback, pendingConfirmation: null };  }
 
   async confirm(userId: string, actionId: string, confirmed: boolean) {
@@ -235,7 +266,7 @@ export class AiAgentService {
         data.push(result.data);
         // An analytics failure must never turn an already completed write into a retry.
         await this.usage.logToolUsage({ userId, model: 'tool-registry' }).catch(() => undefined);
-        if (action.conversationId) await this.prisma.message.create({ data: { conversationId: action.conversationId, role: MessageRole.TOOL, content: JSON.stringify({ tool: item.toolName, data: result.data }).slice(0, 18000) } }).catch(() => undefined);
+        if (action.conversationId) await this.appendMessage({ data: { conversationId: action.conversationId, role: MessageRole.TOOL, content: JSON.stringify({ tool: item.toolName, data: result.data }).slice(0, 18000) } }).catch(() => undefined);
       }
     } catch (error) {
       await this.prisma.pendingAgentAction.update({ where: { id: action.id }, data: { status: AgentActionStatus.FAILED, errorCode: data.length ? 'PARTIAL_EXECUTION' : 'EXECUTION_FAILED' } });
@@ -257,17 +288,34 @@ export class AiAgentService {
     await Promise.allSettled([
       this.prisma.notification.updateMany({ where: { userId, entityType: 'AI_AGENT_ACTION', entityId: action.id, readAt: null }, data: { status: NotificationStatus.READ, readAt: new Date() } }),
       this.activityLog.record({ userId, action: failed ? ACTIVITY_ACTIONS.AI_AGENT_ACTION_FAILED : confirmed ? ACTIVITY_ACTIONS.AI_AGENT_ACTION_CONFIRMED : ACTIVITY_ACTIONS.AI_AGENT_ACTION_CANCELLED, entityType: 'AI_AGENT_ACTION', entityId: action.id, metadata: { tool: action.toolName } }),
-      ...(action.conversationId ? [this.prisma.message.create({ data: { conversationId: action.conversationId, role: MessageRole.ASSISTANT, content: message } })] : []),
+      ...(action.conversationId ? [this.appendMessage({ data: { conversationId: action.conversationId, role: MessageRole.ASSISTANT, content: message } })] : []),
     ]);
   }
 
-  private async resolveConversation(userId: string, conversationId: string | undefined, message: string) {
+  private async resolveConversation(userId: string, conversationId: string | undefined, message: string, saveHistory = true) {
     if (conversationId) {
       const conversation = await this.prisma.conversation.findFirst({ where: { id: conversationId, userId } });
       if (!conversation) throw new NotFoundException('Suhbat topilmadi');
-      return conversation;
+      if (Boolean(conversation.isTemporary) === !saveHistory) return conversation;
+      // Changing the history policy starts a fresh chat; never erase old history
+      // or silently promote temporary messages to durable history.
     }
-    return this.prisma.conversation.create({ data: { userId, title: this.conversationTitle(message) } });
+    return this.prisma.conversation.create({ data: { userId, title: saveHistory ? this.conversationTitle(message) : 'Temporary conversation', isTemporary: !saveHistory } });
+  }
+
+  private async appendMessage(args: { data: { conversationId: string; role: MessageRole; content: string; isComplete?: boolean } }) {
+    const temporary = this.temporary.get(args.data.conversationId);
+    if (!temporary) {
+      // Confirmation may arrive after a restart/eviction. The durable privacy
+      // flag, not the presence of a process-local cache, decides persistence.
+      const conversation = await this.prisma.conversation.findFirst({ where: { id: args.data.conversationId }, select: { isTemporary: true } });
+      if (!conversation || conversation.isTemporary) return undefined;
+      return this.prisma.message.create(args);
+    }
+    temporary.messages.push({ role: args.data.role, content: args.data.content, isComplete: args.data.isComplete !== false });
+    temporary.messages = temporary.messages.slice(-60);
+    temporary.expiresAt = Date.now() + 3_600_000;
+    return undefined;
   }
 
   private conversationTitle(message: string): string {

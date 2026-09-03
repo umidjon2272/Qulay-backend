@@ -1,8 +1,13 @@
-import { IsBoolean, IsOptional, IsString, Matches } from 'class-validator';
+import { IsBoolean, IsIn, IsOptional, IsString, Matches } from 'class-validator';
 
 const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 export class UpdateAgentSettingsDto {
+  @IsOptional() @IsIn(['Professional', 'Sodda', 'Qisqa']) replyStyle?: string;
+  @IsOptional() @IsIn(['Qisqa', "O'rta", 'Batafsil']) replyLength?: string;
+  @IsOptional() @IsBoolean() saveHistory?: boolean;
+  @IsOptional() @IsBoolean() confirmExternalActions?: boolean;
+  @IsOptional() @IsBoolean() voiceReply?: boolean;
   @IsOptional() @IsBoolean() morningBriefingEnabled?: boolean;
   @IsOptional() @IsString() @Matches(TIME_PATTERN) morningBriefingTime?: string;
 

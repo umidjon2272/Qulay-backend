@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { MessageRole, Prisma } from '@prisma/client';
 import { paginationMeta, paginationSkip } from '../common/dto/pagination-query.dto';
 import { PrismaService } from '../prisma/prisma.service';
@@ -32,7 +32,8 @@ export class MessagesService {
   }
 
   async createForConversation(userId: string, conversationId: string, dto: CreateMessageDto) {
-    await this.getConversationForUser(userId, conversationId);
+    const conversation = await this.getConversationForUser(userId, conversationId);
+    if (conversation.isTemporary) throw new BadRequestException('Temporary chat history cannot be stored');
     return this.prisma.$transaction(async (transaction) => {
       const message = await transaction.message.create({
         data: {

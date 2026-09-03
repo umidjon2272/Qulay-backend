@@ -4,6 +4,7 @@ import { IsBoolean, IsOptional, IsString, IsUUID, MaxLength, MinLength } from 'c
 const trim = ({ value }: { value: unknown }) => typeof value === 'string' ? value.trim() : value;
 
 export class AgentChatDto {
+  @IsOptional() @IsBoolean() voice?: boolean;
   @Transform(trim)
   @IsString()
   @MinLength(1)

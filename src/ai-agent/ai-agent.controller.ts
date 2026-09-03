@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Query, Req, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, HttpException, Param, ParseUUIDPipe, Post, Query, Req, Res, UseGuards } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { AuthenticatedUser } from '../auth/types/jwt-payload.type';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -43,7 +43,7 @@ export class AiAgentController {
       const result = await this.agent.chat(user.sub, dto, send, abort.signal);
       send({ type: 'complete', result: { ...result, timing: { firstDeltaMs, totalMs: Math.round(performance.now() - startedAt) } } });
     } catch (error) {
-      if (!abort.signal.aborted) send({ type: 'error', message: error instanceof Error ? error.message : 'AI oqimida xatolik yuz berdi.' });
+      if (!abort.signal.aborted) send({ type: 'error', message: error instanceof HttpException ? error.message : 'AI xizmatida vaqtinchalik xatolik. Qayta urinib ko‘ring.' });
     } finally {
       if (!res.writableEnded) res.end();
     }

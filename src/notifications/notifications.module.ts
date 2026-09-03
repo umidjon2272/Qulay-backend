@@ -9,11 +9,13 @@ import { WebPushNotificationAdapter } from './adapters/web-push-notification.ada
 import { NotificationSchedulerService } from './notification-scheduler.service';
 import { NotificationService } from './notification.service';
 import { NotificationWorkerService } from './notification-worker.service';
+import { WebPushService } from './web-push.service';
 
 @Module({
   imports: [PrismaModule, ActivityLogModule, TelegramModule],
   controllers: [NotificationsController, NotificationCronController],
   providers: [
+    WebPushService,
     NotificationService,
     NotificationSchedulerService,
     NotificationWorkerService,

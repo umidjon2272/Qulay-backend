@@ -58,6 +58,7 @@ export default () => ({
     from: process.env.EMAIL_FROM,
   },
   monitoring: { sentryDsn: process.env.SENTRY_DSN },
+  webPush: { subject: process.env.WEB_PUSH_SUBJECT, publicKey: process.env.WEB_PUSH_PUBLIC_KEY, privateKey: process.env.WEB_PUSH_PRIVATE_KEY },
   notificationCronSecret: process.env.NOTIFICATION_CRON_SECRET,
   agentCronSecret: process.env.AGENT_CRON_SECRET ?? process.env.NOTIFICATION_CRON_SECRET,
 });

@@ -5,6 +5,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { UpdateAgentSettingsDto } from './dto/update-agent-settings.dto';
 
 const DEFAULTS = {
+  replyStyle: 'Professional', replyLength: "O'rta", saveHistory: true, confirmExternalActions: true, voiceReply: true,
   morningBriefingEnabled: true,
   morningBriefingTime: '08:00',
   eveningSummaryEnabled: true,
@@ -37,7 +38,7 @@ export class AgentSettingsService {
       create: { userId, ...DEFAULTS, ...dto },
       update: { ...dto },
     });
-    await this.activityLog.record({ userId, action: ACTIVITY_ACTIONS.AGENT_PREFERENCE_UPDATED, entityType: 'AGENT_PREFERENCE', entityId: preference.id });
+    await this.activityLog.record({ userId, action: ACTIVITY_ACTIONS.AGENT_PREFERENCE_UPDATED, entityType: 'AGENT_PREFERENCE', entityId: preference.id }).catch(() => undefined);
     return preference;
   }
 }

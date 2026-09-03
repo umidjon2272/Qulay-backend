@@ -44,11 +44,11 @@ export function normalizeToolInput(tool: string, input: Record<string, unknown>,
   for (const key of Object.keys(normalized)) if (normalized[key] === null) delete normalized[key];
   if (tool === 'create_finance_transaction' || tool === 'update_finance_transaction') {
     if (normalized.amount !== undefined) normalized.amount = normalizeAmount(normalized.amount);
-    const types: Record<string, string> = { daromad: 'INCOME', kirim: 'INCOME', prihod: 'INCOME', income: 'INCOME', xarajat: 'EXPENSE', chiqim: 'EXPENSE', rashod: 'EXPENSE', expense: 'EXPENSE' };
+    const types: Record<string, string> = { daromad: 'INCOME', kirim: 'INCOME', prihod: 'INCOME', income: 'INCOME', доход: 'INCOME', приход: 'INCOME', xarajat: 'EXPENSE', chiqim: 'EXPENSE', rashod: 'EXPENSE', expense: 'EXPENSE', расход: 'EXPENSE' };
     if (typeof normalized.type === 'string') normalized.type = types[normalized.type.toLowerCase()] ?? normalized.type.toUpperCase();
     if (typeof normalized.currency === 'string') {
       const currency = normalized.currency.toUpperCase().replace(/[‘’'ʻ]/g, '');
-      normalized.currency = ['SOM', 'SOМ', 'SUM', 'СУМ'].includes(currency) ? 'UZS' : currency;
+      normalized.currency = ['SOM', 'SOМ', 'SUM', 'СУМ'].includes(currency) ? 'UZS' : ['DOLLAR', 'DOLLARS', 'ДОЛЛАР', '$'].includes(currency) ? 'USD' : currency;
     }
     if (normalized.date !== undefined && normalized.transactionDate === undefined) { normalized.transactionDate = normalized.date; delete normalized.date; }
     if (normalized.transactionDate === undefined && tool === 'create_finance_transaction') normalized.transactionDate = now.toISOString();

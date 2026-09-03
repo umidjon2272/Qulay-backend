@@ -3,6 +3,7 @@ import { NotificationService } from '../src/notifications/notification.service';
 
 describe('NotificationService', () => {
   const prisma = {
+    user: { findUnique: jest.fn().mockResolvedValue({ language: 'uz' }) },
     notification: {
       findMany: jest.fn(), count: jest.fn(), findFirst: jest.fn(), update: jest.fn(), updateMany: jest.fn(), deleteMany: jest.fn(),
     },
@@ -18,7 +19,7 @@ describe('NotificationService', () => {
     await service.listForUser('user-a', { page: 1, limit: 20 } as any);
     await service.unreadCount('user-a');
     expect(prisma.notification.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ userId: 'user-a' }) }));
-    expect(prisma.notification.count).toHaveBeenLastCalledWith({ where: { userId: 'user-a', status: NotificationStatus.SENT, readAt: null } });
+    expect(prisma.notification.count).toHaveBeenLastCalledWith({ where: { userId: 'user-a', channel: 'IN_APP', status: NotificationStatus.SENT, readAt: null } });
   });
 
   it('marks one notification and all notifications read with user ownership', async () => {
@@ -28,7 +29,7 @@ describe('NotificationService', () => {
     await service.markRead('user-a', 'n1');
     await service.readAll('user-a');
     expect(prisma.notification.findFirst).toHaveBeenCalledWith({ where: { id: 'n1', userId: 'user-a' } });
-    expect(prisma.notification.updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: { userId: 'user-a', status: NotificationStatus.SENT, readAt: null } }));
+    expect(prisma.notification.updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: { userId: 'user-a', channel: 'IN_APP', status: NotificationStatus.SENT, readAt: null } }));
   });
 
   it('upserts preferences without accepting a user id from a body', async () => {

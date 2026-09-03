@@ -1,9 +1,10 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { NotificationStatus, Prisma } from '@prisma/client';
+import { NotificationChannel, NotificationStatus, Prisma } from '@prisma/client';
 import { paginationMeta, paginationSkip } from '../common/dto/pagination-query.dto';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationQueryDto } from './dto/notification-query.dto';
 import { UpdateNotificationPreferenceDto } from './dto/update-notification-preference.dto';
+import { localizeNotification } from './notification-localization';
 
 @Injectable()
 export class NotificationService {
@@ -12,11 +13,12 @@ export class NotificationService {
   async listForUser(userId: string, query: NotificationQueryDto) {
     const where: Prisma.NotificationWhereInput = {
       userId,
+      channel: NotificationChannel.IN_APP,
       type: query.type,
       status: query.unreadOnly ? NotificationStatus.SENT : { in: [NotificationStatus.SENT, NotificationStatus.READ] },
       ...(query.unreadOnly ? { readAt: null } : {}),
     };
-    const [items, total] = await Promise.all([
+    const [items, total, user] = await Promise.all([
       this.prisma.notification.findMany({
         where,
         orderBy: [{ createdAt: 'desc' }],
@@ -24,13 +26,14 @@ export class NotificationService {
         take: query.limit,
       }),
       this.prisma.notification.count({ where }),
+      this.prisma.user.findUnique({ where: { id: userId }, select: { language: true } }),
     ]);
-    return { items, meta: paginationMeta(query.page, query.limit, total) };
+    return { items: items.map(item => localizeNotification(item, user?.language)), meta: paginationMeta(query.page, query.limit, total) };
   }
 
   unreadCount(userId: string) {
     return this.prisma.notification.count({
-      where: { userId, status: NotificationStatus.SENT, readAt: null },
+      where: { userId, channel: NotificationChannel.IN_APP, status: NotificationStatus.SENT, readAt: null },
     }).then((count) => ({ count }));
   }
 
@@ -45,7 +48,7 @@ export class NotificationService {
 
   readAll(userId: string) {
     return this.prisma.notification.updateMany({
-      where: { userId, status: NotificationStatus.SENT, readAt: null },
+      where: { userId, channel: NotificationChannel.IN_APP, status: NotificationStatus.SENT, readAt: null },
       data: { status: NotificationStatus.READ, readAt: new Date() },
     }).then(({ count }) => ({ count }));
   }

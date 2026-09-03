@@ -39,12 +39,16 @@ export class AiVoiceService {
 
   async speak(userId: string, text: string, requestedVoice?: 'marin' | 'cedar') {
     await this.subscriptions.assertVoiceAllowed(userId);
+    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { language: true } });
+    const russian = user?.language === 'ru';
     const model = this.config.get<string>('ai.ttsModel', 'gpt-4o-mini-tts');
     try {
       const response = await this.client().audio.speech.create({
-        model, voice: requestedVoice ?? this.config.get<string>('ai.ttsVoice', 'coral'), input: prepareUzbekSpeech(text),
+        model, voice: requestedVoice ?? this.config.get<string>('ai.ttsVoice', 'coral'), input: russian ? text : prepareUzbekSpeech(text),
         response_format: 'wav',
-        ...(!model.startsWith('tts-1') ? { instructions: 'O‘zbekcha matnni muloyim, tiniq va tabiiy suhbat ohangida, normal tezlikda ayting. Ismlar, sanalar va asl moliyaviy qiymatlarni o‘zgartirmang. Qisqartmalarni ma’nosiga mos o‘qing; UZS ni so‘m deb ayting. Sun’iy diktor ohangidan va keraksiz cho‘zishdan saqlaning.' } : {}),
+        ...(!model.startsWith('tts-1') ? { instructions: russian
+          ? 'Говорите по-русски естественно, ясно и доброжелательно, в бодром разговорном темпе без затянутых пауз. Сохраняйте имена, даты и суммы, не добавляйте слов.'
+          : 'O‘zbekcha matnni muloyim, tiniq va tabiiy suhbat ohangida, tetik suhbat tezligida ayting. Ismlar, sanalar va asl moliyaviy qiymatlarni o‘zgartirmang. UZS ni so‘m deb ayting. Sun’iy diktor ohangi, ortiqcha pauza va cho‘zishdan saqlaning.' } : {}),
       });
       const buffer = Buffer.from(await response.arrayBuffer());
       await this.usage.logVoiceUsage({ userId, model, audioSeconds: Math.max(1, Math.ceil(text.length / 14)) });
@@ -58,23 +62,25 @@ export class AiVoiceService {
     if (!model) return { enabled: false as const };
     const apiKey = this.config.get<string>('ai.apiKey');
     if (!apiKey) throw new ServiceUnavailableException('Ovozli AI hali sozlanmagan.');
+    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { language: true } });
     const response = await fetch(`${this.config.get<string>('ai.baseUrl', 'https://api.openai.com/v1')}/realtime/client_secrets`, {
       method: 'POST',
+      signal: AbortSignal.timeout(12_000),
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', 'OpenAI-Safety-Identifier': createHash('sha256').update(userId).digest('hex') },
       body: JSON.stringify({ session: {
         type: 'realtime', model,
         instructions: 'Transcribe the user accurately. Do not answer or execute actions; Qulay AI server agent handles every response and tool.',
         audio: {
           input: {
-            transcription: { model: this.config.get<string>('ai.transcribeModel', 'gpt-4o-mini-transcribe'), language: 'uz' },
-            turn_detection: { type: 'semantic_vad', eagerness: 'low', create_response: false, interrupt_response: true },
+            transcription: { model: this.config.get<string>('ai.transcribeModel', 'gpt-4o-mini-transcribe'), language: user?.language === 'ru' ? 'ru' : 'uz' },
+            turn_detection: { type: 'semantic_vad', eagerness: 'medium', create_response: false, interrupt_response: true },
           },
           output: { voice: this.config.get<string>('ai.realtimeVoice', 'marin') },
         },
       } }),
-    });
+    }).catch(() => { throw new ServiceUnavailableException('Realtime ovoz xizmatiga ulanib bo‘lmadi.'); });
     if (!response.ok) throw new ServiceUnavailableException('Realtime ovoz sessiyasi ochilmadi.');
-    const data = await response.json() as { value?: string; expires_at?: number };
+    const data = await response.json().catch(() => { throw new ServiceUnavailableException('Realtime sessiya javobi olinmadi.'); }) as { value?: string; expires_at?: number };
     if (!data.value) throw new ServiceUnavailableException('Realtime sessiya kaliti olinmadi.');
     return { enabled: true as const, clientSecret: data.value, expiresAt: data.expires_at, model, voice: this.config.get<string>('ai.realtimeVoice', 'marin') };
   }

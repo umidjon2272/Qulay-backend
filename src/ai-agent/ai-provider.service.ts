@@ -57,7 +57,8 @@ export class AiProviderService {
     const model = this.config.get<string>('ai.model', 'gpt-5-mini');
     const baseURL = this.config.get<string>('ai.baseUrl', 'https://api.openai.com/v1');
     const timeout = this.config.get<number>('ai.timeoutMs', 45_000);
-    const client = new OpenAI({ apiKey, baseURL, timeout, maxRetries: 2 });
+    // Retry connection/429/5xx errors before streaming starts, not an executed tool.
+    const client = new OpenAI({ apiKey, baseURL, timeout, maxRetries: 1 });
 
     try {
       const input = {
@@ -67,6 +68,7 @@ export class AiProviderService {
         tool_choice: 'auto' as const,
         store: false,
         include: ['reasoning.encrypted_content'] as Array<'reasoning.encrypted_content'>,
+        ...(/^gpt-5(?:-|$)/.test(model) ? { reasoning: { effort: 'low' as const } } : {}),
       };
       let response: OpenAIResponse;
       if (onEvent) {
@@ -75,7 +77,10 @@ export class AiProviderService {
         for await (const event of stream) {
           if (event.type === 'response.created') onEvent({ type: 'response_started' });
           if (event.type === 'response.output_text.delta' && event.delta) onEvent({ type: 'text_delta', delta: event.delta });
-          if (event.type === 'response.completed') completed = event.response;
+          if (event.type === 'response.completed') { completed = event.response; break; }
+          if (event.type === 'response.failed' || event.type === 'response.incomplete' || event.type === 'error') {
+            throw new ServiceUnavailableException('AI oqimi yakunlanmadi.');
+          }
         }
         if (!completed) throw new ServiceUnavailableException('AI oqimi yakunlanmadi.');
         response = completed;
@@ -83,7 +88,7 @@ export class AiProviderService {
         response = await client.responses.create({ ...input, stream: false }, { signal });
       }
       if (response.error) {
-        this.logger.error(`OpenAI Responses API returned an error: ${response.error.code} ${response.error.message}`);
+        this.logger.error(`OpenAI Responses API error code=${response.error.code}`);
         throw new ServiceUnavailableException('AI xizmatida vaqtinchalik xatolik.');
       }
       return {
@@ -113,19 +118,13 @@ export class AiProviderService {
     }
     if (error instanceof OpenAI.APIError) {
       this.logger.error(
-        `OpenAI API error status=${error.status ?? 'unknown'} name=${error.name} code=${error.code ?? 'null'} `
-        + `type=${error.type ?? 'null'} param=${error.param ?? 'null'} message=${redactSecrets(error.message ?? '')}`,
+        `OpenAI API error status=${error.status ?? 'unknown'}`,
       );
       return new ServiceUnavailableException('AI xizmatida vaqtinchalik xatolik.');
     }
-    this.logger.error(`Unexpected AI provider error: ${redactSecrets(error instanceof Error ? error.message : String(error))}`);
+    this.logger.error('Unexpected AI provider error (details withheld)');
     return new ServiceUnavailableException('AI xizmatiga ulanib bo‘lmadi. Keyinroq qayta urinib ko‘ring.');
   }
-}
-
-/** Defense in depth: never let a raw API key reach the logs, even via an unexpected third-party error message. */
-function redactSecrets(message: string): string {
-  return message.replace(/sk-[A-Za-z0-9_-]{10,}/g, '[REDACTED]');
 }
 
 function toResponseInput(messages: ProviderMessage[]): ResponseInputItem[] {
@@ -167,5 +166,11 @@ function toProviderMessage(response: OpenAIResponse): ProviderMessage {
       tool_calls: functionCalls.map((call) => ({ id: call.call_id, type: 'function', function: { name: call.name, arguments: call.arguments } })),
     };
   }
-  return { role: 'assistant', content: response.output_text || null };
+  // output_text is an SDK convenience getter on non-streamed responses. Raw
+  // response.completed events contain output[].content[] instead. Reading only
+  // output_text discarded a valid streamed answer and replaced it with fallback.
+  const text = response.output.flatMap(item => item.type === 'message'
+    ? item.content.flatMap(part => part.type === 'output_text' ? [part.text] : part.type === 'refusal' ? [part.refusal] : [])
+    : []).join('');
+  return { role: 'assistant', content: text || response.output_text || null };
 }

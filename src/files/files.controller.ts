@@ -9,6 +9,7 @@ import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CreateFolderDto, UpdateFolderDto } from './dto/folder.dto';
 import { FileQueryDto } from './dto/file-query.dto';
 import { UploadFileDto } from './dto/upload-file.dto';
+import { UpdateFileDto } from './dto/update-file.dto';
 import { FilesService } from './files.service';
 
 @Controller('files')
@@ -52,6 +53,9 @@ export class FilesController {
 
   @Delete(':id')
   delete(@CurrentUser() user: AuthenticatedUser, @Param('id', new ParseUUIDPipe({ version: '4' })) id: string) { return this.files.deleteForUser(user.sub, id); }
+
+  @Patch(':id')
+  update(@CurrentUser() user: AuthenticatedUser, @Param('id', new ParseUUIDPipe({ version: '4' })) id: string, @Body() dto: UpdateFileDto) { return this.files.updateForUser(user.sub, id, dto); }
 }
 
 function contentDisposition(originalName: string): string {

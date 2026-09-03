@@ -233,6 +233,7 @@ model User {
   telegramConnection     TelegramConnection?
   googleConnection       GoogleConnection?
   notifications          Notification[]
+  pushSubscriptions      PushSubscription[]
   notificationPreference NotificationPreference?
   files                  UserFile[]
   fileFolders            FileFolder[]
@@ -464,6 +465,7 @@ model Conversation {
   id                  String               @id @default(uuid()) @db.Uuid
   userId              String               @db.Uuid
   title               String               @db.VarChar(200)
+  isTemporary         Boolean              @default(false)
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
   user                User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -709,6 +711,11 @@ model PendingAgentAction {
 model AgentPreference {
   id                     String   @id @default(uuid()) @db.Uuid
   userId                 String   @unique @db.Uuid
+  replyStyle             String   @default("Professional")
+  replyLength            String   @default("O'rta")
+  saveHistory            Boolean  @default(true)
+  confirmExternalActions Boolean  @default(true)
+  voiceReply             Boolean  @default(true)
   morningBriefingEnabled Boolean  @default(true)
   morningBriefingTime    String   @default("08:00") @db.VarChar(5)
   eveningSummaryEnabled  Boolean  @default(true)
@@ -805,6 +812,7 @@ model Notification {
   createdAt   DateTime            @default(now())
   updatedAt   DateTime            @updatedAt
   user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  pushReceipts PushReceipt[]
 
   @@index([userId])
   @@index([userId, readAt])
@@ -812,6 +820,28 @@ model Notification {
   @@index([entityType, entityId])
   @@index([userId, entityType, entityId, channel, status])
   @@index([createdAt, status])
+}
+
+model PushSubscription {
+  id String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  endpoint String @unique @db.VarChar(2048)
+  p256dh String @db.VarChar(100)
+  auth String @db.VarChar(30)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  receipts PushReceipt[]
+  @@index([userId])
+}
+
+model PushReceipt {
+  notificationId String @db.Uuid
+  subscriptionId String @db.Uuid
+  sentAt DateTime @default(now())
+  notification Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  subscription PushSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  @@id([notificationId, subscriptionId])
 }
 
 model NotificationPreference {

@@ -60,7 +60,8 @@ describe('AiProviderService', () => {
     });
 
     it('forwards real provider deltas and returns the completed response', async () => {
-      const completed = { error: null, output: [], output_text: 'Salom', usage: { input_tokens: 2, output_tokens: 1 }, model: 'gpt-5-mini' };
+      // Real wire response: no SDK-only output_text convenience field.
+      const completed = { error: null, output: [{ type: 'message', content: [{ type: 'output_text', text: 'Salom' }] }], usage: { input_tokens: 2, output_tokens: 1 }, model: 'gpt-5-mini' };
       responsesCreateMock.mockResolvedValue({
         async *[Symbol.asyncIterator]() {
           yield { type: 'response.created' };
@@ -162,7 +163,7 @@ describe('AiProviderService', () => {
       await expect(service.complete([], [])).rejects.toMatchObject({ message: 'AI xizmatida vaqtinchalik xatolik.' });
     });
 
-    it('logs the precise 400 invalid-request reason (status/code/type/param/message) without leaking secrets', async () => {
+    it('logs the status without retaining arbitrary upstream error payloads', async () => {
       const errorSpy = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
       responsesCreateMock.mockRejectedValue(new OpenAI.BadRequestError(400, {
         message: 'Invalid value for \'temperature\': must be between 0 and 2. Key sk-should-not-appear-1234567890 is unrelated.',
@@ -174,12 +175,9 @@ describe('AiProviderService', () => {
       await expect(service.complete([], [])).rejects.toMatchObject({ message: 'AI xizmatida vaqtinchalik xatolik.' });
       const logged = errorSpy.mock.calls.map((args) => String(args[0])).join('\n');
       expect(logged).toContain('status=400');
-      expect(logged).toContain('code=invalid_value');
-      expect(logged).toContain('type=invalid_request_error');
-      expect(logged).toContain('param=temperature');
-      expect(logged).toContain('must be between 0 and 2');
+      expect(logged).not.toContain('must be between 0 and 2');
       expect(logged).not.toContain('sk-should-not-appear-1234567890');
-      expect(logged).toContain('[REDACTED]');
+      expect(logged).not.toContain('message=');
       errorSpy.mockRestore();
     });
 
@@ -190,7 +188,7 @@ describe('AiProviderService', () => {
       await service.complete([], []).catch(() => undefined);
       const logged = errorSpy.mock.calls.map((args) => String(args[0])).join('\n');
       expect(logged).not.toContain('sk-abcdefghijklmno1234567890');
-      expect(logged).toContain('[REDACTED]');
+      expect(logged).toContain('details withheld');
       errorSpy.mockRestore();
     });
 

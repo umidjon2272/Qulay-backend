@@ -7,11 +7,17 @@ import { NotificationQueryDto } from './dto/notification-query.dto';
 import { UpdateNotificationPreferenceDto } from './dto/update-notification-preference.dto';
 import { NotificationService } from './notification.service';
 import { NotificationWorkerService } from './notification-worker.service';
+import { WebPushService } from './web-push.service';
+import { PushEndpointDto, PushSubscriptionDto } from './dto/push-subscription.dto';
 
 @Controller('notifications')
 @UseGuards(JwtAuthGuard)
 export class NotificationsController {
-  constructor(private readonly notifications: NotificationService) {}
+  constructor(private readonly notifications: NotificationService, private readonly push: WebPushService) {}
+
+  @Get('push') pushStatus(@CurrentUser() user: AuthenticatedUser) { return this.push.status(user.sub); }
+  @Post('push') subscribePush(@CurrentUser() user: AuthenticatedUser, @Body() dto: PushSubscriptionDto) { return this.push.subscribe(user.sub, dto); }
+  @Delete('push') unsubscribePush(@CurrentUser() user: AuthenticatedUser, @Body() dto: PushEndpointDto) { return this.push.unsubscribe(user.sub, dto.endpoint); }
 
   @Get() list(@CurrentUser() user: AuthenticatedUser, @Query() query: NotificationQueryDto) { return this.notifications.listForUser(user.sub, query); }
   @Get('unread-count') unreadCount(@CurrentUser() user: AuthenticatedUser) { return this.notifications.unreadCount(user.sub); }

@@ -13,6 +13,7 @@ export class ConversationsService {
   async listForUser(userId: string, query: ConversationQueryDto) {
     const where: Prisma.ConversationWhereInput = {
       userId,
+      isTemporary: false,
       ...(query.search
         ? { title: { contains: query.search.trim(), mode: 'insensitive' } }
         : {}),
@@ -21,7 +22,7 @@ export class ConversationsService {
       this.prisma.conversation.findMany({
         where,
         include: { _count: { select: { messages: { where: { role: { in: ['USER', 'ASSISTANT'] } } } } } },
-        orderBy: { updatedAt: 'desc' },
+        orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
         skip: paginationSkip(query.page, query.limit),
         take: query.limit,
       }),

@@ -11,8 +11,12 @@ describe('Notification delivery adapters', () => {
     expect(telegram.sendSelfNotification).toHaveBeenCalledWith('user-a', 'Title\nMessage');
   });
 
-  it('keeps web push as an explicit placeholder', async () => {
-    const adapter = new WebPushNotificationAdapter();
-    await expect(adapter.deliver({} as any)).rejects.toThrow('Web push delivery is not configured yet');
+  it('delegates web push to the configured, ownership-scoped delivery service', async () => {
+    const push = { deliver: jest.fn().mockResolvedValue(undefined) } as any;
+    const adapter = new WebPushNotificationAdapter(push);
+    const notification = { userId: 'owner', id: 'notice' } as any;
+    await adapter.deliver(notification);
+    expect(push.deliver).toHaveBeenCalledWith(notification);
+    expect(adapter.channel).toBe(NotificationChannel.WEB_PUSH);
   });
 });

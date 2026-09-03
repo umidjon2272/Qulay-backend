@@ -68,6 +68,9 @@ export const envValidationSchema = Joi.object({
   RESEND_API_KEY: Joi.string().min(10).optional(),
   EMAIL_FROM: Joi.string().min(3).optional(),
   SENTRY_DSN: Joi.string().uri().optional(),
+  WEB_PUSH_SUBJECT: Joi.string().uri({ scheme: ['https', 'mailto'] }).optional(),
+  WEB_PUSH_PUBLIC_KEY: Joi.string().pattern(/^[A-Za-z0-9_-]{87}$/).optional(),
+  WEB_PUSH_PRIVATE_KEY: Joi.string().pattern(/^[A-Za-z0-9_-]{43}$/).optional(),
   NOTIFICATION_CRON_SECRET: Joi.string().min(32).optional(),
   AGENT_CRON_SECRET: Joi.string().min(32).optional(),
 
@@ -80,6 +83,8 @@ export const envValidationSchema = Joi.object({
   S3_ACCESS_KEY_ID: Joi.string().optional(),
   S3_SECRET_ACCESS_KEY: Joi.string().optional(),
 }).custom((value, helpers) => {
+  const pushKeys = ['WEB_PUSH_SUBJECT', 'WEB_PUSH_PUBLIC_KEY', 'WEB_PUSH_PRIVATE_KEY'];
+  if (pushKeys.some(key => value[key] !== undefined) && pushKeys.some(key => value[key] === undefined)) return helpers.error('push.partial');
   const telegramResult = validateOptionalIntegrationGroup(value, telegramEnvKeys, 'telegram', helpers);
   if (telegramResult !== value) return telegramResult;
 
@@ -94,6 +99,7 @@ export const envValidationSchema = Joi.object({
   if (value.FILE_STORAGE_PROVIDER === 's3' && (!value.S3_ENDPOINT || !value.S3_BUCKET || !value.S3_ACCESS_KEY_ID || !value.S3_SECRET_ACCESS_KEY)) return helpers.error('storage.s3.missing');
   return value;
 }).messages({
+  'push.partial': 'Web Push requires WEB_PUSH_SUBJECT, WEB_PUSH_PUBLIC_KEY and WEB_PUSH_PRIVATE_KEY together',
   'integration.telegram.partial': 'Telegram integration requires all of: TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_SESSION_ENCRYPTION_KEY. Missing: {{#missing}}',
   'integration.google.partial': 'Google integration requires all of: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI, GOOGLE_TOKEN_ENCRYPTION_KEY. Missing: {{#missing}}',
   'jwt.secrets.same': 'JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must be different',
