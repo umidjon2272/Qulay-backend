@@ -67,7 +67,11 @@ export class FilesService {
       });
       stored = true;
       await this.activityLog.record({ userId, action: ACTIVITY_ACTIONS.FILE_UPLOADED, entityType: 'FILE', entityId: created.id, metadata: { fileId: created.id, mimeType, source: FileSource.UPLOAD } }).catch(() => undefined);
-      return this.extractAndStore(userId, created.id, mimeType, file.buffer);
+      // Upload response must not wait for CPU-heavy PDF/DOCX/XLSX extraction.
+      // The file is immediately visible with PENDING status and extraction
+      // finishes in the background.
+      void this.extractAndStore(userId, created.id, mimeType, file.buffer).catch(() => undefined);
+      return serializeFile(created);
     } catch (error) {
       if (!stored) await this.storage.delete(storageKey).catch(() => undefined);
       throw error;
@@ -102,44 +106,58 @@ async searchForUser(
   > = {},
 ) {
   const cleanQuery = query.trim();
-
-  const runSearch = (search: string) =>
-    this.listForUser(userId, {
-      page: 1,
-      limit: filters.limit ?? 20,
-      search,
-      mimeType: filters.mimeType,
-      folderId: filters.folderId,
-      source: filters.source,
-    });
-
-  const direct = await runSearch(cleanQuery);
-
-  if (direct.meta.total > 0) {
-    return direct;
-  }
-
+  const limit = filters.limit ?? 20;
   const variants = [
+    cleanQuery,
     cleanQuery.replace(/\s+/g, '.'),
     cleanQuery.replace(/\s+/g, ''),
     cleanQuery.replace(/[._-]+/g, ' '),
-  ].filter(
-    (value, index, array) =>
-      value &&
-      value !== cleanQuery &&
-      array.indexOf(value) === index,
-  );
+  ].filter((value, index, array) => value && array.indexOf(value) === index);
 
-  for (const variant of variants) {
-    const result = await runSearch(variant);
+  const baseWhere: Prisma.UserFileWhereInput = {
+    userId,
+    status: FileStatus.ACTIVE,
+    mimeType: filters.mimeType,
+    source: filters.source,
+    folderId: filters.folderId === 'root' ? null : filters.folderId,
+  };
 
-    if (result.meta.total > 0) {
-      return result;
-    }
+  // Fast path: metadata fields are much cheaper than scanning extractedText.
+  const metadataWhere: Prisma.UserFileWhereInput = {
+    ...baseWhere,
+    OR: variants.flatMap((search) => [
+      { originalName: { contains: search, mode: 'insensitive' as const } },
+      { extension: { contains: search, mode: 'insensitive' as const } },
+      { label: { contains: search, mode: 'insensitive' as const } },
+      { folder: { name: { contains: search, mode: 'insensitive' as const } } },
+    ]),
+  };
+  const metadataItems = await this.prisma.userFile.findMany({
+    where: metadataWhere,
+    select: FILE_PUBLIC_SELECT,
+    orderBy: { createdAt: 'desc' },
+    take: limit,
+  });
+  if (metadataItems.length) {
+    return { items: metadataItems.map(serializeFile), meta: paginationMeta(1, limit, metadataItems.length) };
   }
 
-  return direct;
+  // Slow path only when metadata did not match: one extracted-text scan, not
+  // multiple scans for punctuation variants.
+  const contentWhere: Prisma.UserFileWhereInput = {
+    ...baseWhere,
+    extractionStatus: FileExtractionStatus.READY,
+    extractedText: { contains: cleanQuery, mode: 'insensitive' },
+  };
+  const contentItems = await this.prisma.userFile.findMany({
+    where: contentWhere,
+    select: FILE_PUBLIC_SELECT,
+    orderBy: { createdAt: 'desc' },
+    take: limit,
+  });
+  return { items: contentItems.map(serializeFile), meta: paginationMeta(1, limit, contentItems.length) };
 }
+
 
   async getForUser(userId: string, id: string) {
     const file = await this.prisma.userFile.findFirst({ where: { id, userId, status: { not: FileStatus.DELETED } }, select: FILE_PUBLIC_SELECT });

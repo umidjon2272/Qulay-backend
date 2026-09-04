@@ -8,10 +8,16 @@ export type EffectivePlan = {
   limits: { aiCreditsPerMonth: number; toolActionsPerMonth: number; voiceMinutesPerMonth: number; files: number; storageMb: number; memories: number };
 };
 
+type EntitlementInfo = { subscription: any; trialActive: boolean; effectiveTier: SubscriptionTier; plan: EffectivePlan; canUseAi: boolean };
+
 @Injectable()
 export class SubscriptionsService {
   private readonly planCache = new Map<SubscriptionTier, { expiresAt: number; plan: EffectivePlan }>();
+  private readonly entitlementCache = new Map<string, { expiresAt: number; value: EntitlementInfo }>();
+  private readonly usageGateCache = new Map<string, { expiresAt: number; used: number }>();
   private readonly planCacheMs = 60_000;
+  private readonly entitlementCacheMs = 30_000;
+  private readonly usageGateCacheMs = 3_000;
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -54,21 +60,26 @@ export class SubscriptionsService {
   async assertAiAllowed(userId: string) {
     const info = await this.entitlementForUser(userId);
     if (!info.canUseAi) throw new ForbiddenException('SUBSCRIPTION_REQUIRED');
-    const monthStart = this.monthStart();
-    const aggregate = await this.prisma.aiUsage.aggregate({ where: { userId, type: UsageType.TEXT, createdAt: { gte: monthStart } }, _sum: { creditUnits: true } });
-    if ((aggregate._sum.creditUnits ?? 0) >= info.plan.limits.aiCreditsPerMonth) throw new ForbiddenException('AI_CREDIT_LIMIT_REACHED');
+    const used = await this.cachedUsageGate(`text:${userId}`, async () => {
+      const aggregate = await this.prisma.aiUsage.aggregate({ where: { userId, type: UsageType.TEXT, createdAt: { gte: this.monthStart() } }, _sum: { creditUnits: true } });
+      return aggregate._sum.creditUnits ?? 0;
+    });
+    if (used >= info.plan.limits.aiCreditsPerMonth) throw new ForbiddenException('AI_CREDIT_LIMIT_REACHED');
   }
 
   async assertToolAllowed(userId: string) {
     const info = await this.entitlementForUser(userId);
-    const used = await this.prisma.aiUsage.count({ where: { userId, type: UsageType.TOOL, createdAt: { gte: this.monthStart() } } });
+    const used = await this.cachedUsageGate(`tool:${userId}`, () => this.prisma.aiUsage.count({ where: { userId, type: UsageType.TOOL, createdAt: { gte: this.monthStart() } } }));
     if (used >= info.plan.limits.toolActionsPerMonth) throw new ForbiddenException('TOOL_ACTION_LIMIT_REACHED');
   }
 
   async assertVoiceAllowed(userId: string) {
     const info = await this.entitlementForUser(userId);
-    const aggregate = await this.prisma.aiUsage.aggregate({ where: { userId, type: UsageType.VOICE, createdAt: { gte: this.monthStart() } }, _sum: { audioSeconds: true } });
-    const usedMinutes = Math.ceil((aggregate._sum.audioSeconds ?? 0) / 60);
+    const usedSeconds = await this.cachedUsageGate(`voice:${userId}`, async () => {
+      const aggregate = await this.prisma.aiUsage.aggregate({ where: { userId, type: UsageType.VOICE, createdAt: { gte: this.monthStart() } }, _sum: { audioSeconds: true } });
+      return aggregate._sum.audioSeconds ?? 0;
+    });
+    const usedMinutes = Math.ceil(usedSeconds / 60);
     if (usedMinutes >= info.plan.limits.voiceMinutesPerMonth) throw new ForbiddenException('VOICE_LIMIT_REACHED');
   }
 
@@ -104,7 +115,9 @@ export class SubscriptionsService {
     if (!user) throw new NotFoundException('USER_NOT_FOUND');
     const plan = await this.getPlan(tier);
     const currentPeriodStart = new Date(); const currentPeriodEnd = new Date(currentPeriodStart); currentPeriodEnd.setUTCMonth(currentPeriodEnd.getUTCMonth() + 1);
-    return this.prisma.userSubscription.upsert({ where: { userId }, create: { userId, tier, status, currentPeriodStart, currentPeriodEnd, entitlementSnapshot: plan as unknown as Prisma.InputJsonValue }, update: { tier, status, currentPeriodStart, currentPeriodEnd, trialEndsAt: null, entitlementSnapshot: plan as unknown as Prisma.InputJsonValue } });
+    const result = await this.prisma.userSubscription.upsert({ where: { userId }, create: { userId, tier, status, currentPeriodStart, currentPeriodEnd, entitlementSnapshot: plan as unknown as Prisma.InputJsonValue }, update: { tier, status, currentPeriodStart, currentPeriodEnd, trialEndsAt: null, entitlementSnapshot: plan as unknown as Prisma.InputJsonValue } });
+    this.entitlementCache.delete(userId);
+    return result;
   }
 
   private monthStart() {
@@ -113,6 +126,14 @@ export class SubscriptionsService {
   }
 
   private async entitlementForUser(userId: string) {
+    const cached = this.entitlementCache.get(userId);
+    if (cached && cached.expiresAt > Date.now()) return cached.value;
+    const value = await this.buildEntitlementForUser(userId);
+    this.entitlementCache.set(userId, { expiresAt: Date.now() + this.entitlementCacheMs, value });
+    return value;
+  }
+
+  private async buildEntitlementForUser(userId: string): Promise<EntitlementInfo> {
     const subscription = await this.ensureForUser(userId);
     const trialActive = subscription.status === SubscriptionStatus.TRIALING && Boolean(subscription.trialEndsAt && subscription.trialEndsAt > new Date());
     const effectiveTier = trialActive ? SubscriptionTier.PRO : subscription.tier;
@@ -121,6 +142,14 @@ export class SubscriptionsService {
       : await this.getPlan(effectiveTier);
     const canUseAi = trialActive || subscription.status === SubscriptionStatus.ACTIVE || subscription.tier === SubscriptionTier.STARTER;
     return { subscription, trialActive, effectiveTier, plan, canUseAi };
+  }
+
+  private async cachedUsageGate(key: string, load: () => Promise<number>): Promise<number> {
+    const cached = this.usageGateCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) return cached.used;
+    const used = await load();
+    this.usageGateCache.set(key, { expiresAt: Date.now() + this.usageGateCacheMs, used });
+    return used;
   }
 
   private async ensureForUser(userId: string) {

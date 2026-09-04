@@ -11,7 +11,7 @@ export class NotificationWorkerService implements OnModuleInit, OnModuleDestroy 
   private timer?: NodeJS.Timeout;
   private running = false;
   private readonly batchSize = 50;
-  private readonly intervalMs = 15_000;
+  private readonly intervalMs = 5_000;
   private readonly leaseMs = 120_000;
   private readonly maxRetries = 3;
 

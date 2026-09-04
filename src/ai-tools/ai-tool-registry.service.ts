@@ -330,7 +330,7 @@ export class AIToolRegistryService {
 
     this.register(this.base<SearchContactsToolInput, unknown>({
       name: 'search_contacts', description:
-        'Read extracted text from one exact owned file. Always obtain the real fileId from list_files or search_files first. Never invent file IDs.', category: AIToolCategory.CONTACT,
+        'Search contacts owned by the authenticated user by name, phone, email or Telegram username. Use this before contact updates or when resolving a person mentioned by name. Never invent contact IDs.', category: AIToolCategory.CONTACT,
       sideEffect: 'READ', validate: SearchContactsToolInput, inputSchema: schema({ query: { type: 'string' } }, ['query']),
       execute: async (context, input) => {
         const result = await this.contactsService.listForUser(context.userId, { search: input.query, page: 1, limit: input.limit ?? 20 } as ContactQueryDto);
