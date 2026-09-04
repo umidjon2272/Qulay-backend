@@ -51,8 +51,8 @@ export class AiVoiceService {
         model, voice: requestedVoice ?? this.config.get<string>('ai.ttsVoice', 'coral'), input: russian ? text : prepareUzbekSpeech(text),
         response_format: 'wav',
         ...(!model.startsWith('tts-1') ? { instructions: russian
-          ? 'Говорите по-русски естественно и ясно, примерно на 20 процентов быстрее обычного разговорного темпа. Начинайте сразу, делайте очень короткие паузы и не растягивайте слова. Сохраняйте имена, даты и суммы без изменений.'
-          : 'O‘zbekcha matnni tabiiy va tiniq ayting. Odatdagi suhbatdan taxminan 20 foiz tezroq gapiring. Darhol gapirishni boshlang, pauzalarni juda qisqa qiling. Ismlar, sanalar va moliyaviy qiymatlarni o‘zgartirmang. UZS ni so‘m deb ayting. So‘zlarni cho‘zmang va sun’iy diktor ohangidan saqlaning.' } : {}),
+          ? 'Говорите по-русски естественно, быстро и разговорно. Темп должен быть примерно на 35–40 процентов быстрее обычной спокойной речи. Начинайте сразу. Не растягивайте гласные и окончания, не превращайте «привет» в протяжное слово. Между фразами делайте только очень короткие естественные паузы; не оставляйте секундных пауз после точек и запятых. Не используйте медленный дикторский тон. Сохраняйте имена, даты и суммы без изменений.'
+          : 'O‘zbekcha matnni tabiiy, tez va ravon suhbat ohangida ayting. Odatdagi sokin suhbatdan taxminan 35–40 foiz tezroq gapiring. Darhol boshlang. So‘z va unlilarni hech qachon cho‘zmang: masalan, «salom»ni «salooom» demang. Gaplar, nuqta va vergullar orasida faqat juda qisqa tabiiy pauza qiling; bir soniyalik yoki undan uzun tanaffus qilmang. Sekin diktor ohangida gapirmang. Ismlar, sanalar va moliyaviy qiymatlarni o‘zgartirmang. UZS ni so‘m deb ayting.' } : {}),
       });
       const buffer = Buffer.from(await response.arrayBuffer());
       void this.usage.logVoiceUsage({ userId, model, audioSeconds: Math.max(1, Math.ceil(text.length / 14)) }).catch(() => undefined);
@@ -86,7 +86,7 @@ export class AiVoiceService {
                 : 'O‘zbekcha kundalik suhbat. Sheva va tez aytilgan gapni tabiiy matnga yozing; ism, sana, summa, so‘m, ming, million va buyruqlarni aniq saqlang.',
             },
             // Fast command mode: commit the turn shortly after the user stops talking.
-            turn_detection: { type: 'server_vad', threshold: 0.42, prefix_padding_ms: 220, silence_duration_ms: 300, create_response: false, interrupt_response: true },
+            turn_detection: { type: 'server_vad', threshold: 0.40, prefix_padding_ms: 180, silence_duration_ms: 240, create_response: false, interrupt_response: true },
           },
           output: { voice: this.config.get<string>('ai.realtimeVoice', 'marin') },
         },
