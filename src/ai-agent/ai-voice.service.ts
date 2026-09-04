@@ -24,22 +24,26 @@ export class AiVoiceService {
     const mime = file.mimetype.split(';')[0];
     const ext = extensions[mime];
     if (!ext) throw new BadRequestException('Ovoz formati qo‘llab-quvvatlanmaydi.');
-    await this.subscriptions.assertVoiceAllowed(userId);
-    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { language: true } });
+    const [, user] = await Promise.all([
+      this.subscriptions.assertVoiceAllowed(userId),
+      this.prisma.user.findUnique({ where: { id: userId }, select: { language: true } }),
+    ]);
     const model = this.config.get<string>('ai.transcribeModel', 'gpt-4o-mini-transcribe');
     try {
       const result = await this.client().audio.transcriptions.create({
         model, file: await toFile(file.buffer, `voice.${ext}`, { type: mime }), response_format: 'json',
         prompt: user?.language === 'ru' ? 'Русская речь. Запишите только услышанные слова, сохраните имена, числа и валюты.' : 'O‘zbekcha nutq. Faqat eshitilgan gapni yozing; ismlar, summalar, so‘m, ming, million va sanalarni saqlang. Jimlikda hech narsa qo‘shmang.',
       });
-      await this.usage.logVoiceUsage({ userId, model, audioSeconds: Math.ceil(durationSeconds) });
+      void this.usage.logVoiceUsage({ userId, model, audioSeconds: Math.ceil(durationSeconds) }).catch(() => undefined);
       return { text: result.text.trim() };
     } catch (error) { throw this.safeError(error); }
   }
 
   async speak(userId: string, text: string, requestedVoice?: 'marin' | 'cedar') {
-    await this.subscriptions.assertVoiceAllowed(userId);
-    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { language: true } });
+    const [, user] = await Promise.all([
+      this.subscriptions.assertVoiceAllowed(userId),
+      this.prisma.user.findUnique({ where: { id: userId }, select: { language: true } }),
+    ]);
     const russian = user?.language === 'ru';
     const model = this.config.get<string>('ai.ttsModel', 'gpt-4o-mini-tts');
     try {
@@ -51,18 +55,20 @@ export class AiVoiceService {
           : 'O‘zbekcha matnni tabiiy va tiniq ayting. Odatdagi suhbatdan taxminan 20 foiz tezroq gapiring. Darhol gapirishni boshlang, pauzalarni juda qisqa qiling. Ismlar, sanalar va moliyaviy qiymatlarni o‘zgartirmang. UZS ni so‘m deb ayting. So‘zlarni cho‘zmang va sun’iy diktor ohangidan saqlaning.' } : {}),
       });
       const buffer = Buffer.from(await response.arrayBuffer());
-      await this.usage.logVoiceUsage({ userId, model, audioSeconds: Math.max(1, Math.ceil(text.length / 14)) });
+      void this.usage.logVoiceUsage({ userId, model, audioSeconds: Math.max(1, Math.ceil(text.length / 14)) }).catch(() => undefined);
       return { audio: buffer.toString('base64'), mimeType: 'audio/wav' };
     } catch (error) { throw this.safeError(error); }
   }
 
   async createRealtimeSession(userId: string) {
-    await this.subscriptions.assertVoiceAllowed(userId);
     const model = this.config.get<string>('ai.realtimeModel');
     if (!model) return { enabled: false as const };
     const apiKey = this.config.get<string>('ai.apiKey');
     if (!apiKey) throw new ServiceUnavailableException('Ovozli AI hali sozlanmagan.');
-    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { language: true } });
+    const [, user] = await Promise.all([
+      this.subscriptions.assertVoiceAllowed(userId),
+      this.prisma.user.findUnique({ where: { id: userId }, select: { language: true } }),
+    ]);
     const response = await fetch(`${this.config.get<string>('ai.baseUrl', 'https://api.openai.com/v1')}/realtime/client_secrets`, {
       method: 'POST',
       signal: AbortSignal.timeout(12_000),
@@ -72,8 +78,15 @@ export class AiVoiceService {
         instructions: 'Transcribe the user accurately. Do not answer or execute actions; Qulay AI server agent handles every response and tool.',
         audio: {
           input: {
-            transcription: { model: this.config.get<string>('ai.transcribeModel', 'gpt-4o-mini-transcribe'), language: user?.language === 'ru' ? 'ru' : 'uz' },
-            turn_detection: { type: 'semantic_vad', eagerness: 'high', create_response: false, interrupt_response: true },
+            transcription: {
+              model: this.config.get<string>('ai.transcribeModel', 'gpt-4o-mini-transcribe'),
+              language: user?.language === 'ru' ? 'ru' : 'uz',
+              prompt: user?.language === 'ru'
+                ? 'Русская разговорная речь. Точно сохраняйте имена, числа, даты, валюты и команды.'
+                : 'O‘zbekcha kundalik suhbat. Sheva va tez aytilgan gapni tabiiy matnga yozing; ism, sana, summa, so‘m, ming, million va buyruqlarni aniq saqlang.',
+            },
+            // Fast command mode: commit the turn shortly after the user stops talking.
+            turn_detection: { type: 'server_vad', threshold: 0.45, prefix_padding_ms: 250, silence_duration_ms: 350, create_response: false, interrupt_response: true },
           },
           output: { voice: this.config.get<string>('ai.realtimeVoice', 'marin') },
         },

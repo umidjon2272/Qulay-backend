@@ -64,8 +64,12 @@ export class AiAgentService {
 
   async chat(userId: string, dto: AgentChatDto, emit?: (event: AgentStreamEvent) => void, signal?: AbortSignal) {
     emit?.({ type: 'status', status: 'preparing' });
-    await this.subscriptions.assertAiAllowed(userId);
-    const preferences = await this.prisma.agentPreference.findUnique({ where: { userId } });
+    const [, preferences, user] = await Promise.all([
+      this.subscriptions.assertAiAllowed(userId),
+      this.prisma.agentPreference.findUnique({ where: { userId } }),
+      this.prisma.user.findUnique({ where: { id: userId }, select: { firstName: true, lastName: true, timezone: true, language: true, memoryEnabled: true } }),
+    ]);
+    if (!user) throw new NotFoundException('Foydalanuvchi topilmadi');
     const conversation = await this.resolveConversation(userId, dto.conversationId, dto.message, preferences?.saveHistory !== false);
     if (conversation.isTemporary) {
       for (const [id, value] of this.temporary) if (value.expiresAt < Date.now()) this.temporary.delete(id);
@@ -74,14 +78,16 @@ export class AiAgentService {
         this.temporary.set(conversation.id, { expiresAt: Date.now() + 3_600_000, messages: [] });
       }
     }
-    if (dto.conversationId && typeof conversation.title === 'string' && this.isGreetingTitle(conversation.title) && !this.isGreetingTitle(dto.message)) {
-      await this.prisma.conversation.update({ where: { id: conversation.id }, data: { title: this.conversationTitle(dto.message) } });
-    }
-    await this.appendMessage({ data: { conversationId: conversation.id, role: MessageRole.USER, content: dto.message } });
-    await this.prisma.conversation.update({ where: { id: conversation.id }, data: { updatedAt: new Date() } });
-    const pending = await this.prisma.pendingAgentAction.findFirst({
-      where: { userId, conversationId: conversation.id, status: AgentActionStatus.PENDING }, orderBy: { createdAt: 'desc' },
-    });
+    const conversationUpdate = dto.conversationId && typeof conversation.title === 'string' && this.isGreetingTitle(conversation.title) && !this.isGreetingTitle(dto.message)
+      ? { title: this.conversationTitle(dto.message), updatedAt: new Date() }
+      : { updatedAt: new Date() };
+    const [, , pending] = await Promise.all([
+      this.appendMessage({ data: { conversationId: conversation.id, role: MessageRole.USER, content: dto.message }, knownTemporary: Boolean(conversation.isTemporary) }),
+      this.prisma.conversation.update({ where: { id: conversation.id }, data: conversationUpdate }),
+      this.prisma.pendingAgentAction.findFirst({
+        where: { userId, conversationId: conversation.id, status: AgentActionStatus.PENDING }, orderBy: { createdAt: 'desc' },
+      }),
+    ]);
     const decision = confirmationReply(dto.message);
     if (pending && decision !== null) {
       emit?.({ type: 'status', status: 'executing' });
@@ -89,12 +95,12 @@ export class AiAgentService {
       return { conversationId: conversation.id, message: outcome.message, pendingConfirmation: null, resolvedActionId: pending.id, resolvedActionStatus: outcome.status };
     }
 
-    const [user, memories, history] = await Promise.all([
-      this.prisma.user.findUnique({ where: { id: userId }, select: { firstName: true, lastName: true, timezone: true, language: true, memoryEnabled: true } }),
-      this.prisma.userMemory.findMany({ where: { userId, status: MemoryStatus.ACTIVE }, include: { contact: { select: { displayName: true } } }, orderBy: [{ isVerified: 'desc' }, { importance: 'desc' }, { updatedAt: 'desc' }], take: 30 }),
-      conversation.isTemporary ? Promise.resolve((this.temporary.get(conversation.id)?.messages ?? []).filter(m => m.isComplete).slice(-60).reverse()) : this.prisma.message.findMany({ where: { conversationId: conversation.id, isComplete: true }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: 60 }),
+    const historyLimit = dto.voice ? 36 : 60;
+    const memoryLimit = dto.voice ? 20 : 30;
+    const [memories, history] = await Promise.all([
+      user.memoryEnabled ? this.prisma.userMemory.findMany({ where: { userId, status: MemoryStatus.ACTIVE }, include: { contact: { select: { displayName: true } } }, orderBy: [{ isVerified: 'desc' }, { importance: 'desc' }, { updatedAt: 'desc' }], take: memoryLimit }) : Promise.resolve([]),
+      conversation.isTemporary ? Promise.resolve((this.temporary.get(conversation.id)?.messages ?? []).filter(m => m.isComplete).slice(-historyLimit).reverse()) : this.prisma.message.findMany({ where: { conversationId: conversation.id, isComplete: true }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: historyLimit }),
     ]);
-    if (!user) throw new NotFoundException('Foydalanuvchi topilmadi');
 
     const messages: ProviderMessage[] = [
       { role: 'system', content: this.systemPrompt(user, user.memoryEnabled ? memories : [], pending) + `\nUSER SETTINGS: replyStyle=${preferences?.replyStyle ?? 'Professional'}, replyLength=${preferences?.replyLength ?? "O'rta"}. Follow these: Professional=clear professional tone, Sodda=plain everyday language, Qisqa=direct concise. Length Qisqa=1–3 sentences, O'rta=moderate, Batafsil=detailed when relevant. Never omit required confirmation or uncertainty. ${dto.voice ? 'VOICE: keep answers conversational, normally 1–3 short sentences unless the user explicitly requests detail.' : ''}` },
@@ -115,11 +121,11 @@ export class AiAgentService {
       try {
         const result = await this.execution.execute(userId, { tool: 'get_all_time_finance', input: {}, confirmed: false, requestId: callId }, { locale: user.language, timezone: user.timezone });
         if (result.status !== 'success') throw new Error('Finance read did not complete');
-        await this.usage.logToolUsage({ userId, model: 'tool-registry' }).catch(() => undefined);
+        void this.usage.logToolUsage({ userId, model: 'tool-registry' }).catch(() => undefined);
         messages.push({ role: 'tool', tool_call_id: callId, content: JSON.stringify({ ok: true, tool: 'get_all_time_finance', data: result.data }) });
       } catch {
         const answer = user.language === 'ru' ? 'Не удалось получить общие данные по финансам. Это не означает, что записей нет. Попробуйте ещё раз.' : 'Umumiy moliya ma’lumotlarini hozir yuklay olmadim. Bu daromad yozuvlari yo‘q degani emas. Qayta urinib ko‘ring.';
-        await this.appendMessage({ data: { conversationId: conversation.id, role: MessageRole.ASSISTANT, content: answer } });
+        await this.appendMessage({ data: { conversationId: conversation.id, role: MessageRole.ASSISTANT, content: answer }, knownTemporary: Boolean(conversation.isTemporary) });
         return { conversationId: conversation.id, message: answer, pendingConfirmation: null };
       }
     }
@@ -135,16 +141,16 @@ export class AiAgentService {
         } : undefined, signal);
       } catch (error) {
         if (partialText.trim()) {
-          await this.appendMessage({ data: { conversationId: conversation.id, role: MessageRole.ASSISTANT, content: partialText.trim(), isComplete: false } });
+          await this.appendMessage({ data: { conversationId: conversation.id, role: MessageRole.ASSISTANT, content: partialText.trim(), isComplete: false }, knownTemporary: Boolean(conversation.isTemporary) });
         }
         throw error;
       }
-      await this.usage.logTextUsage({ userId, model: result.model, inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens }).catch(() => undefined);
+      void this.usage.logTextUsage({ userId, model: result.model, inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens }).catch(() => undefined);
       const toolCalls = result.message.tool_calls ?? [];
       if (toolCalls.length === 0) {
         const answer = result.message.content?.trim() || partialText.trim() || (user.language === 'ru' ? 'Ответ не получен. Повторите попытку.' : 'Javob olinmadi. Qayta urinib ko‘ring.');
-        await this.appendMessage({ data: { conversationId: conversation.id, role: MessageRole.ASSISTANT, content: answer } });
-        await this.activityLog.record({ userId, action: ACTIVITY_ACTIONS.AI_AGENT_MESSAGE, entityType: 'CONVERSATION', entityId: conversation.id }).catch(() => undefined);
+        await this.appendMessage({ data: { conversationId: conversation.id, role: MessageRole.ASSISTANT, content: answer }, knownTemporary: Boolean(conversation.isTemporary) });
+        void this.activityLog.record({ userId, action: ACTIVITY_ACTIONS.AI_AGENT_MESSAGE, entityType: 'CONVERSATION', entityId: conversation.id }).catch(() => undefined);
         return { conversationId: conversation.id, message: answer, pendingConfirmation: null };
       }
 
@@ -175,8 +181,8 @@ export class AiAgentService {
           }
 
           attemptedTools.set(fingerprint, JSON.stringify({ ok: true, tool: resolved.tool, data: execution.data, repeated: true }));
-          await this.usage.logToolUsage({ userId, model: 'tool-registry' }).catch(() => undefined);
-          await this.appendMessage({ data: { conversationId: conversation.id, role: MessageRole.TOOL, content: JSON.stringify({ tool: resolved.tool, data: execution.data }).slice(0, 18000) } }).catch(() => undefined);
+          void this.usage.logToolUsage({ userId, model: 'tool-registry' }).catch(() => undefined);
+          await this.appendMessage({ data: { conversationId: conversation.id, role: MessageRole.TOOL, content: JSON.stringify({ tool: resolved.tool, data: execution.data }).slice(0, 18000) }, knownTemporary: Boolean(conversation.isTemporary) }).catch(() => undefined);
           messages.push({
             role: 'tool',
             tool_call_id: call.id,
@@ -213,7 +219,7 @@ export class AiAgentService {
         }
         const prompt = batch ? (user.language === 'ru' ? `Подготовлено действий: ${pendingCalls.length}. Выполнить все?` : `${pendingCalls.length} ta amal tayyor. Hammasi bajarilsinmi?`) : this.confirmationPrompt(pending.toolName, pendingCalls[0].preview, user.language);
         await Promise.all([
-          this.appendMessage({ data: { conversationId: conversation.id, role: MessageRole.ASSISTANT, content: prompt } }),
+          this.appendMessage({ data: { conversationId: conversation.id, role: MessageRole.ASSISTANT, content: prompt }, knownTemporary: Boolean(conversation.isTemporary) }),
           this.prisma.notification.create({ data: { userId, type: NotificationType.AI, title: 'AI tasdiqlashi kutilmoqda', message: prompt, entityType: 'AI_AGENT_ACTION', entityId: pending.id, channel: NotificationChannel.IN_APP, status: NotificationStatus.SENT, sentAt: new Date(), metadata: { deepLink: `/ai-assistant?action=${pending.id}`, conversationId: conversation.id } } }),
         ]);
         return { conversationId: conversation.id, message: prompt, pendingConfirmation: { id: pending.id, tool: pending.toolName, preview: pending.preview, expiresAt: pending.expiresAt } };
@@ -224,8 +230,9 @@ export class AiAgentService {
       : 'So‘rovni to‘liq yakunlay olmadim. Bajarilgan qadamlar saqlandi; keyingi qadamni aniqlashtiring.';
     await this.appendMessage({
       data: { conversationId: conversation.id, role: MessageRole.ASSISTANT, content: fallback },
+      knownTemporary: Boolean(conversation.isTemporary),
     });
-    await this.activityLog.record({
+    void this.activityLog.record({
       userId,
       action: ACTIVITY_ACTIONS.AI_AGENT_MESSAGE,
       entityType: 'CONVERSATION',
@@ -265,7 +272,7 @@ export class AiAgentService {
         if (result.status !== 'success') throw new ConflictException('Tasdiqlangan amal bajarilmadi');
         data.push(result.data);
         // An analytics failure must never turn an already completed write into a retry.
-        await this.usage.logToolUsage({ userId, model: 'tool-registry' }).catch(() => undefined);
+        void this.usage.logToolUsage({ userId, model: 'tool-registry' }).catch(() => undefined);
         if (action.conversationId) await this.appendMessage({ data: { conversationId: action.conversationId, role: MessageRole.TOOL, content: JSON.stringify({ tool: item.toolName, data: result.data }).slice(0, 18000) } }).catch(() => undefined);
       }
     } catch (error) {
@@ -303,14 +310,16 @@ export class AiAgentService {
     return this.prisma.conversation.create({ data: { userId, title: saveHistory ? this.conversationTitle(message) : 'Temporary conversation', isTemporary: !saveHistory } });
   }
 
-  private async appendMessage(args: { data: { conversationId: string; role: MessageRole; content: string; isComplete?: boolean } }) {
+  private async appendMessage(args: { data: { conversationId: string; role: MessageRole; content: string; isComplete?: boolean }; knownTemporary?: boolean }) {
+    if (args.knownTemporary === false) return this.prisma.message.create({ data: args.data });
     const temporary = this.temporary.get(args.data.conversationId);
     if (!temporary) {
+      if (args.knownTemporary === true) return undefined;
       // Confirmation may arrive after a restart/eviction. The durable privacy
       // flag, not the presence of a process-local cache, decides persistence.
       const conversation = await this.prisma.conversation.findFirst({ where: { id: args.data.conversationId }, select: { isTemporary: true } });
       if (!conversation || conversation.isTemporary) return undefined;
-      return this.prisma.message.create(args);
+      return this.prisma.message.create({ data: args.data });
     }
     temporary.messages.push({ role: args.data.role, content: args.data.content, isComplete: args.data.isComplete !== false });
     temporary.messages = temporary.messages.slice(-60);

@@ -18,20 +18,18 @@ export class ConversationsService {
         ? { title: { contains: query.search.trim(), mode: 'insensitive' } }
         : {}),
     };
-    const [rows, total] = await Promise.all([
+    // The chat sidebar does not use per-conversation message counts. Avoiding
+    // a filtered relation count for every row keeps history hydration fast even
+    // when a user has large conversations.
+    const [items, total] = await Promise.all([
       this.prisma.conversation.findMany({
         where,
-        include: { _count: { select: { messages: { where: { role: { in: ['USER', 'ASSISTANT'] } } } } } },
         orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
         skip: paginationSkip(query.page, query.limit),
         take: query.limit,
       }),
       this.prisma.conversation.count({ where }),
     ]);
-    const items = rows.map(({ _count, ...conversation }) => ({
-      ...conversation,
-      messageCount: _count.messages,
-    }));
     return { items, meta: paginationMeta(query.page, query.limit, total) };
   }
 
