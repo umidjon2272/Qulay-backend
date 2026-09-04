@@ -293,7 +293,7 @@ describe('GramJsTelegramClientService', () => {
         dialog(user(1, 'Azizbek')), dialog(user(2, 'Aziz Aka')),
       ] as never);
       const result = await service.search('', 'Aziz', 10);
-      expect(result.map((peer) => peer.displayName)).toEqual(['Azizbek', 'Aziz Aka']);
+      expect(result.map((peer) => peer.displayName)).toEqual(['Aziz Aka', 'Azizbek']);
     });
 
     it('falls back from dialogs to contacts', async () => {
@@ -340,14 +340,32 @@ describe('GramJsTelegramClientService', () => {
       await expect(service.search('', 'Aziz', 10)).resolves.toHaveLength(1);
     });
 
-    it('does not classify a transient RPC failure as an expired session', async () => {
+    it('keeps searching contacts when dialogs have a transient RPC failure', async () => {
+      jest.spyOn(TelegramClient.prototype, 'getDialogs').mockRejectedValue(Object.assign(new Error('TIMEOUT'), { errorMessage: 'TIMEOUT' }));
+      invokeSpy.mockImplementation(async (request: unknown) => {
+        if (request instanceof Api.contacts.GetContacts) return { users: [user(9, 'Aziz Contact')] };
+        throw new Error('Unexpected request');
+      });
+      await expect(service.search('', 'Aziz', 10)).resolves.toEqual([
+        expect.objectContaining({ peerId: '9', displayName: 'Aziz Contact' }),
+      ]);
+    });
+
+    it('does not falsely report not-found when a search source had a transient RPC failure', async () => {
       jest.spyOn(TelegramClient.prototype, 'getDialogs').mockRejectedValue(Object.assign(new Error('TIMEOUT'), { errorMessage: 'TIMEOUT' }));
       await expect(service.search('', 'Aziz', 10)).rejects.toMatchObject({ code: 'UNAVAILABLE' });
     });
 
-    it('classifies AUTH_KEY_UNREGISTERED as an expired session', async () => {
-      jest.spyOn(TelegramClient.prototype, 'getMe').mockRejectedValue(Object.assign(new Error('AUTH_KEY_UNREGISTERED'), { errorMessage: 'AUTH_KEY_UNREGISTERED' }));
+    it('classifies AUTH_KEY_UNREGISTERED from the real search operation as an expired session', async () => {
+      jest.spyOn(TelegramClient.prototype, 'getDialogs').mockRejectedValue(Object.assign(new Error('AUTH_KEY_UNREGISTERED'), { errorMessage: 'AUTH_KEY_UNREGISTERED' }));
       await expect(service.search('', 'Aziz', 10)).rejects.toMatchObject({ code: 'CONNECTION_EXPIRED' });
+    });
+
+    it('understands conversational honorifics when matching a display name', async () => {
+      jest.spyOn(TelegramClient.prototype, 'getDialogs').mockResolvedValue([dialog(user(11, 'Shamshod'))] as never);
+      await expect(service.search('', 'Shamshod aka', 10)).resolves.toEqual([
+        expect.objectContaining({ peerId: '11', displayName: 'Shamshod' }),
+      ]);
     });
   });
 });

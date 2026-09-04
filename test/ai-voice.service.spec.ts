@@ -53,7 +53,7 @@ describe('Voice service', () => {
       const result = await service.createRealtimeSession('owner-a');
       const options = fetchMock.mock.calls[0][1]!;
       const body = JSON.parse(options.body as string);
-      expect(body.session.audio.input.turn_detection).toEqual({ type: 'server_vad', threshold: 0.45, prefix_padding_ms: 250, silence_duration_ms: 350, create_response: false, interrupt_response: true });
+      expect(body.session.audio.input.turn_detection).toEqual({ type: 'server_vad', threshold: 0.42, prefix_padding_ms: 220, silence_duration_ms: 300, create_response: false, interrupt_response: true });
       expect(body.session.audio.input.transcription.prompt).toContain('O‘zbekcha');
       expect(options.signal).toBeDefined();
       expect(result).toMatchObject({ clientSecret: 'ephemeral-only', enabled: true });

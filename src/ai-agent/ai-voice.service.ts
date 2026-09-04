@@ -86,7 +86,7 @@ export class AiVoiceService {
                 : 'O‘zbekcha kundalik suhbat. Sheva va tez aytilgan gapni tabiiy matnga yozing; ism, sana, summa, so‘m, ming, million va buyruqlarni aniq saqlang.',
             },
             // Fast command mode: commit the turn shortly after the user stops talking.
-            turn_detection: { type: 'server_vad', threshold: 0.45, prefix_padding_ms: 250, silence_duration_ms: 350, create_response: false, interrupt_response: true },
+            turn_detection: { type: 'server_vad', threshold: 0.42, prefix_padding_ms: 220, silence_duration_ms: 300, create_response: false, interrupt_response: true },
           },
           output: { voice: this.config.get<string>('ai.realtimeVoice', 'marin') },
         },

@@ -2,7 +2,6 @@ import { BadRequestException, Injectable, Logger, NotFoundException, ServiceUnav
 import { ConfigService } from '@nestjs/config';
 import { TelegramConnection, TelegramConnectionStatus } from '@prisma/client';
 import { ActivityLogService, ACTIVITY_ACTIONS } from '../activity-log/activity-log.service';
-import { ContactsService } from '../contacts/contacts.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { TelegramChatsQueryDto, TelegramSearchQueryDto } from './dto/telegram.dto';
 import { isTelegramAuthInvalid, mapTelegramError, TelegramAdapterError, telegramErrorCode } from './telegram.errors';
@@ -21,7 +20,6 @@ export class TelegramIntegrationService {
     private readonly prisma: PrismaService,
     private readonly crypto: TelegramCryptoService,
     private readonly telegramClient: TelegramClientService,
-    private readonly contactsService: ContactsService,
     private readonly activityLog: ActivityLogService,
     private readonly config: ConfigService,
   ) {}
@@ -288,7 +286,8 @@ export class TelegramIntegrationService {
     const connection = await this.prisma.telegramConnection.findUnique({ where: { userId } });
     if (!connection) return { connected: false, status: TelegramConnectionStatus.DISCONNECTED, username: null, displayName: null, maskedPhone: null, connectedAt: null, temporaryError: false, lastErrorAt: null as Date | null, lastErrorCode: null as string | null, lastValidatedAt: null as Date | null };
     let temporaryError = false;
-    if (connection.status === TelegramConnectionStatus.CONNECTED && connection.encryptedSession) {
+    const validationFresh = Boolean(connection.lastValidatedAt && Date.now() - connection.lastValidatedAt.getTime() < 5 * 60_000);
+    if (connection.status === TelegramConnectionStatus.CONNECTED && connection.encryptedSession && !validationFresh) {
       try {
         const account = await this.telegramClient.validateSession(this.crypto.decrypt(connection.encryptedSession));
         await this.prisma.telegramConnection.update({ where: { userId }, data: { lastValidatedAt: new Date(), lastErrorAt: null, lastErrorCode: null, telegramUserId: account.telegramUserId, username: account.username, displayName: account.displayName } });
@@ -423,14 +422,10 @@ export class TelegramIntegrationService {
   private async connected(userId: string): Promise<ConnectedConnection> {
     const connection = await this.prisma.telegramConnection.findUnique({ where: { userId } });
     if (!connection || connection.status !== TelegramConnectionStatus.CONNECTED || !connection.encryptedSession) throw new BadRequestException('Telegram account is not connected');
-    const session = this.crypto.decrypt(connection.encryptedSession);
-    try {
-      await this.telegramClient.validateSession(session);
-      await this.prisma.telegramConnection.update({ where: { userId }, data: { lastValidatedAt: new Date(), lastErrorAt: null, lastErrorCode: null } });
-    } catch (error) {
-      throw await this.handleConnectedError(userId, error);
-    }
-    return { ...connection, encryptedSession: session };
+    // Do not spend an extra Telegram RPC validating before every real operation.
+    // The search/send/resolve call itself proves the session and will revoke it if Telegram
+    // returns an auth-key error. Status performs a throttled validation separately.
+    return { ...connection, encryptedSession: this.crypto.decrypt(connection.encryptedSession) };
   }
 
   private async handleConnectedError(userId: string, error: unknown) {
@@ -521,13 +516,26 @@ export class TelegramIntegrationService {
   }
 
   private async withContactMatches(userId: string, peers: TelegramPeer[]) {
-    return Promise.all(peers.map(async (peer) => {
+    const usernames = [...new Set(peers.map((peer) => peer.username?.replace(/^@/, '').toLocaleLowerCase()).filter((value): value is string => Boolean(value)))];
+    if (!usernames.length) return peers;
+    const contacts = await this.prisma.contact.findMany({
+      where: {
+        userId,
+        OR: usernames.flatMap((username) => [
+          { telegramUsername: { equals: username, mode: 'insensitive' as const } },
+          { telegramUsername: { equals: `@${username}`, mode: 'insensitive' as const } },
+        ]),
+      },
+      select: { id: true, telegramUsername: true },
+    });
+    const contactByUsername = new Map(contacts
+      .filter((contact) => Boolean(contact.telegramUsername))
+      .map((contact) => [contact.telegramUsername!.replace(/^@/, '').toLocaleLowerCase(), contact.id]));
+    return peers.map((peer) => {
       const username = peer.username?.replace(/^@/, '').toLocaleLowerCase();
-      if (!username) return peer;
-      const result = await this.contactsService.listForUser(userId, { search: username, page: 1, limit: 20 } as never);
-      const exact = result.items.find((contact) => contact.telegramUsername?.replace(/^@/, '').toLocaleLowerCase() === username);
-      return exact ? { ...peer, contactId: exact.id } : peer;
-    }));
+      const contactId = username ? contactByUsername.get(username) : undefined;
+      return contactId ? { ...peer, contactId } : peer;
+    });
   }
 
   private isConfigured(): boolean {

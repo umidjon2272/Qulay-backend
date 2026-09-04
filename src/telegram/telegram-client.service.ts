@@ -500,53 +500,76 @@ export class GramJsTelegramClientService extends TelegramClientService {
   }
 
   async search(session: string, query: string, limit: number): Promise<TelegramPeer[]> {
-    const client = this.client(session);
     const normalized = this.normalizeQuery(query);
     if (!normalized) return [];
+
+    // Recent peers are safe to reuse for a short period and make repeated voice searches instant.
+    const cachedMatches = this.rankAndDeduplicate(this.getRememberedPeers(session), normalized).slice(0, limit);
+    if (cachedMatches.length) return cachedMatches;
+
+    const client = this.client(session);
+    const candidates: TelegramPeer[] = [];
+    let transientError: TelegramAdapterError | null = null;
+    const rememberError = (error: unknown) => {
+      const classified = classifyTelegramError(error);
+      if (classified.code === 'CONNECTION_EXPIRED') throw classified;
+      if (classified.code !== 'PEER_NOT_FOUND' && !transientError) transientError = classified;
+    };
+    const addEntity = (entity: Api.TypeUser | Api.TypeChat) => {
+      const peer = this.entityToPeer(entity);
+      candidates.push(peer);
+      this.rememberPeerEntity(session, entity, peer);
+    };
+
     try {
       await client.connect();
-      await client.getMe();
 
-      const candidates: TelegramPeer[] = [];
-      const dialogs = await client.getDialogs({ limit: Math.min(100, Math.max(20, limit * 4)) });
-      for (const dialog of dialogs) {
-        if (!dialog.entity) continue;
-        const entity = dialog.entity as Api.TypeUser | Api.TypeChat;
-        const peer = this.toPeer(dialog);
-        candidates.push(peer);
-        this.rememberPeerEntity(session, entity, peer);
-      }
-
-      const contacts = await client.invoke(new Api.contacts.GetContacts({ hash: returnBigInt(0) }));
-      if ('users' in contacts) {
-        for (const entity of contacts.users) {
-          const peer = this.entityToPeer(entity);
+      // Dialogs and contacts are independent sources. A temporary failure in one source
+      // must not hide valid matches from the other source.
+      try {
+        const dialogs = await client.getDialogs({ limit: Math.min(100, Math.max(30, limit * 5)) });
+        for (const dialog of dialogs) {
+          if (!dialog.entity) continue;
+          const entity = dialog.entity as Api.TypeUser | Api.TypeChat;
+          const peer = this.toPeer(dialog);
           candidates.push(peer);
           this.rememberPeerEntity(session, entity, peer);
         }
-      }
+      } catch (error) { rememberError(error); }
 
+      try {
+        const contacts = await client.invoke(new Api.contacts.GetContacts({ hash: returnBigInt(0) }));
+        if ('users' in contacts) for (const entity of contacts.users) addEntity(entity);
+      } catch (error) { rememberError(error); }
+
+      let ranked = this.rankAndDeduplicate(candidates, normalized);
+      if (ranked.length) return ranked.slice(0, limit);
+
+      // Exact username resolution is fastest for username-shaped input.
       if (this.isUsernameLike(normalized)) {
         try {
           const resolved = await client.invoke(new Api.contacts.ResolveUsername({ username: normalized }));
-          for (const entity of [...resolved.users, ...resolved.chats]) {
-            const peer = this.entityToPeer(entity);
-            candidates.push(peer);
-            this.rememberPeerEntity(session, entity, peer);
-          }
-        } catch (error) {
-          const classified = classifyTelegramError(error);
-          if (classified.code !== 'PEER_NOT_FOUND') throw classified;
-        }
-        const global = await client.invoke(new Api.contacts.Search({ q: normalized, limit }));
-        for (const entity of [...global.users, ...global.chats]) {
-          const peer = this.entityToPeer(entity);
-          candidates.push(peer);
-          this.rememberPeerEntity(session, entity, peer);
-        }
+          for (const entity of [...resolved.users, ...resolved.chats]) addEntity(entity);
+        } catch (error) { rememberError(error); }
+        ranked = this.rankAndDeduplicate(candidates, normalized);
+        if (ranked.length) return ranked.slice(0, limit);
       }
 
-      return this.rankAndDeduplicate(candidates, normalized).slice(0, limit);
+      // Telegram global search also works for display names. Try the user's phrase and,
+      // when applicable, a version without conversational honorifics such as "aka".
+      const globalQueries = [...new Set([normalized, this.comparableQuery(normalized)].filter(Boolean))];
+      for (const globalQuery of globalQueries) {
+        try {
+          const global = await client.invoke(new Api.contacts.Search({ q: globalQuery, limit: Math.min(50, Math.max(limit * 2, 10)) }));
+          for (const entity of [...global.users, ...global.chats]) addEntity(entity);
+        } catch (error) { rememberError(error); }
+        ranked = this.rankAndDeduplicate(candidates, normalized);
+        if (ranked.length) return ranked.slice(0, limit);
+      }
+
+      // Do not falsely say "not found" when Telegram itself had a transient RPC problem.
+      if (transientError) throw transientError;
+      return [];
     } catch (error) {
       if (error instanceof TelegramAdapterError) throw error;
       throw classifyTelegramError(error);
@@ -556,10 +579,8 @@ export class GramJsTelegramClientService extends TelegramClientService {
   }
 
   async chats(session: string, search: string | undefined, limit: number): Promise<TelegramPeer[]> {
-    const peers = await this.listPeers(session, Math.min(100, Math.max(limit, search ? 50 : limit)));
-    if (!search) return peers.slice(0, limit);
-    const normalized = search.toLocaleLowerCase();
-    return peers.filter((peer) => `${peer.displayName} ${peer.username ?? ''}`.toLocaleLowerCase().includes(normalized)).slice(0, limit);
+    if (search?.trim()) return this.search(session, search, limit);
+    return (await this.listPeers(session, Math.min(100, Math.max(limit, 20)))).slice(0, limit);
   }
 
   async resolvePeer(session: string, peerId: string): Promise<TelegramPeer> {
@@ -718,17 +739,53 @@ export class GramJsTelegramClientService extends TelegramClientService {
     return query.trim().replace(/^@+/, '').normalize('NFKC').toLocaleLowerCase();
   }
 
+  private comparableQuery(value: string): string {
+    const honorifics = new Set(['aka', 'opa', 'aki', 'aka.', 'opa.', 'brat', 'bro']);
+    return this.normalizeQuery(value)
+      .replace(/[^\p{L}\p{N}_]+/gu, ' ')
+      .split(/\s+/)
+      .filter((token) => token && !honorifics.has(token))
+      .join(' ')
+      .trim();
+  }
+
   private isUsernameLike(query: string): boolean {
     return /^[a-z0-9_]{5,32}$/i.test(query);
   }
 
+  private getRememberedPeers(session: string): TelegramPeer[] {
+    const prefix = `${createHash('sha256').update(session).digest('hex').slice(0, 16)}:`;
+    const now = Date.now();
+    const peers: TelegramPeer[] = [];
+    for (const [key, value] of this.peerEntityCache) {
+      if (!key.startsWith(prefix)) continue;
+      if (value.expiresAt <= now) { this.peerEntityCache.delete(key); continue; }
+      peers.push(value.peer);
+    }
+    return peers;
+  }
+
   private rankAndDeduplicate(peers: TelegramPeer[], query: string): TelegramPeer[] {
-    const matches = peers.filter((peer) => {
-      const name = peer.displayName.trim().normalize('NFKC').toLocaleLowerCase();
+    const normalizedQuery = this.normalizeQuery(query);
+    const comparableQuery = this.comparableQuery(normalizedQuery);
+    const queryTokens = comparableQuery.split(' ').filter(Boolean);
+    const score = (peer: TelegramPeer) => {
+      const name = this.normalizeQuery(peer.displayName);
+      const comparableName = this.comparableQuery(name);
       const username = this.normalizeQuery(peer.username ?? '');
-      return name.includes(query) || username.includes(query);
-    });
-    matches.sort((left, right) => Number(this.normalizeQuery(right.username ?? '') === query) - Number(this.normalizeQuery(left.username ?? '') === query));
-    return [...new Map(matches.map((peer) => [peer.peerId, peer])).values()];
+      if (username === normalizedQuery) return 100;
+      if (name === normalizedQuery || comparableName === comparableQuery) return 90;
+      if (username.startsWith(normalizedQuery)) return 80;
+      if (name.startsWith(normalizedQuery) || (comparableQuery && comparableName.startsWith(comparableQuery))) return 70;
+      if (name.includes(normalizedQuery) || username.includes(normalizedQuery)) return 60;
+      if (comparableQuery && comparableName.includes(comparableQuery)) return 55;
+      if (queryTokens.length && queryTokens.every((token) => comparableName.split(' ').some((part) => part.startsWith(token)))) return 50;
+      return 0;
+    };
+    const unique = [...new Map(peers.map((peer) => [peer.peerId, peer])).values()]
+      .map((peer) => ({ peer, score: score(peer) }))
+      .filter((item) => item.score > 0)
+      .sort((left, right) => right.score - left.score);
+    return unique.map((item) => item.peer);
   }
 }
