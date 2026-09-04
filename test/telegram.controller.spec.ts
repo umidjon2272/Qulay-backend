@@ -5,6 +5,7 @@ describe('TelegramController', () => {
     prepareTelegramMessage: jest.fn(),
     sendMessage: jest.fn(),
     resendCode: jest.fn(),
+    restartCode: jest.fn(),
   } as any;
   const controller = new TelegramController(telegram, { isAllowed: () => true } as any);
 
@@ -31,6 +32,14 @@ describe('TelegramController', () => {
       status: 'code_required', delivery: 'sms', nextDelivery: 'call', timeoutSeconds: 90,
     });
     expect(telegram.resendCode).toHaveBeenCalledWith('user-a');
+  });
+
+  it('delegates fresh-code restart to the integration service for the authenticated user', async () => {
+    telegram.restartCode.mockResolvedValue({ status: 'code_required', delivery: 'telegram_app', nextDelivery: null, timeoutSeconds: null });
+    await expect(controller.restartCode({ sub: 'user-a', role: 'USER' })).resolves.toEqual({
+      status: 'code_required', delivery: 'telegram_app', nextDelivery: null, timeoutSeconds: null,
+    });
+    expect(telegram.restartCode).toHaveBeenCalledWith('user-a');
   });
 
   it('delegates QR start and status using only the authenticated user scope', async () => {

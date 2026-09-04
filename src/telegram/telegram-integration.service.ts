@@ -222,6 +222,63 @@ export class TelegramIntegrationService {
     }
   }
 
+  /**
+   * Starts a fresh phone-code attempt when Telegram did not expose a next
+   * delivery method. This does not force SMS — Telegram still chooses the
+   * delivery channel — but it gives the user a safe manual retry without
+   * corrupting the previous login state if Telegram rejects the request.
+   */
+  async restartCode(userId: string): Promise<CodeRequiredResponse> {
+    this.assertConfigured();
+    const connection = await this.getPendingConnection(userId, TelegramConnectionStatus.AWAITING_CODE);
+
+    if (connection.pendingDelivery === 'qr') {
+      throw new BadRequestException('Phone login is not active');
+    }
+
+    const minimumDelaySeconds = Math.max(connection.codeResendAfterSeconds ?? 0, 45);
+    if (connection.codeSentAt) {
+      const elapsedSeconds = (Date.now() - connection.codeSentAt.getTime()) / 1000;
+      const remaining = minimumDelaySeconds - elapsedSeconds;
+      if (remaining > 0) {
+        throw mapTelegramError(new TelegramAdapterError('FLOOD_WAIT', Math.ceil(remaining)));
+      }
+    }
+
+    const phoneNumber = this.crypto.decrypt(this.requireStored(connection.phoneNumber));
+
+    try {
+      const pending = await this.telegramClient.beginLogin(phoneNumber, userId);
+      const now = new Date();
+      await this.prisma.telegramConnection.update({
+        where: { userId },
+        data: {
+          phoneNumber: this.crypto.encrypt(phoneNumber),
+          encryptedSession: this.crypto.encrypt(pending.session),
+          encryptedPhoneCodeHash: this.crypto.encrypt(pending.phoneCodeHash),
+          codeSentAt: now,
+          codeResendAfterSeconds: pending.timeoutSeconds,
+          pendingDelivery: pending.delivery,
+          pendingNextDelivery: pending.nextDelivery,
+          status: TelegramConnectionStatus.AWAITING_CODE,
+          lastErrorAt: null,
+          lastErrorCode: null,
+          lastUsedAt: now,
+        },
+      });
+      this.logCodeRequested('resend', pending);
+      return {
+        status: 'code_required',
+        delivery: pending.delivery,
+        nextDelivery: pending.nextDelivery,
+        timeoutSeconds: pending.timeoutSeconds,
+      };
+    } catch (error) {
+      this.logAuthError('resend-code-restart', error, connection);
+      throw mapTelegramError(error);
+    }
+  }
+
   /** Enforces Telegram's own resend timeout locally, without re-hitting Telegram just to learn we're too early. */
   private assertResendAllowed(connection: TelegramConnection): void {
     if (!connection.codeSentAt || !connection.codeResendAfterSeconds) return;
@@ -312,8 +369,21 @@ export class TelegramIntegrationService {
       lastErrorCode: connection.lastErrorCode,
       lastValidatedAt: connection.lastValidatedAt,
       pendingLogin: connection.status === TelegramConnectionStatus.AWAITING_CODE && connection.pendingDelivery !== 'qr' && Boolean(connection.encryptedPhoneCodeHash) && connection.codeSentAt && Date.now() - connection.codeSentAt.getTime() < 10 * 60_000 ? {
-        delivery: connection.pendingDelivery ?? 'unknown', nextDelivery: connection.pendingNextDelivery,
-        timeoutSeconds: Math.max(0, Math.ceil((connection.codeSentAt.getTime() + (connection.codeResendAfterSeconds ?? 0) * 1000 - Date.now()) / 1000)),
+        delivery: connection.pendingDelivery ?? 'unknown',
+        nextDelivery: connection.pendingNextDelivery,
+        timeoutSeconds: Math.max(
+          0,
+          Math.ceil(
+            (
+              connection.codeSentAt.getTime() +
+              Math.max(
+                connection.codeResendAfterSeconds ?? 0,
+                connection.pendingNextDelivery ? 0 : 45,
+              ) * 1000 -
+              Date.now()
+            ) / 1000,
+          ),
+        ),
       } : null,
     };
   }

@@ -39,6 +39,12 @@ export class TelegramController {
     return this.telegram.resendCode(user.sub);
   }
 
+  @Post('restart-code')
+  restartCode(@CurrentUser() user: AuthenticatedUser) {
+    this.assertAllowed('telegram-restart-code', user.sub, 3);
+    return this.telegram.restartCode(user.sub);
+  }
+
   @Post('verify-code')
   verifyCode(@CurrentUser() user: AuthenticatedUser, @Body() dto: VerifyTelegramCodeDto) {
     this.assertAllowed('telegram-verify-code', user.sub, 10);

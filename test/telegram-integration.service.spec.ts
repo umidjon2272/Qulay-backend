@@ -133,6 +133,40 @@ describe('TelegramIntegrationService', () => {
     expect(client.resendCode).not.toHaveBeenCalled();
   });
 
+  it('starts a fresh phone-code attempt after the safe cooldown when Telegram has no next delivery', async () => {
+    prisma.telegramConnection.findUnique.mockResolvedValue({
+      userId: 'user-a', status: TelegramConnectionStatus.AWAITING_CODE,
+      encryptedSession: 'encrypted:old-session', phoneNumber: 'encrypted:+998901234567', encryptedPhoneCodeHash: 'encrypted:old-hash',
+      codeSentAt: new Date(Date.now() - 120_000), codeResendAfterSeconds: null,
+      pendingDelivery: 'telegram_app', pendingNextDelivery: null,
+    });
+    client.beginLogin.mockResolvedValue({
+      session: 'fresh-session', phoneCodeHash: 'fresh-hash', delivery: 'telegram_app', nextDelivery: 'sms', timeoutSeconds: 60,
+      rawType: 'auth.SentCodeTypeApp', rawNextType: 'auth.CodeTypeSms',
+    });
+    prisma.telegramConnection.update.mockResolvedValue(undefined);
+
+    await expect(service.restartCode('user-a')).resolves.toEqual({
+      status: 'code_required', delivery: 'telegram_app', nextDelivery: 'sms', timeoutSeconds: 60,
+    });
+    expect(client.beginLogin).toHaveBeenCalledWith('+998901234567', 'user-a');
+    expect(prisma.telegramConnection.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { userId: 'user-a' },
+      data: expect.objectContaining({ encryptedSession: 'encrypted:fresh-session', encryptedPhoneCodeHash: 'encrypted:fresh-hash', pendingNextDelivery: 'sms' }),
+    }));
+  });
+
+  it('does not start a fresh phone-code attempt before the cooldown has elapsed', async () => {
+    prisma.telegramConnection.findUnique.mockResolvedValue({
+      userId: 'user-a', status: TelegramConnectionStatus.AWAITING_CODE,
+      encryptedSession: 'encrypted:old-session', phoneNumber: 'encrypted:+998901234567', encryptedPhoneCodeHash: 'encrypted:old-hash',
+      codeSentAt: new Date(), codeResendAfterSeconds: null,
+      pendingDelivery: 'telegram_app', pendingNextDelivery: null,
+    });
+    await expect(service.restartCode('user-a')).rejects.toMatchObject({ status: 429 });
+    expect(client.beginLogin).not.toHaveBeenCalled();
+  });
+
   it.each(['CODE_HASH_INVALID', 'EXPIRED_CODE'] as const)('invalidates pending state on %s', async (code) => {
     prisma.telegramConnection.findUnique.mockResolvedValue({
       userId: 'user-a', status: TelegramConnectionStatus.AWAITING_CODE,

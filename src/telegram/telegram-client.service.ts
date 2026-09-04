@@ -503,78 +503,125 @@ export class GramJsTelegramClientService extends TelegramClientService {
     const normalized = this.normalizeQuery(query);
     if (!normalized) return [];
 
-    // Recent peers are safe to reuse for a short period and make repeated voice searches instant.
-    const cachedMatches = this.rankAndDeduplicate(this.getRememberedPeers(session), normalized).slice(0, limit);
-    if (cachedMatches.length) return cachedMatches;
+    const cached = this.getRememberedPeers(session);
+    const cachedRanked = this.rankAndDeduplicate(cached, normalized).slice(0, limit);
 
-    const client = this.client(session);
-    const candidates: TelegramPeer[] = [];
-    let transientError: TelegramAdapterError | null = null;
-    const rememberError = (error: unknown) => {
-      const classified = classifyTelegramError(error);
-      if (classified.code === 'CONNECTION_EXPIRED') throw classified;
-      if (classified.code !== 'PEER_NOT_FOUND' && !transientError) transientError = classified;
-    };
-    const addEntity = (entity: Api.TypeUser | Api.TypeChat) => {
-      const peer = this.entityToPeer(entity);
-      candidates.push(peer);
-      this.rememberPeerEntity(session, entity, peer);
+    const searchOnce = async (): Promise<TelegramPeer[]> => {
+      const client = this.client(session);
+      const candidates: TelegramPeer[] = [...cached];
+      let transientError: TelegramAdapterError | null = null;
+
+      const rememberError = (error: unknown) => {
+        const classified = classifyTelegramError(error);
+        if (classified.code === 'CONNECTION_EXPIRED') throw classified;
+        if (classified.code !== 'PEER_NOT_FOUND' && !transientError) transientError = classified;
+      };
+
+      const addEntity = (entity: Api.TypeUser | Api.TypeChat) => {
+        const peer = this.entityToPeer(entity);
+        candidates.push(peer);
+        this.rememberPeerEntity(session, entity, peer);
+      };
+
+      try {
+        await client.connect();
+
+        // Dialogs and contacts are independent sources. A temporary failure in one
+        // source must not hide valid matches from the other source or from cache.
+        try {
+          const dialogs = await client.getDialogs({ limit: Math.min(120, Math.max(40, limit * 6)) });
+          for (const dialog of dialogs) {
+            if (!dialog.entity) continue;
+            const entity = dialog.entity as Api.TypeUser | Api.TypeChat;
+            const peer = this.toPeer(dialog);
+            candidates.push(peer);
+            this.rememberPeerEntity(session, entity, peer);
+          }
+        } catch (error) {
+          rememberError(error);
+        }
+
+        try {
+          const contacts = await client.invoke(new Api.contacts.GetContacts({ hash: returnBigInt(0) }));
+          if ('users' in contacts) {
+            for (const entity of contacts.users) addEntity(entity);
+          }
+        } catch (error) {
+          rememberError(error);
+        }
+
+        let ranked = this.rankAndDeduplicate(candidates, normalized);
+
+        // A single cached/dialog match can be stale or incomplete. Search Telegram
+        // globally unless we already have enough local candidates for the chooser.
+        if (ranked.length < Math.min(limit, 3)) {
+          if (this.isUsernameLike(normalized)) {
+            try {
+              const resolved = await client.invoke(new Api.contacts.ResolveUsername({ username: normalized }));
+              for (const entity of [...resolved.users, ...resolved.chats]) addEntity(entity);
+            } catch (error) {
+              rememberError(error);
+            }
+          }
+
+          const globalQueries = [
+            ...new Set([normalized, this.comparableQuery(normalized)].filter(Boolean)),
+          ];
+
+          for (const globalQuery of globalQueries) {
+            try {
+              const global = await client.invoke(
+                new Api.contacts.Search({
+                  q: globalQuery,
+                  limit: Math.min(50, Math.max(limit * 2, 10)),
+                }),
+              );
+              for (const entity of [...global.users, ...global.chats]) addEntity(entity);
+            } catch (error) {
+              rememberError(error);
+            }
+
+            ranked = this.rankAndDeduplicate(candidates, normalized);
+            if (ranked.length >= limit) break;
+          }
+        }
+
+        ranked = this.rankAndDeduplicate(candidates, normalized);
+        if (ranked.length) return ranked.slice(0, limit);
+        if (transientError) throw transientError;
+        return [];
+      } catch (error) {
+        if (error instanceof TelegramAdapterError) throw error;
+        throw classifyTelegramError(error);
+      } finally {
+        await client.disconnect().catch(() => undefined);
+      }
     };
 
     try {
-      await client.connect();
-
-      // Dialogs and contacts are independent sources. A temporary failure in one source
-      // must not hide valid matches from the other source.
-      try {
-        const dialogs = await client.getDialogs({ limit: Math.min(100, Math.max(30, limit * 5)) });
-        for (const dialog of dialogs) {
-          if (!dialog.entity) continue;
-          const entity = dialog.entity as Api.TypeUser | Api.TypeChat;
-          const peer = this.toPeer(dialog);
-          candidates.push(peer);
-          this.rememberPeerEntity(session, entity, peer);
-        }
-      } catch (error) { rememberError(error); }
-
-      try {
-        const contacts = await client.invoke(new Api.contacts.GetContacts({ hash: returnBigInt(0) }));
-        if ('users' in contacts) for (const entity of contacts.users) addEntity(entity);
-      } catch (error) { rememberError(error); }
-
-      let ranked = this.rankAndDeduplicate(candidates, normalized);
-      if (ranked.length) return ranked.slice(0, limit);
-
-      // Exact username resolution is fastest for username-shaped input.
-      if (this.isUsernameLike(normalized)) {
-        try {
-          const resolved = await client.invoke(new Api.contacts.ResolveUsername({ username: normalized }));
-          for (const entity of [...resolved.users, ...resolved.chats]) addEntity(entity);
-        } catch (error) { rememberError(error); }
-        ranked = this.rankAndDeduplicate(candidates, normalized);
-        if (ranked.length) return ranked.slice(0, limit);
-      }
-
-      // Telegram global search also works for display names. Try the user's phrase and,
-      // when applicable, a version without conversational honorifics such as "aka".
-      const globalQueries = [...new Set([normalized, this.comparableQuery(normalized)].filter(Boolean))];
-      for (const globalQuery of globalQueries) {
-        try {
-          const global = await client.invoke(new Api.contacts.Search({ q: globalQuery, limit: Math.min(50, Math.max(limit * 2, 10)) }));
-          for (const entity of [...global.users, ...global.chats]) addEntity(entity);
-        } catch (error) { rememberError(error); }
-        ranked = this.rankAndDeduplicate(candidates, normalized);
-        if (ranked.length) return ranked.slice(0, limit);
-      }
-
-      // Do not falsely say "not found" when Telegram itself had a transient RPC problem.
-      if (transientError) throw transientError;
-      return [];
+      return await searchOnce();
     } catch (error) {
-      if (error instanceof TelegramAdapterError) throw error;
-      throw classifyTelegramError(error);
-    } finally {
-      await client.disconnect().catch(() => undefined);
+      const classified = error instanceof TelegramAdapterError ? error : classifyTelegramError(error);
+
+      // Known peers remain usable as a graceful search fallback during a short
+      // Telegram/DC outage.
+      if (classified.code === 'UNAVAILABLE' && cachedRanked.length) return cachedRanked;
+
+      // Read-only search is safe to retry once with a fresh MTProto connection.
+      if (classified.code === 'UNAVAILABLE') {
+        await new Promise((resolve) => setTimeout(resolve, 180));
+        try {
+          return await searchOnce();
+        } catch (retryError) {
+          const retryClassified = retryError instanceof TelegramAdapterError
+            ? retryError
+            : classifyTelegramError(retryError);
+          if (retryClassified.code === 'UNAVAILABLE' && cachedRanked.length) return cachedRanked;
+          throw retryClassified;
+        }
+      }
+
+      throw classified;
     }
   }
 
@@ -584,6 +631,9 @@ export class GramJsTelegramClientService extends TelegramClientService {
   }
 
   async resolvePeer(session: string, peerId: string): Promise<TelegramPeer> {
+    const cached = this.getRememberedPeerEntity(session, peerId);
+    if (cached) return cached.peer;
+
     const client = this.client(session);
     try {
       await client.connect();
@@ -617,6 +667,9 @@ export class GramJsTelegramClientService extends TelegramClientService {
 
 
   private async findPeerEntity(client: TelegramClient, session: string, peerId: string): Promise<{ entity: Api.TypeUser | Api.TypeChat; peer: TelegramPeer } | null> {
+    const cached = this.getRememberedPeerEntity(session, peerId);
+    if (cached) return { entity: cached.entity, peer: cached.peer };
+
     const dialogs = await client.getDialogs({ limit: 100 });
     const dialog = dialogs.find((item) => item.entity && getPeerId(item.entity, true) === peerId);
     if (dialog?.entity) {
@@ -636,8 +689,7 @@ export class GramJsTelegramClientService extends TelegramClientService {
       }
     }
 
-    const cached = this.getRememberedPeerEntity(session, peerId);
-    return cached ? { entity: cached.entity, peer: cached.peer } : null;
+    return null;
   }
 
   private rememberPeerEntity(session: string, entity: Api.TypeUser | Api.TypeChat, peer?: TelegramPeer): void {
