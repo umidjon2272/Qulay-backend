@@ -31,6 +31,7 @@ import { TasksService } from '../tasks/tasks.service';
 import { TodayService } from '../today/today.service';
 import { BriefingService } from '../briefing/briefing.service';
 import { FileQueryDto } from '../files/dto/file-query.dto';
+import { BitoIntegrationService } from '../bito/bito-integration.service';
 
 import {
   CompareFinancePeriodsToolInput, ContactHistoryToolInput, CreateContactToolInput,
@@ -117,6 +118,7 @@ export class AIToolRegistryService {
     @Optional() private readonly googleCalendarService?: GoogleCalendarService,
     @Optional() private readonly googleDriveService?: GoogleDriveService,
     @Optional() private readonly filesService?: FilesService,
+    @Optional() private readonly bitoIntegrationService?: BitoIntegrationService,
   ) {
     this.registerTools();
     this.registerWorkspaceTools();
@@ -217,6 +219,15 @@ export class AIToolRegistryService {
   }
 
   private registerTools(): void {
+    if (this.bitoIntegrationService) {
+      this.register(this.base<EmptyToolInput, unknown>({
+        name: 'bito_connection_status',
+        description: 'Check whether the authenticated user has a usable Bito ERP MCP connection. Use this when Bito/business data is requested but no Bito data tool is available.',
+        category: AIToolCategory.BITO,
+        sideEffect: 'READ', validate: EmptyToolInput, inputSchema: schema({}),
+        execute: (context) => this.bitoIntegrationService!.status(context.userId),
+      }));
+    }
     this.register(this.base<TodayPlanInput, unknown>({
       name: 'get_today_plan', description: 'Get the user-scoped plan for today.', category: AIToolCategory.TODAY,
       sideEffect: 'READ', validate: TodayPlanInput, inputSchema: schema({ date: { type: 'string', description: 'Optional YYYY-MM-DD date' } }),

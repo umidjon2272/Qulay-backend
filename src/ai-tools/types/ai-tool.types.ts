@@ -12,6 +12,7 @@ export enum AIToolCategory {
   SYSTEM = 'SYSTEM',
   GOOGLE = 'GOOGLE',
   FILE = 'FILE',
+  BITO = 'BITO',
 }
 
 export type AIToolSideEffect = 'READ' | 'WRITE';

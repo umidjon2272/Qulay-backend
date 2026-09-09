@@ -22,6 +22,7 @@ import { FinanceModule } from './finance/finance.module';
 import { AIToolsModule } from './ai-tools/ai-tools.module';
 import { TelegramModule } from './telegram/telegram.module';
 import { GoogleModule } from './google/google.module';
+import { BitoModule } from './bito/bito.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { FilesModule } from './files/files.module';
 import { AdminModule } from './admin/admin.module';
@@ -60,6 +61,7 @@ import { AgentSchedulerModule } from './agent-scheduler/agent-scheduler.module';
     AIToolsModule,
     TelegramModule,
     GoogleModule,
+    BitoModule,
     NotificationsModule,
     FilesModule,
     AdminModule,

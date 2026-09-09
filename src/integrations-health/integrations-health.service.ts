@@ -1,10 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { GoogleAuthService } from '../google/google-auth.service';
 import { TelegramIntegrationService } from '../telegram/telegram-integration.service';
+import { BitoIntegrationService } from '../bito/bito-integration.service';
 
 export type IntegrationHealthState = 'CONNECTED' | 'TEMPORARY_ISSUE' | 'RECONNECT_REQUIRED' | 'DISCONNECTED';
 
-const AUTH_FAILURE_CODES = new Set(['TOKEN_REVOKED', 'AUTH_KEY_UNREGISTERED', 'SESSION_REVOKED', 'invalid_grant']);
+const AUTH_FAILURE_CODES = new Set(['TOKEN_REVOKED', 'AUTH_KEY_UNREGISTERED', 'SESSION_REVOKED', 'invalid_grant', 'BITO_AUTH_FAILED']);
 const RECENT_ERROR_WINDOW_MS = 15 * 60 * 1000;
 
 const ERROR_CODE_LABELS: Record<string, string> = {
@@ -12,6 +13,10 @@ const ERROR_CODE_LABELS: Record<string, string> = {
   UNAVAILABLE: 'Vaqtincha ulanib bo‘lmadi',
   AUTH_KEY_UNREGISTERED: 'Sessiya yaroqsiz',
   SESSION_REVOKED: 'Sessiya bekor qilingan',
+  BITO_AUTH_FAILED: 'Bito ruxsati yaroqsiz',
+  BITO_MCP_TIMEOUT: 'Bito javobi kechikdi',
+  BITO_MCP_UNAVAILABLE: 'Bito vaqtincha ulanmayapti',
+  BITO_MCP_PROTOCOL_UNSUPPORTED: 'Bito MCP protokoli mos emas',
 };
 
 export type IntegrationHealth = {
@@ -33,12 +38,14 @@ export class IntegrationsHealthService {
   constructor(
     private readonly googleAuth: GoogleAuthService,
     private readonly telegramIntegration: TelegramIntegrationService,
+    private readonly bitoIntegration: BitoIntegrationService,
   ) {}
 
-  async getHealthForUser(userId: string): Promise<{ google: IntegrationHealth; telegram: IntegrationHealth }> {
-    const [google, telegram] = await Promise.all([
+  async getHealthForUser(userId: string): Promise<{ google: IntegrationHealth; telegram: IntegrationHealth; bito: IntegrationHealth }> {
+    const [google, telegram, bito] = await Promise.all([
       this.googleAuth.status(userId),
       this.telegramIntegration.status(userId),
+      this.bitoIntegration.status(userId),
     ]);
 
     const checkedAt = new Date().toISOString();
@@ -56,6 +63,12 @@ export class IntegrationsHealthService {
       recentError: Boolean(telegram.temporaryError),
     });
 
+    const bitoState = this.classify({
+      connected: bito.connected,
+      hasAuthFailureCode: this.isAuthFailureCode(bito.lastErrorCode),
+      recentError: this.isRecent(bito.lastErrorAt),
+    });
+
     return {
       google: {
         state: googleState,
@@ -70,6 +83,13 @@ export class IntegrationsHealthService {
         lastSuccessfulSyncAt: telegram.lastValidatedAt ? new Date(telegram.lastValidatedAt).toISOString() : null,
         lastCheckedAt: checkedAt,
         lastErrorCode: telegramState === 'DISCONNECTED' ? null : this.friendlyErrorCode(telegram.lastErrorCode),
+      },
+      bito: {
+        state: bitoState,
+        connected: bito.connected,
+        lastSuccessfulSyncAt: bito.lastUsedAt ?? bito.connectedAt,
+        lastCheckedAt: checkedAt,
+        lastErrorCode: bitoState === 'DISCONNECTED' ? null : this.friendlyErrorCode(bito.lastErrorCode),
       },
     };
   }

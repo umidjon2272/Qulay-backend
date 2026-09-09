@@ -4,16 +4,21 @@ import { randomUUID } from 'crypto';
 import { ExecuteToolDto } from './dto/execute-tool.dto';
 import { AIToolRegistryService } from './ai-tool-registry.service';
 import { AIToolConfirmationRequired, AIToolExecutionContext, AIToolExecutionSuccess } from './types/ai-tool.types';
+import { BitoToolBridgeService } from '../bito/bito-tool-bridge.service';
 
 @Injectable()
 export class AIToolExecutionService {
-  constructor(private readonly registry: AIToolRegistryService) {}
+  constructor(private readonly registry: AIToolRegistryService, private readonly bitoTools: BitoToolBridgeService) {}
 
   async execute(userId: string, request: ExecuteToolDto, contextOptions: { locale?: string; timezone?: string; requestId?: string } = {}): Promise<AIToolExecutionSuccess | AIToolConfirmationRequired> {
+    const requestId = request.requestId ?? contextOptions.requestId ?? randomUUID();
+    if (this.bitoTools.isBitoAlias(request.tool)) {
+      return this.bitoTools.execute(userId, request.tool, request.input, Boolean(request.confirmed), requestId);
+    }
     const tool = this.registry.get(request.tool);
     const context: AIToolExecutionContext = {
       userId,
-      requestId: request.requestId ?? contextOptions.requestId ?? randomUUID(),
+      requestId,
       idempotencyKey: request.idempotencyKey,
       locale: contextOptions.locale ?? 'en',
       timezone: contextOptions.timezone,

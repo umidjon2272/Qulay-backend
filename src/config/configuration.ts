@@ -41,6 +41,11 @@ export default () => ({
     redirectUri: process.env.GOOGLE_REDIRECT_URI,
     tokenEncryptionKey: process.env.GOOGLE_TOKEN_ENCRYPTION_KEY,
   },
+  bito: {
+    credentialEncryptionKey: process.env.BITO_CREDENTIAL_ENCRYPTION_KEY,
+    allowedHosts: (process.env.BITO_MCP_ALLOWED_HOSTS ?? 'bito.uz,.bito.uz').split(',').map((value) => value.trim()).filter(Boolean),
+    timeoutMs: Number.parseInt(process.env.BITO_MCP_TIMEOUT_MS ?? '15000', 10),
+  },
   ai: {
     apiKey: process.env.OPENAI_API_KEY,
     model: process.env.OPENAI_MODEL ?? 'gpt-5-mini',

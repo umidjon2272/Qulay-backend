@@ -9,9 +9,10 @@ import { UsageModule } from '../usage/usage.module';
 import { AiAgentController } from './ai-agent.controller';
 import { AiAgentService } from './ai-agent.service';
 import { AiProviderService } from './ai-provider.service';
+import { BitoModule } from '../bito/bito.module';
 
 @Module({
-  imports: [PrismaModule, AIToolsModule, UsageModule, SubscriptionsModule, ActivityLogModule],
+  imports: [PrismaModule, AIToolsModule, UsageModule, SubscriptionsModule, ActivityLogModule, BitoModule],
   controllers: [AiAgentController, AiVoiceController],
   providers: [AiProviderService, AiAgentService, AiVoiceService],
   exports: [AiProviderService, AiAgentService],
