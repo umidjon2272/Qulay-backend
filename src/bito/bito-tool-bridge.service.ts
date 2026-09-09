@@ -570,15 +570,60 @@ function scalarText(value: unknown): string | undefined {
   return undefined;
 }
 
-function productIdentity(record: Record<string, unknown>): string | undefined {
-  const directRef = pickValue(record, ['product', 'item', 'goods', 'tovar', 'mahsulot']);
-  const nested = directRef && typeof directRef === 'object' && !Array.isArray(directRef) ? directRef as Record<string, unknown> : null;
-  const scalarRef = typeof directRef === 'string' || typeof directRef === 'number' ? directRef : undefined;
-  const raw = pickValue(record, ['productId', 'product_id', 'productGuid', 'product_guid', 'itemId', 'item_id', 'goodsId', 'goods_id', 'tovarId', 'nomenclatureId', 'entityId', 'entity_id'])
-    ?? scalarRef
-    ?? (nested ? pickValue(nested, ['id', 'productId', 'product_id', 'code', 'uuid', 'guid', 'entityId', 'entity_id']) : undefined)
-    ?? pickValue(record, ['id']);
-  return scalarText(raw);
+function productIdentityCandidates(record: Record<string, unknown>, mode: 'catalog' | 'stock'): string[] {
+  const values: string[] = [];
+  const seen = new Set<string>();
+  const add = (value: unknown) => {
+    const text = scalarText(value);
+    if (!text) return;
+    const normalized = text.trim();
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    values.push(normalized);
+  };
+
+  // Product-specific references are safe on both catalog and stock rows.
+  const directAliases = [
+    'productId', 'product_id', 'productGuid', 'product_guid', 'productUuid', 'product_uuid', 'productUid', 'product_uid',
+    'itemId', 'item_id', 'itemGuid', 'item_guid', 'itemUuid', 'item_uuid',
+    'goodsId', 'goods_id', 'goodsGuid', 'goods_guid', 'goodsUuid', 'goods_uuid',
+    'tovarId', 'tovar_id', 'mahsulotId', 'mahsulot_id',
+    'nomenclatureId', 'nomenclature_id', 'nomenclatureGuid', 'nomenclature_guid',
+    'entityId', 'entity_id', 'productCode', 'product_code', 'productSku', 'product_sku',
+    'sku', 'barcode', 'article', 'artikul',
+  ];
+  for (const alias of directAliases) add(pickValue(record, [alias]));
+
+  const directRef = pickValue(record, ['product', 'item', 'goods', 'tovar', 'mahsulot', 'nomenclature']);
+  if (typeof directRef === 'string' || typeof directRef === 'number') add(directRef);
+  if (directRef && typeof directRef === 'object' && !Array.isArray(directRef)) {
+    const nested = directRef as Record<string, unknown>;
+    for (const alias of ['id', '_id', 'pk', 'uuid', 'guid', 'uid', 'code', 'sku', 'barcode', 'article', 'artikul', 'productId', 'product_id', 'entityId', 'entity_id']) {
+      add(pickValue(nested, [alias]));
+    }
+  }
+
+  // Bito can expose identifiers with slightly different names between tools.
+  // Match semantic product/item/goods identifier keys without ever treating a
+  // stock-row's own generic `id` as a product id.
+  for (const [key, value] of Object.entries(record)) {
+    if (typeof value !== 'string' && typeof value !== 'number') continue;
+    const normalized = normalizeKey(key);
+    const productish = /(?:product|item|goods|tovar|mahsulot|nomencl|номенклат|товар)/iu.test(normalized);
+    const identityish = /(?:id|uuid|guid|uid|code|sku|barcode|article|artikul|артикул|штрих)/iu.test(normalized);
+    if (productish && identityish) add(value);
+  }
+
+  // Generic ids/codes identify the product itself only in the catalog tool.
+  // On stock/balance rows these usually identify the stock row and caused the
+  // previous false join where only one product happened to match.
+  if (mode === 'catalog') {
+    for (const alias of ['id', '_id', 'pk', 'uuid', 'guid', 'uid', 'code', 'sku', 'barcode', 'article', 'artikul']) {
+      add(pickValue(record, [alias]));
+    }
+  }
+
+  return values;
 }
 
 function productName(record: Record<string, unknown>): string | undefined {
@@ -594,9 +639,12 @@ function productName(record: Record<string, unknown>): string | undefined {
 function buildProductMap(records: Array<Record<string, unknown>>): Map<string, string> {
   const map = new Map<string, string>();
   for (const record of records) {
-    const id = productIdentity(record);
     const name = productName(record);
-    if (id && name) map.set(id, name);
+    if (!name) continue;
+    for (const id of productIdentityCandidates(record, 'catalog')) {
+      // Keep the first stable mapping if different catalog fields collide.
+      if (!map.has(id)) map.set(id, name);
+    }
   }
   return map;
 }
@@ -604,9 +652,11 @@ function buildProductMap(records: Array<Record<string, unknown>>): Map<string, s
 function normalizeInventory(records: Array<Record<string, unknown>>, products: Map<string, string>): InventoryItem[] {
   const aggregate = new Map<string, InventoryItem>();
   for (const record of records) {
-    const id = productIdentity(record);
     const directName = productName(record);
-    const name = directName ?? (id ? products.get(id) : undefined);
+    const mappedName = productIdentityCandidates(record, 'stock')
+      .map((id) => products.get(id))
+      .find((value): value is string => Boolean(value));
+    const name = directName ?? mappedName;
     if (!name) continue;
     const quantity = quantityValue(record);
     if (quantity === undefined) continue;

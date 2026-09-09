@@ -74,4 +74,42 @@ describe('BitoToolBridgeService', () => {
     expect(JSON.stringify(data)).not.toContain('product_id');
     expect(bito.callToolForUser).toHaveBeenCalledTimes(4);
   });
+
+  it('does not confuse a stock-row id with the product id and can join UUID/code aliases', async () => {
+    const productsByUuid: BitoMcpTool = {
+      name: 'list_products',
+      description: 'List product catalog records',
+      inputSchema: schema,
+    };
+    const stockByUuid: BitoMcpTool = {
+      name: 'warehouse_stock',
+      description: 'Get warehouse stock balances',
+      inputSchema: schema,
+    };
+    const bito = {
+      listToolsForUser: jest.fn().mockResolvedValue([productsByUuid, stockByUuid]),
+      callToolForUser: jest.fn(async (_userId: string, toolName: string) => {
+        if (toolName === 'list_products') {
+          return { content: [{ type: 'text', text: JSON.stringify({ items: [
+            { id: 9001, uuid: 'prod-cola', name: 'Coca-Cola' },
+            { id: 9002, product_code: 'SHAFTOLI-1', name: 'Shaftoli' },
+          ], meta: { page: 1, total: 2, totalPages: 1 } }) }] };
+        }
+        return { content: [{ type: 'text', text: JSON.stringify({ items: [
+          { id: 9002, product_uuid: 'prod-cola', quantity: 499, unit: 'dona' },
+          { id: 7777, product_code: 'SHAFTOLI-1', quantity: 30, unit: 'kg' },
+        ], meta: { page: 1, total: 2, totalPages: 1 } }) }] };
+      }),
+    };
+    const service = new BitoToolBridgeService(bito as never, { record: jest.fn() } as never);
+
+    const result = await service.execute('user-1', BITO_INVENTORY_TOOL_NAME, { includeZero: true }, false, 'req-uuid');
+    expect(result.status).toBe('success');
+    const data = result.status === 'success' ? result.data as { items: Array<Record<string, unknown>> } : null;
+    expect(data?.items).toEqual([
+      { name: 'Coca-Cola', quantity: 499, unit: 'dona' },
+      { name: 'Shaftoli', quantity: 30, unit: 'kg' },
+    ]);
+  });
+
 });
