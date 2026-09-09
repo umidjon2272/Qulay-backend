@@ -139,6 +139,7 @@ enum GoogleConnectionStatus {
 
 enum BitoConnectionStatus {
   DISCONNECTED
+  AUTHORIZING
   CONNECTED
   ERROR
 }
@@ -336,22 +337,37 @@ model GoogleConnection {
 }
 
 model BitoConnection {
-  id                    String               @id @default(uuid()) @db.Uuid
-  userId                String               @unique @db.Uuid
-  encryptedServerUrl    String               @db.Text
-  encryptedAccessToken  String?              @db.Text
-  authMode              BitoAuthMode         @default(NONE)
-  status                BitoConnectionStatus @default(DISCONNECTED)
-  serverName            String?              @db.VarChar(200)
-  protocolVersion       String?              @db.VarChar(50)
-  toolCount             Int                  @default(0)
-  connectedAt           DateTime?
-  lastUsedAt            DateTime?
-  lastErrorAt           DateTime?
-  lastErrorCode         String?              @db.VarChar(100)
-  createdAt             DateTime             @default(now())
-  updatedAt             DateTime             @updatedAt
-  user                  User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                         String               @id @default(uuid()) @db.Uuid
+  userId                     String               @unique @db.Uuid
+  encryptedServerUrl         String               @db.Text
+  encryptedAccessToken       String?              @db.Text
+  encryptedRefreshToken      String?              @db.Text
+  accessTokenExpiresAt       DateTime?
+  authMode                   BitoAuthMode         @default(NONE)
+  status                     BitoConnectionStatus @default(DISCONNECTED)
+  serverName                 String?              @db.VarChar(200)
+  protocolVersion            String?              @db.VarChar(50)
+  toolCount                  Int                  @default(0)
+  oauthScopes                String[]             @default([])
+  oauthStateHash             String?              @unique @db.VarChar(64)
+  encryptedPkceVerifier      String?              @db.Text
+  oauthExpiresAt             DateTime?
+  oauthIssuer                String?              @db.Text
+  oauthResource              String?              @db.Text
+  authorizationEndpoint      String?              @db.Text
+  tokenEndpoint              String?              @db.Text
+  registrationEndpoint       String?              @db.Text
+  revocationEndpoint         String?              @db.Text
+  oauthClientId              String?              @db.Text
+  encryptedOauthClientSecret String?              @db.Text
+  tokenEndpointAuthMethod    String?              @db.VarChar(100)
+  connectedAt                DateTime?
+  lastUsedAt                 DateTime?
+  lastErrorAt                DateTime?
+  lastErrorCode              String?              @db.VarChar(100)
+  createdAt                  DateTime             @default(now())
+  updatedAt                  DateTime             @updatedAt
+  user                       User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([status])
 }

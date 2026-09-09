@@ -56,8 +56,12 @@ export const envValidationSchema = Joi.object({
   GOOGLE_REDIRECT_URI: Joi.string().uri().optional(),
   GOOGLE_TOKEN_ENCRYPTION_KEY: Joi.string().pattern(/^[a-fA-F0-9]{64}$/).optional(),
   BITO_CREDENTIAL_ENCRYPTION_KEY: Joi.string().pattern(/^[a-fA-F0-9]{64}$/).optional(),
-  BITO_MCP_ALLOWED_HOSTS: Joi.string().min(1).default('bito.uz,.bito.uz'),
+  BITO_MCP_SERVER_URL: Joi.string().uri({ scheme: ['https', 'http'] }).default('https://mcp.bito.online'),
+  BITO_MCP_ALLOWED_HOSTS: Joi.string().min(1).default('mcp.bito.online,.bito.online'),
   BITO_MCP_TIMEOUT_MS: Joi.number().integer().min(3000).max(60000).default(15000),
+  BITO_OAUTH_REDIRECT_URI: Joi.string().uri({ scheme: ['https', 'http'] }).optional(),
+  BITO_OAUTH_CLIENT_ID: Joi.string().min(1).optional(),
+  BITO_OAUTH_CLIENT_SECRET: Joi.string().min(1).optional(),
   OPENAI_API_KEY: Joi.string().min(20).optional(),
   OPENAI_MODEL: Joi.string().min(1).default('gpt-5-mini'),
   OPENAI_TRANSCRIBE_MODEL: Joi.string().min(1).default('gpt-4o-mini-transcribe'),
@@ -94,6 +98,7 @@ export const envValidationSchema = Joi.object({
   const googleResult = validateOptionalIntegrationGroup(value, googleEnvKeys, 'google', helpers);
   if (googleResult !== value) return googleResult;
 
+  if (value.BITO_OAUTH_CLIENT_SECRET && !value.BITO_OAUTH_CLIENT_ID) return helpers.error('bito.oauth.client');
   if (value.JWT_ACCESS_SECRET === value.JWT_REFRESH_SECRET) return helpers.error('jwt.secrets.same');
   if (value.TELEGRAM_LOGIN_DIAGNOSTIC_ENABLED && !value.TEST_TELEGRAM_PHONE) return helpers.error('telegram.diagnostic.phone');
   if (value.NODE_ENV === 'production' && value.AUTH_TIMING_LOGS) return helpers.error('auth.timing.production');
@@ -105,6 +110,7 @@ export const envValidationSchema = Joi.object({
   'push.partial': 'Web Push requires WEB_PUSH_SUBJECT, WEB_PUSH_PUBLIC_KEY and WEB_PUSH_PRIVATE_KEY together',
   'integration.telegram.partial': 'Telegram integration requires all of: TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_SESSION_ENCRYPTION_KEY. Missing: {{#missing}}',
   'integration.google.partial': 'Google integration requires all of: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI, GOOGLE_TOKEN_ENCRYPTION_KEY. Missing: {{#missing}}',
+  'bito.oauth.client': 'BITO_OAUTH_CLIENT_SECRET requires BITO_OAUTH_CLIENT_ID',
   'jwt.secrets.same': 'JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must be different',
   'telegram.diagnostic.phone': 'TEST_TELEGRAM_PHONE is required when TELEGRAM_LOGIN_DIAGNOSTIC_ENABLED=true',
   'auth.timing.production': 'AUTH_TIMING_LOGS must be disabled in production',

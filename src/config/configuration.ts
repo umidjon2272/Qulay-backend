@@ -1,3 +1,18 @@
+function inferBitoRedirectUri(): string | undefined {
+  if (process.env.BITO_OAUTH_REDIRECT_URI) return process.env.BITO_OAUTH_REDIRECT_URI;
+  const google = process.env.GOOGLE_REDIRECT_URI;
+  if (!google) return undefined;
+  try {
+    const url = new URL(google);
+    const nextPath = url.pathname.replace(/\/integrations\/google\/callback\/?$/, '/integrations/bito/callback');
+    if (nextPath === url.pathname) return undefined;
+    url.pathname = nextPath;
+    return url.toString();
+  } catch {
+    return undefined;
+  }
+}
+
 export default () => ({
   nodeEnv: process.env.NODE_ENV ?? 'development',
   trustProxy: process.env.TRUST_PROXY === 'true',
@@ -43,8 +58,12 @@ export default () => ({
   },
   bito: {
     credentialEncryptionKey: process.env.BITO_CREDENTIAL_ENCRYPTION_KEY,
-    allowedHosts: (process.env.BITO_MCP_ALLOWED_HOSTS ?? 'bito.uz,.bito.uz').split(',').map((value) => value.trim()).filter(Boolean),
+    serverUrl: process.env.BITO_MCP_SERVER_URL ?? 'https://mcp.bito.online',
+    allowedHosts: (process.env.BITO_MCP_ALLOWED_HOSTS ?? 'mcp.bito.online,.bito.online').split(',').map((value) => value.trim()).filter(Boolean),
     timeoutMs: Number.parseInt(process.env.BITO_MCP_TIMEOUT_MS ?? '15000', 10),
+    oauthRedirectUri: inferBitoRedirectUri(),
+    oauthClientId: process.env.BITO_OAUTH_CLIENT_ID,
+    oauthClientSecret: process.env.BITO_OAUTH_CLIENT_SECRET,
   },
   ai: {
     apiKey: process.env.OPENAI_API_KEY,

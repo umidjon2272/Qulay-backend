@@ -31,11 +31,15 @@ export type BitoMcpProbeResult = {
 
 type RpcEnvelope = { jsonrpc?: string; id?: string | number | null; result?: unknown; error?: { code?: number; message?: string; data?: unknown } };
 type Session = {
+  era: 'legacy' | 'modern';
   sessionId?: string;
   protocolVersion?: string;
   serverName?: string;
   instructions?: string;
 };
+
+const MODERN_PROTOCOL_VERSION = '2026-07-28';
+const LEGACY_PROTOCOL_VERSION = '2025-06-18';
 
 @Injectable()
 export class BitoMcpClient {
@@ -81,10 +85,15 @@ export class BitoMcpClient {
   }
 
   private async initialize(credentials: BitoMcpCredentials): Promise<Session> {
+    // MCP 2026-07-28 removed initialize/sessions. Probe the modern era first, then
+    // fall back to the 2025 initialize handshake for existing Bito deployments.
+    const modern = await this.tryModernDiscover(credentials);
+    if (modern) return modern;
+
     const id = 1;
-    const response = await this.post(credentials, {}, {
+    const response = await this.post(credentials, { era: 'legacy' }, {
       jsonrpc: '2.0', id, method: 'initialize', params: {
-        protocolVersion: '2025-06-18',
+        protocolVersion: LEGACY_PROTOCOL_VERSION,
         capabilities: {},
         clientInfo: { name: 'qulay-ai', version: '1.0.0' },
       },
@@ -92,11 +101,12 @@ export class BitoMcpClient {
     const envelope = this.parseEnvelope(response.body, id);
     if (envelope.error) throw this.rpcError(envelope.error, response.status);
     const result = objectOf(envelope.result);
-    const protocolVersion = typeof result.protocolVersion === 'string' ? result.protocolVersion : '2025-06-18';
+    const protocolVersion = typeof result.protocolVersion === 'string' ? result.protocolVersion : LEGACY_PROTOCOL_VERSION;
     const serverInfo = objectOf(result.serverInfo);
     const serverName = typeof serverInfo.name === 'string' ? serverInfo.name : undefined;
     const instructions = typeof result.instructions === 'string' ? result.instructions : undefined;
     const session: Session = {
+      era: 'legacy',
       sessionId: response.sessionId,
       protocolVersion,
       ...(serverName ? { serverName } : {}),
@@ -106,9 +116,65 @@ export class BitoMcpClient {
     return session;
   }
 
+  private async tryModernDiscover(credentials: BitoMcpCredentials): Promise<Session | null> {
+    const id = 1;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const params = { _meta: this.modernMeta() };
+    try {
+      const headers: Record<string, string> = {
+        accept: 'application/json, text/event-stream',
+        'content-type': 'application/json',
+        'mcp-protocol-version': MODERN_PROTOCOL_VERSION,
+        'mcp-method': 'server/discover',
+      };
+      this.applyAuth(headers, credentials);
+      const response = await fetch(credentials.serverUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ jsonrpc: '2.0', id, method: 'server/discover', params }),
+        signal: controller.signal,
+        redirect: 'error',
+      });
+      const body = await response.text();
+      if (response.status === 401 || response.status === 403) throw new ServiceUnavailableException('BITO_AUTH_FAILED');
+      // Legacy MCP servers commonly reject server/discover with 400/404/405 or -32601.
+      if (!response.ok) return null;
+      const envelope = this.parseEnvelope(body, id);
+      if (envelope.error) {
+        if (envelope.error.code === -32601) return null;
+        return null;
+      }
+      const result = objectOf(envelope.result);
+      const supported = Array.isArray(result.supportedVersions)
+        ? result.supportedVersions.filter((value): value is string => typeof value === 'string')
+        : [];
+      if (!supported.includes(MODERN_PROTOCOL_VERSION)) return null;
+      const meta = objectOf(result._meta);
+      const serverInfo = objectOf(meta['io.modelcontextprotocol/serverInfo']);
+      const serverName = typeof serverInfo.name === 'string' ? serverInfo.name : undefined;
+      const instructions = typeof result.instructions === 'string' ? result.instructions : undefined;
+      return {
+        era: 'modern',
+        protocolVersion: MODERN_PROTOCOL_VERSION,
+        ...(serverName ? { serverName } : {}),
+        ...(instructions ? { instructions } : {}),
+      };
+    } catch (error) {
+      if (error instanceof ServiceUnavailableException) throw error;
+      if (error instanceof Error && error.name === 'AbortError') throw new ServiceUnavailableException('BITO_MCP_TIMEOUT');
+      // Network errors are real availability failures; protocol-shape errors fall back.
+      if (error instanceof TypeError) throw new ServiceUnavailableException('BITO_MCP_UNAVAILABLE');
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   private async rpc(credentials: BitoMcpCredentials, session: Session, method: string, params: Record<string, unknown>): Promise<unknown> {
     const id = Math.floor(Math.random() * 2_000_000_000) + 2;
-    const response = await this.post(credentials, session, { jsonrpc: '2.0', id, method, params });
+    const wireParams = session.era === 'modern' ? { ...params, _meta: this.modernMeta() } : params;
+    const response = await this.post(credentials, session, { jsonrpc: '2.0', id, method, params: wireParams });
     const envelope = this.parseEnvelope(response.body, id);
     if (envelope.error) throw this.rpcError(envelope.error, response.status);
     return envelope.result;
@@ -123,7 +189,16 @@ export class BitoMcpClient {
         'content-type': 'application/json',
       };
       if (session.protocolVersion) headers['mcp-protocol-version'] = session.protocolVersion;
-      if (session.sessionId) headers['mcp-session-id'] = session.sessionId;
+      if (session.era === 'legacy' && session.sessionId) headers['mcp-session-id'] = session.sessionId;
+      if (session.era === 'modern') {
+        const request = objectOf(payload);
+        const method = typeof request.method === 'string' ? request.method : undefined;
+        if (method) headers['mcp-method'] = method;
+        const params = objectOf(request.params);
+        if (method === 'tools/call' && typeof params.name === 'string') {
+          headers['mcp-name'] = this.encodeModernHeaderValue(params.name);
+        }
+      }
       this.applyAuth(headers, credentials);
 
       const response = await fetch(credentials.serverUrl, {
@@ -146,11 +221,26 @@ export class BitoMcpClient {
   }
 
   private async terminate(credentials: BitoMcpCredentials, session: Session): Promise<void> {
-    if (!session.sessionId) return;
+    if (session.era !== 'legacy' || !session.sessionId) return;
     const headers: Record<string, string> = { 'mcp-session-id': session.sessionId };
     if (session.protocolVersion) headers['mcp-protocol-version'] = session.protocolVersion;
     this.applyAuth(headers, credentials);
     await fetch(credentials.serverUrl, { method: 'DELETE', headers, redirect: 'error' }).catch(() => undefined);
+  }
+
+  private encodeModernHeaderValue(value: string): string {
+    const plainAscii = /^[\x20-\x7e]+$/.test(value) && value.trim() === value;
+    const sentinelLike = value.startsWith('=?base64?') && value.endsWith('?=');
+    if (plainAscii && !sentinelLike) return value;
+    return `=?base64?${Buffer.from(value, 'utf8').toString('base64')}?=`;
+  }
+
+  private modernMeta(): Record<string, unknown> {
+    return {
+      'io.modelcontextprotocol/protocolVersion': MODERN_PROTOCOL_VERSION,
+      'io.modelcontextprotocol/clientInfo': { name: 'qulay-ai', version: '1.0.0' },
+      'io.modelcontextprotocol/clientCapabilities': {},
+    };
   }
 
   private applyAuth(headers: Record<string, string>, credentials: BitoMcpCredentials): void {
