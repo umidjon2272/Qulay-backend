@@ -105,7 +105,7 @@ export class AiAgentService {
     ]);
 
     const recentBitoContext = history.slice(0, 10).some((item) =>
-      item.role === MessageRole.TOOL && /(?:bito__|\"provider\":\"Bito ERP\")/iu.test(item.content),
+      item.role === MessageRole.TOOL && /(?:bito__|"provider"\s*:\s*"Bito ERP")/iu.test(item.content),
     );
     const bitoFollowUp = recentBitoContext && this.isBitoFollowUp(dto.message);
     const bitoRequested = this.shouldUseBito(dto.message) || bitoFollowUp;
