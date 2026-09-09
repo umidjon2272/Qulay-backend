@@ -5,7 +5,7 @@ import { BitoIntegrationService } from '../bito/bito-integration.service';
 
 export type IntegrationHealthState = 'CONNECTED' | 'TEMPORARY_ISSUE' | 'RECONNECT_REQUIRED' | 'DISCONNECTED';
 
-const AUTH_FAILURE_CODES = new Set(['TOKEN_REVOKED', 'AUTH_KEY_UNREGISTERED', 'SESSION_REVOKED', 'invalid_grant', 'BITO_AUTH_FAILED']);
+const AUTH_FAILURE_CODES = new Set(['TOKEN_REVOKED', 'AUTH_KEY_UNREGISTERED', 'SESSION_REVOKED', 'invalid_grant', 'BITO_AUTH_FAILED', 'BITO_TOKEN_REFRESH_FAILED']);
 const RECENT_ERROR_WINDOW_MS = 15 * 60 * 1000;
 
 const ERROR_CODE_LABELS: Record<string, string> = {
@@ -14,6 +14,7 @@ const ERROR_CODE_LABELS: Record<string, string> = {
   AUTH_KEY_UNREGISTERED: 'Sessiya yaroqsiz',
   SESSION_REVOKED: 'Sessiya bekor qilingan',
   BITO_AUTH_FAILED: 'Bito ruxsati yaroqsiz',
+  BITO_TOKEN_REFRESH_FAILED: 'Bito ruxsatini yangilab bo‘lmadi',
   BITO_MCP_TIMEOUT: 'Bito javobi kechikdi',
   BITO_MCP_UNAVAILABLE: 'Bito vaqtincha ulanmayapti',
   BITO_MCP_PROTOCOL_UNSUPPORTED: 'Bito MCP protokoli mos emas',
@@ -63,7 +64,7 @@ export class IntegrationsHealthService {
       recentError: Boolean(telegram.temporaryError),
     });
 
-    const bitoState = this.classify({
+    const bitoState = bito.status === 'DEGRADED' ? 'TEMPORARY_ISSUE' : this.classify({
       connected: bito.connected,
       hasAuthFailureCode: this.isAuthFailureCode(bito.lastErrorCode),
       recentError: this.isRecent(bito.lastErrorAt),

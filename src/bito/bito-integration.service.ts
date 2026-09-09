@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { BitoAuthMode, BitoConnectionStatus } from '@prisma/client';
 import { ActivityLogService, ACTIVITY_ACTIONS } from '../activity-log/activity-log.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -7,9 +7,11 @@ import { BitoCryptoService } from './bito-crypto.service';
 import { BitoMcpClient, BitoMcpCredentials, BitoMcpTool } from './bito-mcp.client';
 import { BitoOAuthService, BitoAuthorizationStart } from './bito-oauth.service';
 import { BitoUrlPolicyService } from './bito-url-policy.service';
+import { bitoToolSideEffect } from './bito-tool-policy';
 
 @Injectable()
 export class BitoIntegrationService {
+  private readonly logger = new Logger(BitoIntegrationService.name);
   constructor(
     private readonly prisma: PrismaService,
     private readonly crypto: BitoCryptoService,
@@ -20,7 +22,7 @@ export class BitoIntegrationService {
   ) {}
 
   async status(userId: string) {
-    const connection = await this.prisma.bitoConnection.findUnique({ where: { userId } });
+    let connection = await this.prisma.bitoConnection.findUnique({ where: { userId } });
     const configured = this.crypto.configured();
     if (!connection) {
       return {
@@ -40,13 +42,29 @@ export class BitoIntegrationService {
         authMode: BitoAuthMode.NONE,
       };
     }
-    const connected = configured && connection.status === BitoConnectionStatus.CONNECTED;
+    let connected = false;
+    let usableStatus: string = connection.status;
+    if (configured && (connection.status === BitoConnectionStatus.CONNECTED || connection.status === BitoConnectionStatus.ERROR)) {
+      try {
+        const tools = await this.listToolsForUser(userId);
+        connected = tools.length > 0;
+        usableStatus = connected ? 'CONNECTED' : 'DEGRADED';
+      } catch (error) {
+        usableStatus = /BITO_(?:AUTH|TOKEN_REFRESH)_FAILED/.test(this.errorCode(error)) ? 'EXPIRED' : 'DEGRADED';
+      }
+      const fresh = await this.prisma.bitoConnection.findUnique({ where: { userId } });
+      if (!fresh || fresh.status === BitoConnectionStatus.DISCONNECTED || fresh.status === BitoConnectionStatus.AUTHORIZING) {
+        connected = false;
+        usableStatus = fresh?.status ?? 'DISCONNECTED';
+      }
+      connection = fresh ?? connection;
+    }
     return {
       configured,
       oauthReady: this.oauth.oauthReady(),
       connected,
       authorizing: configured && connection.status === BitoConnectionStatus.AUTHORIZING,
-      status: configured ? connection.status : 'not_configured',
+      status: configured ? usableStatus : 'not_configured',
       serverName: connection.serverName,
       serverHost: this.safeHost(connection.encryptedServerUrl),
       protocolVersion: connection.protocolVersion,
@@ -148,7 +166,7 @@ export class BitoIntegrationService {
 
   async test(userId: string) {
     try {
-      const probe = await this.withFreshCredentials(userId, (credentials) => this.mcp.probe(credentials));
+      const probe = await this.withFreshCredentials(userId, (credentials) => this.mcp.probe(credentials), true);
       const now = new Date();
       await this.prisma.bitoConnection.update({
         where: { userId },
@@ -171,7 +189,8 @@ export class BitoIntegrationService {
 
   async listToolsForUser(userId: string): Promise<BitoMcpTool[]> {
     try {
-      const result = await this.withFreshCredentials(userId, (credentials) => this.mcp.listTools(credentials));
+      const result = await this.withFreshCredentials(userId, (credentials) => this.mcp.listTools(credentials), true);
+      if (!result.tools.length) throw new ServiceUnavailableException('BITO_MCP_TOOLS_UNAVAILABLE');
       await this.prisma.bitoConnection.update({
         where: { userId },
         data: {
@@ -190,9 +209,11 @@ export class BitoIntegrationService {
     }
   }
 
-  async callToolForUser(userId: string, name: string, input: Record<string, unknown>): Promise<unknown> {
+  async callToolForUser(userId: string, name: string, input: Record<string, unknown>, retryRead = false): Promise<unknown> {
     try {
-      const result = await this.withFreshCredentials(userId, (credentials) => this.mcp.callTool(credentials, name, input));
+      // Only the server-side bridge supplies retryRead after resolving the
+      // account's current tool schema and applying the shared safety policy.
+      const result = await this.withFreshCredentials(userId, (credentials) => this.mcp.callTool(credentials, name, input), retryRead);
       await this.prisma.bitoConnection.update({
         where: { userId },
         data: { lastUsedAt: new Date(), lastErrorAt: null, lastErrorCode: null },
@@ -204,21 +225,26 @@ export class BitoIntegrationService {
     }
   }
 
-  private async withFreshCredentials<T>(userId: string, operation: (credentials: BitoMcpCredentials) => Promise<T>): Promise<T> {
+  private async withFreshCredentials<T>(userId: string, operation: (credentials: BitoMcpCredentials) => Promise<T>, retryRead = false): Promise<T> {
     const credentials = await this.credentialsForUser(userId, false);
     try {
       return await operation(credentials);
     } catch (error) {
-      if (!this.isAuthFailure(error) || credentials.authMode !== BitoAuthMode.BEARER) throw error;
-      const refreshed = await this.credentialsForUser(userId, true);
-      return operation(refreshed);
+      if (this.isAuthFailure(error) && credentials.authMode === BitoAuthMode.BEARER) {
+        const refreshed = await this.credentialsForUser(userId, true);
+        return operation(refreshed);
+      }
+      if (retryRead && /BITO_MCP_(?:TIMEOUT|UNAVAILABLE|HTTP_(?:404|408|429|502|503|504))/.test(error instanceof Error ? error.message : '')) {
+        return operation(await this.credentialsForUser(userId, false));
+      }
+      throw error;
     }
   }
 
   private async credentialsForUser(userId: string, forceRefresh: boolean): Promise<BitoMcpCredentials> {
     if (!this.crypto.configured()) throw new ServiceUnavailableException('Bito integratsiyasi hozir sozlanmagan');
     const connection = await this.prisma.bitoConnection.findUnique({ where: { userId } });
-    if (!connection || connection.status !== BitoConnectionStatus.CONNECTED) throw new BadRequestException('BITO_NOT_CONNECTED');
+    if (!connection || ![BitoConnectionStatus.CONNECTED, BitoConnectionStatus.ERROR].includes(connection.status as 'CONNECTED' | 'ERROR')) throw new BadRequestException('BITO_NOT_CONNECTED');
     const serverUrl = this.urls.assertMcpServerUrl(this.crypto.decrypt(connection.encryptedServerUrl));
 
     if (connection.authMode === BitoAuthMode.NONE) return { serverUrl, authMode: BitoAuthMode.NONE };
@@ -228,6 +254,8 @@ export class BitoIntegrationService {
     }
 
     const accessToken = await this.oauth.accessToken(userId, forceRefresh);
+    const current = await this.prisma.bitoConnection.findUnique({ where: { userId } });
+    if (!current || current.id !== connection.id || current.encryptedServerUrl !== connection.encryptedServerUrl || current.oauthClientId !== connection.oauthClientId) throw new ServiceUnavailableException('BITO_AUTH_FAILED');
     return { serverUrl, authMode: BitoAuthMode.BEARER, accessToken };
   }
 
@@ -248,12 +276,14 @@ export class BitoIntegrationService {
       name: tool.name,
       title: tool.title ?? null,
       description: tool.description ?? null,
-      readOnly: tool.annotations?.readOnlyHint === true,
+      readOnly: bitoToolSideEffect(tool) === 'READ',
     }));
   }
 
   private errorCode(error: unknown): string {
     const text = error instanceof Error ? error.message : String(error ?? '');
+    if (/BITO_(?:TOKEN_REFRESH|TOOL|MAPPING|PAGINATION)_FAILED/.test(text)) return text.match(/BITO_[A-Z0-9_]+/)![0];
+    if (text.includes('BITO_NOT_CONNECTED')) return 'BITO_NOT_CONNECTED';
     if (text.includes('BITO_AUTH_FAILED')) return 'BITO_AUTH_FAILED';
     if (text.includes('OAUTH')) return text.match(/BITO_[A-Z0-9_]+/)?.[0] ?? 'BITO_OAUTH_FAILED';
     if (text.includes('TIMEOUT')) return 'BITO_MCP_TIMEOUT';
@@ -268,6 +298,8 @@ export class BitoIntegrationService {
 
   private async recordRuntimeError(userId: string, error: unknown): Promise<void> {
     const code = this.errorCode(error);
+    if (code === 'BITO_NOT_CONNECTED') return;
+    this.logger.warn({ code });
     await this.prisma.bitoConnection.updateMany({
       where: { userId },
       data: {

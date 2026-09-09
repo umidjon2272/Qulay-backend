@@ -9,6 +9,7 @@ import { SecurityRateLimitService } from '../common/security/security-rate-limit
 import { BitoIntegrationService } from './bito-integration.service';
 import { BitoOAuthService } from './bito-oauth.service';
 import { ConnectBitoDto } from './dto/bito.dto';
+import { bitoToolSideEffect } from './bito-tool-policy';
 
 @Controller('integrations/bito')
 export class BitoController {
@@ -98,7 +99,7 @@ export class BitoController {
       name: tool.name,
       title: tool.title ?? null,
       description: tool.description ?? null,
-      readOnly: tool.annotations?.readOnlyHint === true,
+      readOnly: bitoToolSideEffect(tool) === 'READ',
     }));
   }
 

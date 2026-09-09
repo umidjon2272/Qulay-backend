@@ -1,6 +1,7 @@
-import { BadGatewayException, Injectable, ServiceUnavailableException } from '@nestjs/common';
+import { BadGatewayException, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { BitoAuthMode } from '@prisma/client';
+import { bitoResponseShape, bitoSchemaShape } from './bito-shape-debug';
 
 export type BitoMcpCredentials = {
   serverUrl: string;
@@ -13,6 +14,7 @@ export type BitoMcpTool = {
   title?: string;
   description?: string;
   inputSchema?: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
   annotations?: {
     readOnlyHint?: boolean;
     destructiveHint?: boolean;
@@ -44,16 +46,18 @@ const LEGACY_PROTOCOL_VERSION = '2025-06-18';
 @Injectable()
 export class BitoMcpClient {
   private readonly timeoutMs: number;
+  private readonly debugShapes: boolean;
+  private readonly logger = new Logger(BitoMcpClient.name);
 
   constructor(config: ConfigService) {
     this.timeoutMs = config.get<number>('bito.timeoutMs', 15_000);
+    this.debugShapes = config.get<boolean>('bito.debugShapes', false);
   }
 
   async probe(credentials: BitoMcpCredentials): Promise<BitoMcpProbeResult> {
     const session = await this.initialize(credentials);
     try {
-      const result = await this.rpc(credentials, session, 'tools/list', {});
-      const tools = this.extractTools(result);
+      const tools = await this.listAllTools(credentials, session);
       return {
         serverName: session.serverName ?? null,
         protocolVersion: session.protocolVersion ?? null,
@@ -68,8 +72,8 @@ export class BitoMcpClient {
   async listTools(credentials: BitoMcpCredentials): Promise<{ tools: BitoMcpTool[]; protocolVersion: string | null; serverName: string | null }> {
     const session = await this.initialize(credentials);
     try {
-      const result = await this.rpc(credentials, session, 'tools/list', {});
-      return { tools: this.extractTools(result), protocolVersion: session.protocolVersion ?? null, serverName: session.serverName ?? null };
+      const tools = await this.listAllTools(credentials, session);
+      return { tools, protocolVersion: session.protocolVersion ?? null, serverName: session.serverName ?? null };
     } finally {
       void this.terminate(credentials, session).catch(() => undefined);
     }
@@ -78,10 +82,36 @@ export class BitoMcpClient {
   async callTool(credentials: BitoMcpCredentials, name: string, args: Record<string, unknown>): Promise<unknown> {
     const session = await this.initialize(credentials);
     try {
-      return await this.rpc(credentials, session, 'tools/call', { name, arguments: args });
+      const result = await this.rpc(credentials, session, 'tools/call', { name, arguments: args });
+      if (this.debugShapes) this.logger.log(JSON.stringify({ event: 'BITO_RESPONSE_SHAPE', tool: name, requestShape: bitoResponseShape(args), shape: bitoResponseShape(result) }));
+      if (objectOf(result).isError === true) throw new BadGatewayException('BITO_TOOL_FAILED');
+      return result;
     } finally {
       void this.terminate(credentials, session).catch(() => undefined);
     }
+  }
+
+  private async listAllTools(credentials: BitoMcpCredentials, session: Session): Promise<BitoMcpTool[]> {
+    const tools = new Map<string, BitoMcpTool>();
+    const seen = new Set<string>();
+    let cursor: string | undefined;
+    for (let page = 0; page < 20; page++) {
+      const result = await this.rpc(credentials, session, 'tools/list', cursor ? { cursor } : {});
+      for (const tool of this.extractTools(result)) tools.set(tool.name, tool);
+      const next = objectOf(result).nextCursor;
+      if (next === undefined || next === null || next === '') {
+        if (this.debugShapes) for (const tool of tools.values()) this.logger.log(JSON.stringify({
+          event: 'BITO_TOOL_SCHEMA', tool: tool.name,
+          input: bitoSchemaShape(tool.inputSchema), output: bitoSchemaShape(tool.outputSchema),
+          readOnlyHint: tool.annotations?.readOnlyHint, destructiveHint: tool.annotations?.destructiveHint,
+        }));
+        return [...tools.values()];
+      }
+      if (typeof next !== 'string' || seen.has(next)) throw new BadGatewayException('BITO_PAGINATION_FAILED');
+      seen.add(next);
+      cursor = next;
+    }
+    throw new BadGatewayException('BITO_PAGINATION_FAILED');
   }
 
   private async initialize(credentials: BitoMcpCredentials): Promise<Session> {
@@ -136,7 +166,7 @@ export class BitoMcpClient {
         signal: controller.signal,
         redirect: 'error',
       });
-      const body = await response.text();
+      const body = await this.readRpcBody(response, id);
       if (response.status === 401 || response.status === 403) throw new ServiceUnavailableException('BITO_AUTH_FAILED');
       // Legacy MCP servers commonly reject server/discover with 400/404/405 or -32601.
       if (!response.ok) return null;
@@ -204,7 +234,7 @@ export class BitoMcpClient {
       const response = await fetch(credentials.serverUrl, {
         method: 'POST', headers, body: JSON.stringify(payload), signal: controller.signal, redirect: 'error',
       });
-      const body = await response.text();
+      const body = await this.readRpcBody(response, objectOf(payload).id);
       if (!response.ok && !(allowEmpty && response.status === 202)) {
         if (response.status === 401 || response.status === 403) throw new ServiceUnavailableException('BITO_AUTH_FAILED');
         throw new BadGatewayException(`BITO_MCP_HTTP_${response.status}`);
@@ -225,7 +255,36 @@ export class BitoMcpClient {
     const headers: Record<string, string> = { 'mcp-session-id': session.sessionId };
     if (session.protocolVersion) headers['mcp-protocol-version'] = session.protocolVersion;
     this.applyAuth(headers, credentials);
-    await fetch(credentials.serverUrl, { method: 'DELETE', headers, redirect: 'error' }).catch(() => undefined);
+    await fetch(credentials.serverUrl, { method: 'DELETE', headers, redirect: 'error', signal: AbortSignal.timeout(this.timeoutMs) }).catch(() => undefined);
+  }
+
+  private async readRpcBody(response: Response, expectedId: unknown): Promise<string> {
+    if (!response.headers.get('content-type')?.includes('text/event-stream') || !response.body || expectedId === undefined) return response.text();
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let pending = '';
+    let size = 0;
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        pending += decoder.decode(value, { stream: !done });
+        size += value?.length ?? 0;
+        if (size > 4_000_000) throw new BadGatewayException('BITO_MCP_RESPONSE_TOO_LARGE');
+        const events = pending.split(/\r?\n\r?\n/);
+        pending = events.pop() ?? '';
+        if (done && pending) events.push(pending);
+        for (const event of events) {
+          const data = event.split(/\r?\n/).filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
+          try {
+            const envelope = JSON.parse(data) as RpcEnvelope;
+            if (String(envelope.id) === String(expectedId)) return JSON.stringify(envelope);
+          } catch { /* Ignore SSE comments/notifications, never log their contents. */ }
+        }
+        if (done) throw new BadGatewayException('BITO_MCP_INVALID_RESPONSE');
+      }
+    } finally {
+      await reader.cancel().catch(() => undefined);
+    }
   }
 
   private encodeModernHeaderValue(value: string): string {
@@ -263,7 +322,7 @@ export class BitoMcpClient {
       }
     }
     const matched = candidates.find((item) => String(item.id ?? '') === String(expectedId));
-    const envelope = matched ?? candidates.find((item) => item.result !== undefined || item.error !== undefined);
+    const envelope = matched;
     if (!envelope) throw new BadGatewayException('BITO_MCP_INVALID_RESPONSE');
     return envelope;
   }
@@ -280,6 +339,7 @@ export class BitoMcpClient {
         ...(typeof item.title === 'string' ? { title: item.title } : {}),
         ...(typeof item.description === 'string' ? { description: item.description } : {}),
         ...(item.inputSchema && typeof item.inputSchema === 'object' && !Array.isArray(item.inputSchema) ? { inputSchema: item.inputSchema as Record<string, unknown> } : {}),
+        ...(item.outputSchema && typeof item.outputSchema === 'object' && !Array.isArray(item.outputSchema) ? { outputSchema: item.outputSchema as Record<string, unknown> } : {}),
         ...(item.annotations && typeof item.annotations === 'object' && !Array.isArray(item.annotations) ? { annotations: item.annotations as BitoMcpTool['annotations'] } : {}),
       }];
     });
@@ -296,4 +356,3 @@ export class BitoMcpClient {
 function objectOf(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
-

@@ -51,7 +51,7 @@ export class AiProviderService {
     return Boolean(this.config.get<string>('ai.apiKey'));
   }
 
-  async complete(messages: ProviderMessage[], tools: ProviderTool[], onEvent?: (event: ProviderStreamEvent) => void, signal?: AbortSignal): Promise<ProviderResponse> {
+  async complete(messages: ProviderMessage[], tools: ProviderTool[], onEvent?: (event: ProviderStreamEvent) => void, signal?: AbortSignal, toolChoice: 'auto' | 'required' = 'auto'): Promise<ProviderResponse> {
     const apiKey = this.config.get<string>('ai.apiKey');
     if (!apiKey) throw new ServiceUnavailableException('AI hali sozlanmagan. OPENAI_API_KEY ni Render Environment’ga qo‘ying.');
     const model = this.config.get<string>('ai.model', 'gpt-5-mini');
@@ -65,7 +65,7 @@ export class AiProviderService {
         model,
         input: toResponseInput(messages),
         tools: tools.map(toResponseTool),
-        tool_choice: 'auto' as const,
+        tool_choice: toolChoice,
         store: false,
         include: ['reasoning.encrypted_content'] as Array<'reasoning.encrypted_content'>,
         ...(/^gpt-5(?:-|$)/.test(model) ? { reasoning: { effort: 'low' as const } } : {}),

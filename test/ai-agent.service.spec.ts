@@ -19,7 +19,7 @@ describe('AiAgentService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    service = new AiAgentService(prisma, provider, registry, execution, usage, subscriptions, activityLog);
+    service = new AiAgentService(prisma, provider, registry, execution, usage, subscriptions, activityLog, { listModelTools: jest.fn().mockResolvedValue([]) } as any);
   });
 
   describe('expireStale', () => {

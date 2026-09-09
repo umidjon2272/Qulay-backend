@@ -305,7 +305,7 @@ export class BitoOAuthService {
 
   async accessToken(userId: string, forceRefresh = false): Promise<string> {
     const connection = await this.prisma.bitoConnection.findUnique({ where: { userId } });
-    if (!connection || connection.status !== BitoConnectionStatus.CONNECTED || connection.authMode !== BitoAuthMode.BEARER) {
+    if (!connection || ![BitoConnectionStatus.CONNECTED, BitoConnectionStatus.ERROR].includes(connection.status as 'CONNECTED' | 'ERROR') || connection.authMode !== BitoAuthMode.BEARER) {
       throw new ServiceUnavailableException('BITO_AUTH_FAILED');
     }
     if (!forceRefresh && connection.encryptedAccessToken && (!connection.accessTokenExpiresAt || connection.accessTokenExpiresAt.getTime() > Date.now() + 45_000)) {
@@ -530,8 +530,8 @@ export class BitoOAuthService {
       this.applyClientAuthentication(headers, form, connection);
       const token = await this.tokenRequest(endpoint, headers, form);
       const accessToken = this.required(token.access_token, 'BITO_OAUTH_TOKEN_MISSING');
-      await this.prisma.bitoConnection.update({
-        where: { id: connection.id },
+      const saved = await this.prisma.bitoConnection.updateMany({
+        where: { id: connection.id, encryptedRefreshToken: connection.encryptedRefreshToken, encryptedServerUrl: connection.encryptedServerUrl, status: { in: [BitoConnectionStatus.CONNECTED, BitoConnectionStatus.ERROR] } },
         data: {
           encryptedAccessToken: this.crypto.encrypt(accessToken),
           encryptedRefreshToken: token.refresh_token ? this.crypto.encrypt(token.refresh_token) : connection.encryptedRefreshToken,
@@ -542,10 +542,14 @@ export class BitoOAuthService {
           lastErrorCode: null,
         },
       });
+      if (saved.count !== 1) throw new ServiceUnavailableException('BITO_AUTH_FAILED');
       return accessToken;
     } catch (error) {
-      await this.markError(connection.userId, 'BITO_AUTH_FAILED', false);
-      throw error instanceof ServiceUnavailableException ? error : new ServiceUnavailableException('BITO_AUTH_FAILED');
+      await this.prisma.bitoConnection.updateMany({
+        where: { id: connection.id, encryptedRefreshToken: connection.encryptedRefreshToken, encryptedServerUrl: connection.encryptedServerUrl },
+        data: { status: BitoConnectionStatus.ERROR, lastErrorAt: new Date(), lastErrorCode: 'BITO_TOKEN_REFRESH_FAILED' },
+      });
+      throw new ServiceUnavailableException('BITO_TOKEN_REFRESH_FAILED');
     }
   }
 

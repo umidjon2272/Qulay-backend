@@ -42,7 +42,7 @@ describe('AI tool registry and execution', () => {
       financeToolsService as any, todayService as any, telegramIntegrationService as any, briefingService as any,
       activityLog as any, googleCalendarService as any, googleDriveService as any,
     );
-    execution = new AIToolExecutionService(registry);
+    execution = new AIToolExecutionService(registry, { isBitoAlias: (name: string) => name.startsWith('bito__') } as any);
   });
 
   it('lists all first-party tools with confirmation metadata', () => {

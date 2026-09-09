@@ -59,6 +59,7 @@ export const envValidationSchema = Joi.object({
   BITO_MCP_SERVER_URL: Joi.string().uri({ scheme: ['https', 'http'] }).default('https://mcp.bito.online'),
   BITO_MCP_ALLOWED_HOSTS: Joi.string().min(1).default('mcp.bito.online,.bito.online'),
   BITO_MCP_TIMEOUT_MS: Joi.number().integer().min(3000).max(60000).default(15000),
+  BITO_DEBUG_SHAPES: Joi.boolean().default(false),
   BITO_OAUTH_REDIRECT_URI: Joi.string().uri({ scheme: ['https', 'http'] }).optional(),
   BITO_OAUTH_CLIENT_ID: Joi.string().min(1).optional(),
   BITO_OAUTH_CLIENT_SECRET: Joi.string().min(1).optional(),

@@ -57,6 +57,7 @@ export default () => ({
     tokenEncryptionKey: process.env.GOOGLE_TOKEN_ENCRYPTION_KEY,
   },
   bito: {
+    debugShapes: process.env.BITO_DEBUG_SHAPES === 'true',
     credentialEncryptionKey: process.env.BITO_CREDENTIAL_ENCRYPTION_KEY,
     serverUrl: process.env.BITO_MCP_SERVER_URL ?? 'https://mcp.bito.online',
     allowedHosts: (process.env.BITO_MCP_ALLOWED_HOSTS ?? 'mcp.bito.online,.bito.online').split(',').map((value) => value.trim()).filter(Boolean),

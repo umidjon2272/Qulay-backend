@@ -7,7 +7,7 @@ describe('IntegrationsHealthService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    service = new IntegrationsHealthService(googleAuth, telegramIntegration);
+    service = new IntegrationsHealthService(googleAuth, telegramIntegration, { status: jest.fn().mockResolvedValue({ connected: false, status: 'DISCONNECTED' }) } as any);
   });
 
   it('reports CONNECTED when there is no recent error, not TEMPORARY_ISSUE or DISCONNECTED', async () => {

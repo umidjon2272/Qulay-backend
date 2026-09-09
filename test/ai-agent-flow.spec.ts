@@ -20,7 +20,7 @@ describe('AI conversation to durable action flow', () => {
       },
     };
     provider = { complete: jest.fn() }; execution = { execute: jest.fn() };
-    service = new AiAgentService(prisma, provider, { getToolDefinitionsForModel: () => [] } as any, execution, { logTextUsage: jest.fn().mockResolvedValue({}), logToolUsage: jest.fn().mockResolvedValue({}) } as any, { assertAiAllowed: jest.fn(), assertToolAllowed: jest.fn() } as any, { record: jest.fn().mockResolvedValue({}) } as any);
+    service = new AiAgentService(prisma, provider, { getToolDefinitionsForModel: () => [] } as any, execution, { logTextUsage: jest.fn().mockResolvedValue({}), logToolUsage: jest.fn().mockResolvedValue({}) } as any, { assertAiAllowed: jest.fn(), assertToolAllowed: jest.fn() } as any, { record: jest.fn().mockResolvedValue({}) } as any, { listModelTools: jest.fn().mockResolvedValue([]) } as any);
   });
   it('prepares normalized finance once, accepts ha without another model call, and prevents repeat execution', async () => {
     provider.complete.mockResolvedValue(toolCall('create_finance_transaction', { type: 'INCOME', amount: '500 min', transactionDate: 'bugun' }));
