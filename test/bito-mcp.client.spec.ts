@@ -1,4 +1,5 @@
 import { BitoMcpClient } from '../src/bito/bito-mcp.client';
+import { Logger } from '@nestjs/common';
 
 describe('Bito MCP transport', () => {
   let fetchMock: jest.Mock, client: BitoMcpClient;
@@ -20,6 +21,23 @@ describe('Bito MCP transport', () => {
   it('collects every tools/list page in one initialized session', async () => {
     expect((await client.listTools(credentials)).tools.map(tool => tool.name)).toEqual(['get_products', 'get_stock']);
     expect(fetchMock.mock.calls.filter(([, options]) => JSON.parse(options.body).method === 'tools/list')).toHaveLength(2);
+  });
+  it('marks inventory schema candidates and logs sanitized descriptions and fields', async () => {
+    const logger = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    client = new BitoMcpClient({ get: (key: string, fallback: unknown) => key === 'bito.debugShapes' ? true : fallback } as any);
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url, options) => {
+      const request = JSON.parse(options.body);
+      if (request.method !== 'tools/list') return base(url, options);
+      return reply(request.id, { tools: [{ name: 'fixture_stock_read', description: 'Read stock quantities. token=private-token example Private Business 987654', inputSchema: { type: 'object', properties: { page: { type: 'integer', default: 987654 }, warehouseId: { type: 'string', examples: ['private-id'] } } } }] });
+    });
+    await client.listTools(credentials);
+    const logs = JSON.stringify(logger.mock.calls);
+    expect(logs).toContain('BITO_TOOL_SCHEMA');
+    expect(logs).toContain('inventoryCandidate');
+    expect(logs).toContain('Read stock quantities');
+    expect(logs).toContain('warehouseId');
+    expect(logs).not.toMatch(/private-token|Private Business|987654|private-id/);
   });
   it('rejects MCP isError rather than handing it to the model as a successful read', async () => {
     await expect(client.callTool(credentials, 'get_stock', {})).rejects.toThrow('BITO_TOOL_FAILED');

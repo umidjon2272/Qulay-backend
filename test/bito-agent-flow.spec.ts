@@ -26,6 +26,7 @@ describe('Bito chat orchestration (mock provider/ERP)', () => {
     expect(messages.some((item: any) => item.role === 'tool' && item.content.includes('"quantity":12'))).toBe(true);
     expect(tools.map((tool: any) => tool.function.name)).not.toEqual(expect.arrayContaining(['search_files']));
     expect(tools.map((tool: any) => tool.function.name)).not.toEqual(expect.arrayContaining(['search_google_drive_files']));
+    expect(tools.map((tool: any) => tool.function.name)).not.toEqual(expect.arrayContaining(['bito__get_sales', 'bito__get_profit']));
   });
   it.each(['Bugungi savdo qancha?', 'Bugungi foyda qancha?'])('requires a real Bito read for %s', async message => {
     await service.chat('u', { conversationId: 'c', message });
@@ -62,5 +63,20 @@ describe('Bito chat orchestration (mock provider/ERP)', () => {
     expect(result.message).toContain('ma’lumotni hozir olib bo‘lmadi');
     expect(result.message).not.toContain('secret-token');
     expect(prisma.message.create).toHaveBeenCalledWith({ data: expect.objectContaining({ role: 'TOOL', content: expect.stringContaining('"complete":false') }) });
+  });
+  it('never falls back to model-selected sales when no inventory route is verified', async () => {
+    bridge.listModelTools.mockResolvedValue([{ ...inventory, name: 'bito__report_sales_by_item_pagin' }]);
+    execution.execute.mockRejectedValue(new Error('BITO_INVENTORY_TOOLS_UNAVAILABLE'));
+    const result = await service.chat('u', { conversationId: 'c', message: 'Omborda nimalar bor?' });
+    expect(execution.execute).toHaveBeenCalledTimes(1);
+    expect(execution.execute.mock.calls[0][1].tool).toBe(BITO_INVENTORY_TOOL_NAME);
+    expect(provider.complete).not.toHaveBeenCalled();
+    expect(result.pendingConfirmation).toBeNull();
+  });
+  it('rejects unadvertised sales/file/write calls returned by the model during inventory', async () => {
+    provider.complete.mockResolvedValueOnce({ message: { role: 'assistant', content: null, tool_calls: ['bito__get_sales', 'search_files', 'bito__create_order'].map((name, id) => ({ id: String(id), type: 'function', function: { name, arguments: '{}' } })) }, model: 'fixture', usage: {} });
+    const result = await service.chat('u', { conversationId: 'c', message: 'Omborda nimalar bor?' });
+    expect(execution.execute).toHaveBeenCalledTimes(1);
+    expect(result.pendingConfirmation).toBeNull();
   });
 });

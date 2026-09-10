@@ -1,10 +1,14 @@
 import { Injectable, NotFoundException, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
+import { ConfigService } from '@nestjs/config';
 import { ActivityLogService, ACTIVITY_ACTIONS } from '../activity-log/activity-log.service';
 import { assertToolObject } from '../ai-tools/types/ai-tool.types';
 import { BitoIntegrationService } from './bito-integration.service';
 import { BitoMcpTool } from './bito-mcp.client';
 import { bitoToolSideEffect } from './bito-tool-policy';
+import { unwrapBitoMcpResult } from './bito-mcp-payload';
+import { selectInventoryTools } from './bito-inventory-tools';
+import { bitoResponseShape, bitoSafeToolName } from './bito-shape-debug';
 
 export type BitoModelTool = {
   name: string;
@@ -22,14 +26,18 @@ type InventoryItem = {
 };
 
 export const BITO_INVENTORY_TOOL_NAME = 'bito__inventory_snapshot';
-const MAX_AUTO_PAGES = 20;
-const MAX_AUTO_RECORDS = 500;
+const MAX_AUTO_PAGES = 200;
+const MAX_AUTO_RECORDS = 20_000;
 
 @Injectable()
 export class BitoToolBridgeService {
   private readonly logger = new Logger(BitoToolBridgeService.name);
 
-  constructor(private readonly bito: BitoIntegrationService, private readonly activityLog: ActivityLogService) {}
+  constructor(private readonly bito: BitoIntegrationService, private readonly activityLog: ActivityLogService, private readonly config: ConfigService) {}
+
+  private diagnostic(event: string, fields: Record<string, unknown>) {
+    if (this.config.get<boolean>('bito.debugShapes', false)) this.logger.log(JSON.stringify({ event, ...fields }));
+  }
 
   isBitoAlias(name: string): boolean {
     return name.startsWith('bito__');
@@ -165,12 +173,11 @@ export class BitoToolBridgeService {
   }
 
   private async readToolFully(userId: string, tool: BitoMcpTool, input: Record<string, unknown>): Promise<unknown> {
+    this.diagnostic('BITO_SELECTED_TOOL', { tool: bitoSafeToolName(tool.name), operation: 'read' });
     const collectionRead = this.isCollectionReadTool(tool);
     const firstInput = collectionRead ? preferredReadInput(tool.inputSchema, input) : input;
-    const firstRaw = await this.bito.callToolForUser(userId, tool.name, firstInput, true);
-    if (!collectionRead) return parseMcpPayload(firstRaw);
-
-    const firstPayload = parseMcpPayload(firstRaw);
+    const firstPayload = await this.readPayload(userId, tool, firstInput, 1);
+    if (!collectionRead) return firstPayload;
     const firstRecords = bestRecordArray(firstPayload);
     if (firstRecords.length > MAX_AUTO_RECORDS) throw new ServiceUnavailableException('BITO_PAGINATION_FAILED');
     if (!firstRecords.length) {
@@ -201,9 +208,9 @@ export class BitoToolBridgeService {
       if (requests.has(signature)) throw new ServiceUnavailableException('BITO_PAGINATION_FAILED');
       requests.add(signature);
 
-      const nextRaw = await this.bito.callToolForUser(userId, tool.name, nextInput, true);
-      const nextPayload = parseMcpPayload(nextRaw);
+      const nextPayload = await this.readPayload(userId, tool, nextInput, pagesFetched + 1);
       const nextRecords = bestRecordArray(nextPayload);
+      pagesFetched += 1;
       if (!nextRecords.length) {
         const total = numberOf(findMetaValue(payload, ['total', 'totalCount']));
         if ((total !== undefined && merged.length < total) || findMetaValue(nextPayload, ['hasMore', 'nextCursor'])) throw new ServiceUnavailableException('BITO_PAGINATION_FAILED');
@@ -212,7 +219,6 @@ export class BitoToolBridgeService {
       }
       const before = merged.length;
       addUniqueRecords(merged, seen, nextRecords, MAX_AUTO_RECORDS);
-      pagesFetched += 1;
       if (merged.length === before) throw new ServiceUnavailableException('BITO_PAGINATION_FAILED');
       state = pager.advanceState(state, nextInput, nextPayload, nextRecords);
       payload = nextPayload;
@@ -234,6 +240,21 @@ export class BitoToolBridgeService {
     };
   }
 
+  private async readPayload(userId: string, tool: BitoMcpTool, input: Record<string, unknown>, pageOrdinal: number) {
+    const payload = unwrapBitoMcpResult(await this.bito.callToolForUser(userId, tool.name, input, true));
+    const toolName = bitoSafeToolName(tool.name);
+    this.diagnostic('BITO_UNWRAPPED_PAYLOAD_SHAPE', { tool: toolName, shape: bitoResponseShape(payload) });
+    this.diagnostic('BITO_PAGINATION_META', {
+      tool: toolName, pageOrdinal, recordCount: bestRecordArray(payload).length,
+      hasMore: typeof findMetaValue(payload, ['hasMore']) === 'boolean' ? findMetaValue(payload, ['hasMore']) : undefined,
+      hasCursor: Boolean(findMetaValue(payload, ['nextCursor', 'next'])),
+      // Presence/type only: a field named total can also be a monetary total.
+      totalType: typeof findMetaValue(payload, ['total', 'totalCount']),
+      totalPagesType: typeof findMetaValue(payload, ['totalPages', 'pages']),
+    });
+    return payload;
+  }
+
   private isCollectionReadTool(tool: BitoMcpTool): boolean {
     if (this.sideEffect(tool) !== 'READ') return false;
     const text = normalizeText(`${tool.name} ${tool.title ?? ''} ${tool.description ?? ''}`);
@@ -241,28 +262,37 @@ export class BitoToolBridgeService {
   }
 
   private inventoryTools(tools: BitoMcpTool[]): { products: BitoMcpTool; stock: BitoMcpTool } | null {
-    const readable = tools.filter((tool) => this.sideEffect(tool) === 'READ' && canCallWithoutBusinessRequiredInput(tool.inputSchema));
-    const products = pickBestTool(readable, PRODUCT_TOOL_PATTERN, STOCK_TOOL_PATTERN);
-    const stock = pickBestTool(readable, STOCK_TOOL_PATTERN, PRODUCT_DETAIL_ONLY_PATTERN);
-    if (!products || !stock || products.name === stock.name) return null;
-    return { products, stock };
+    return selectInventoryTools(tools, {
+      products: this.config.get<string[]>('bito.inventoryProductTools', []),
+      stock: this.config.get<string[]>('bito.inventoryStockTools', []),
+    });
   }
 
   async getFullInventorySnapshot(userId: string, input: Record<string, unknown> = {}) {
     const tools = await this.toolsForUser(userId);
     const pair = this.inventoryTools(tools);
-    if (!pair) throw new NotFoundException('Bito mahsulot va ombor qoldiq READ tool’lari topilmadi');
+    if (!pair) {
+      this.diagnostic('BITO_SELECTED_TOOL', { intent: 'inventory', status: 'unavailable', reason: 'no_verified_inventory_pair' });
+      throw new NotFoundException('BITO_INVENTORY_TOOLS_UNAVAILABLE');
+    }
+    this.diagnostic('BITO_SELECTED_TOOL', { intent: 'inventory', products: bitoSafeToolName(pair.products.name), stock: bitoSafeToolName(pair.stock.name) });
 
-    const [productsResult, stockResult] = await Promise.all([
-      this.readToolFully(userId, pair.products, defaultReadInput(pair.products.inputSchema)),
-      this.readToolFully(userId, pair.stock, defaultReadInput(pair.stock.inputSchema)),
+    const productRead = this.readToolFully(userId, pair.products, defaultReadInput(pair.products.inputSchema));
+    const [productsResult, stockResult] = await Promise.all([productRead,
+      pair.products.name === pair.stock.name ? productRead : this.readToolFully(userId, pair.stock, defaultReadInput(pair.stock.inputSchema)),
     ]);
 
     const productRecords = recordsFromExpandedResult(productsResult);
     const stockRecords = recordsFromExpandedResult(stockResult);
     if ((!productRecords.length && !hasEmptyCollection(productsResult)) || (!stockRecords.length && !hasEmptyCollection(stockResult))) throw new ServiceUnavailableException('BITO_MAPPING_FAILED');
-    const productMap = buildProductMap(productRecords);
-    const normalized = normalizeInventory(stockRecords, productMap);
+    let normalized: InventoryItem[];
+    try {
+      normalized = normalizeInventory(stockRecords, buildProductMap(productRecords));
+    } catch (error) {
+      this.diagnostic('BITO_INVENTORY_JOIN_SUMMARY', { status: 'failed', productCount: productRecords.length, stockPositionCount: stockRecords.length });
+      throw error;
+    }
+    this.diagnostic('BITO_INVENTORY_JOIN_SUMMARY', { status: 'complete', productCount: productRecords.length, stockPositionCount: stockRecords.length, mappedCount: normalized.length, missingUnitCount: normalized.filter(item => !item.unit).length });
     if (stockRecords.length && !normalized.length) {
       this.logger.warn({ code: 'BITO_MAPPING_FAILED', productCount: productRecords.length, stockCount: stockRecords.length });
       throw new ServiceUnavailableException('BITO_MAPPING_FAILED');
@@ -305,9 +335,6 @@ function sanitize(value: unknown, depth = 0): unknown {
 }
 
 const COLLECTION_PATTERN = /\b(?:list|search|products?|catalog|stock|inventory|warehouse|customers?|orders?|sales|transactions?|items?|goods|mahsulot|qoldiq|ombor|royxat|ro'yxat|товар|остат|склад|список)/iu;
-const PRODUCT_TOOL_PATTERN = /(?:product|products|catalog|item|items|goods|mahsulot|tovar|товар|номенклат)/iu;
-const STOCK_TOOL_PATTERN = /(?:stock|inventory|warehouse|balance|remainder|qoldiq|ombor|ostat|остат|склад)/iu;
-const PRODUCT_DETAIL_ONLY_PATTERN = /(?:detail|single|one product|by id|карточк)/iu;
 
 function normalizeText(value: string): string {
   return value.toLocaleLowerCase().replace(/[‐‑–—]/g, '-').replace(/[_./:]+/g, ' ').replace(/\s+/g, ' ').trim();
@@ -325,31 +352,9 @@ function stableJson(value: unknown): string {
   try { return JSON.stringify(value, Object.keys(objectOf(value)).sort()); } catch { return String(value); }
 }
 
-function parseJsonish(value: unknown): unknown {
-  if (typeof value !== 'string') return value;
-  const trimmed = value.trim();
-  if (!(trimmed.startsWith('{') || trimmed.startsWith('['))) return value;
-  try { return JSON.parse(trimmed) as unknown; } catch { return value; }
-}
-
-function parseMcpPayload(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(parseMcpPayload);
-  if (!value || typeof value !== 'object') return parseJsonish(value);
-  const record = value as Record<string, unknown>;
-  if (record.structuredContent !== undefined) return parseMcpPayload(record.structuredContent);
-  if (Array.isArray(record.content)) {
-    const parsed = record.content.flatMap((entry) => {
-      const item = objectOf(entry);
-      const text = typeof item.text === 'string' ? parseJsonish(item.text) : undefined;
-      return text !== undefined ? [parseMcpPayload(text)] : [];
-    });
-    if (parsed.length === 1) return parsed[0];
-    if (parsed.length > 1) return parsed;
-  }
-  return Object.fromEntries(Object.entries(record).map(([key, item]) => [key, parseMcpPayload(item)]));
-}
-
 function bestRecordArray(value: unknown): Array<Record<string, unknown>> {
+  const parts = objectOf(value).mcpPayloads;
+  if (Array.isArray(parts)) return parts.flatMap(bestRecordArray);
   const candidates: Array<{ score: number; items: Array<Record<string, unknown>> }> = [];
   const visit = (node: unknown, keyHint = '', depth = 0) => {
     if (depth > 7) return;
@@ -386,9 +391,9 @@ function recordIdentity(record: Record<string, unknown>): string {
 
 function addUniqueRecords(target: Array<Record<string, unknown>>, seen: Set<string>, records: Array<Record<string, unknown>>, max: number): void {
   for (const record of records) {
-    if (target.length >= max) return;
     const key = recordIdentity(record);
     if (seen.has(key)) continue;
+    if (target.length >= max) throw new ServiceUnavailableException('BITO_PAGINATION_FAILED');
     seen.add(key);
     target.push(record);
   }
@@ -472,6 +477,14 @@ function findMetaValue(value: unknown, keys: string[], depth = 0): unknown {
   // Never mistake a product's count/cursor/total for collection metadata.
   if (Array.isArray(value)) return undefined;
   if (typeof value !== 'object') return undefined;
+  const parts = objectOf(value).mcpPayloads;
+  if (Array.isArray(parts)) {
+    for (const part of parts) {
+      const found = findMetaValue(part, keys, depth + 1);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
   for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
     if (normalized.has(normalizeKey(key)) && (typeof item !== 'object' || item === null)) return item;
   }
@@ -506,41 +519,21 @@ function hasPaginationProperty(schema: Record<string, unknown> | undefined): boo
   return keys.some((key) => /^(?:page|pagenumber|pageindex|offset|skip|cursor|nextcursor|after|limit|pagesize|perpage|take)$/.test(key));
 }
 
-function canCallWithoutBusinessRequiredInput(schema: Record<string, unknown> | undefined): boolean {
-  if (!schema || schema.type !== 'object') return true;
-  const required = Array.isArray(schema.required) ? schema.required.filter((item): item is string => typeof item === 'string') : [];
-  return required.every((key) => /^(?:page|pageNumber|pageIndex|offset|skip|cursor|limit|pageSize|perPage|take)$/i.test(key));
-}
-
 function defaultReadInput(schema: Record<string, unknown> | undefined): Record<string, unknown> {
   return preferredReadInput(schema, {});
-}
-
-function pickBestTool(tools: BitoMcpTool[], positive: RegExp, negative?: RegExp): BitoMcpTool | undefined {
-  return tools
-    .filter(tool => positive.test(normalizeText(`${tool.name} ${tool.title ?? ''} ${tool.description ?? ''}`)))
-    .map((tool) => {
-      const text = normalizeText(`${tool.name} ${tool.title ?? ''} ${tool.description ?? ''}`);
-      let score = 0;
-      if (positive.test(text)) score += 10;
-      if (/(?:list|get|search|report|read|fetch|show|query|royxat|ro'yxat|получ|список|показ)/iu.test(text)) score += 3;
-      if (negative?.test(text)) score -= 5;
-      return { tool, score };
-    })
-    .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score)[0]?.tool;
 }
 
 function recordsFromExpandedResult(value: unknown): Array<Record<string, unknown>> {
   const object = objectOf(value);
   if (Array.isArray(object.records)) return object.records.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item));
-  return bestRecordArray(parseMcpPayload(value));
+  return bestRecordArray(value);
 }
 
 function hasEmptyCollection(value: unknown, depth = 0): boolean {
   if (depth > 7) return false;
   if (Array.isArray(value)) return value.length === 0;
   const object = objectOf(value);
+  if (Array.isArray(object.mcpPayloads)) return object.mcpPayloads.some(item => hasEmptyCollection(item, depth + 1));
   return Object.entries(object).some(([key, item]) => /^(?:items|data|results|records|products|stocks|balances|goods|list|rows|result)$/.test(key) && hasEmptyCollection(item, depth + 1));
 }
 

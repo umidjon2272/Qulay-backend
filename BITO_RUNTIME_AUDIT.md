@@ -2,6 +2,28 @@
 
 This is the reviewed local fix and diagnostic stage. Production mapping is **not yet verified**. The owner will deploy to Render and supply sanitized schema logs; no production credentials were requested or used.
 
+## September 10 parser/routing diagnostic patch
+
+Production evidence identifies `bito_report_sales_by_item_pagin` and `bito_report_sales_by_item_top` as incorrect selections for inventory, with page 1/2/3 and limit 100 requests. No real inventory tool schema or inner result has yet been supplied. The owner will deploy this patch and collect Render logs; no SSH access is needed.
+
+- Inventory questions and inventory follow-ups now always execute the snapshot route. If no verified route exists, they return `BITO_INVENTORY_TOOLS_UNAVAILABLE` internally and a safe unavailable answer. They never fall back to model-selected sales tools, Files, or a confirmation card. During inventory the server also rejects model calls to any other tool.
+- Removed fuzzy product/stock selection. `BITO_INVENTORY_PRODUCT_TOOLS` and `BITO_INVENTORY_STOCK_TOOLS` are exact-name, comma-separated allowlists, ordered by preference and intersected with the current user's live tools. Both default to empty. **Leave them empty for this diagnostic deployment.** Sales tools, writes, and unsatisfied required business inputs are rejected even if listed. Synthetic test tool names are not production defaults.
+- MCP text entries now support JSON objects, arrays, code fences, surrounding prose, and separate metadata/data content items. Parsing uses `JSON.parse`, never eval. Non-text entries are ignored and sanitized unparsed text is retained as fallback. Metadata and rows are read from the inner payloads before pagination/mapping.
+- The collection safety bounds are now 200 pages / 20,000 records, with explicit failure instead of a partial success when exhausted. A synthetic 501-product/501-stock fixture verifies six pages per tool, names/quantities/units, and sanitized logs. The real identity/unit/warehouse contract still needs production evidence.
+
+### Render collection for the next mapping step
+
+1. Deploy the backend and set `BITO_DEBUG_SHAPES=true`.
+2. Open the Bito integration status/test or ask `Omborda nimalar bor?` to trigger authenticated tool discovery.
+3. Filter `BITO_TOOL_SCHEMA` for `"inventoryCandidate":true`. This flag matches names containing stock, inventory, warehouse, product, item, balance, remain, quantity, storage, sklad, ombor, qoldiq and corresponding Russian stems. It is a **discovery aid**, not authorization to execute a tool; sales-by-item tools also match and remain forbidden for inventory.
+4. Share those full JSON log lines. Each includes the exact tool name, sanitized description/title when supplied by the server, input field names/types/required fields and output schema if available. Defaults/examples and raw payload values are excluded.
+5. Also share `BITO_SELECTED_TOOL`. Until names are verified it should report `intent: inventory`, `status: unavailable`, `reason: no_verified_inventory_pair`. No inventory MCP call is expected at this stage.
+6. After final mapping is verified, the read path also emits `BITO_UNWRAPPED_PAYLOAD_SHAPE`, `BITO_PAGINATION_META`, and `BITO_INVENTORY_JOIN_SUMMARY`. They contain shapes, record/page counters, flags and cursor presence, never row values or cursor/token contents. Turn debug logging off after collection.
+
+The sections below record the September 9 audit; the changes above supersede its provisional fuzzy selection and former 20-page/500-record bounds.
+
+Local verification for this patch: `npm run lint`, `npm run build`, and all **49 suites / 401 tests** passed; `git diff --check` passed. Tests use synthetic ERP fixtures and mocked transport. Production inventory mapping and acceptance remain pending the owner's next sanitized Render logs.
+
 ## Confirmed causes in the current source
 
 - Agent word-boundary regexes missed Uzbek suffixes: `omborda`, `Bitoda`, `mahsulotlar`, `qoldi`. Bito tool discovery ran only when those regexes matched.

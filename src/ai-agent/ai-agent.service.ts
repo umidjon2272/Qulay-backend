@@ -108,6 +108,8 @@ export class AiAgentService {
     const previousRequest = history.filter(item => item.role === MessageRole.USER).slice(1).find(item => !bitoFollowUpIntent(item.content));
     const recentBitoContext = Boolean(previousRequest && this.shouldUseBito(previousRequest.content));
     const recentInventoryContext = Boolean(previousRequest && this.isBitoInventoryQuestion(previousRequest.content));
+    const inventoryFollowUp = recentInventoryContext && this.isBitoInventoryFollowUp(dto.message);
+    const inventoryRequested = this.isBitoInventoryQuestion(dto.message) || inventoryFollowUp;
     const bitoFollowUp = recentBitoContext && this.isBitoFollowUp(dto.message);
     const bitoRequested = this.shouldUseBito(dto.message) || bitoFollowUp;
     let bitoLoadError: unknown;
@@ -134,7 +136,7 @@ export class AiAgentService {
         type: 'function',
         function: { name: tool.name, description: `${tool.description}${tool.requiresConfirmation ? ' Call this function to PREPARE the action now. The server will show one confirmation card; do not ask for confirmation in text before calling it.' : ''}`, parameters: tool.inputSchema },
       }));
-    tools.push(...bitoModelTools.map((tool) => ({
+    tools.push(...bitoModelTools.filter(tool => !inventoryRequested || tool.name === BITO_INVENTORY_TOOL_NAME).map((tool) => ({
       type: 'function' as const,
       function: {
         name: tool.name,
@@ -154,8 +156,7 @@ export class AiAgentService {
       await this.appendMessage({ data: { conversationId: conversation.id, role: MessageRole.ASSISTANT, content: answer }, knownTemporary: Boolean(conversation.isTemporary) });
       return { conversationId: conversation.id, message: answer, pendingConfirmation: null };
     }
-    const inventoryFollowUp = recentInventoryContext && this.isBitoInventoryFollowUp(dto.message);
-    if ((this.isBitoInventoryQuestion(dto.message) || inventoryFollowUp) && bitoModelTools.some((tool) => tool.name === BITO_INVENTORY_TOOL_NAME)) {
+    if (inventoryRequested) {
       emit?.({ type: 'status', status: 'executing' });
       const callId = `bito-inventory-${randomUUID()}`;
       const search = undefined; // Fetch the full snapshot; let the model filter names from verified data.
@@ -241,6 +242,7 @@ export class AiAgentService {
           continue;
         }
         try {
+          if (inventoryRequested && call.function.name !== BITO_INVENTORY_TOOL_NAME) throw new Error('BITO_INVENTORY_TOOL_NOT_ALLOWED');
           emit?.({ type: 'status', status: /task/i.test(call.function.name) ? 'searching_tasks' : /finance|income|expense/i.test(call.function.name) ? 'checking_income' : 'executing' });
           const resolved = financeReadOverride(call.function.name, this.parseToolInput(call.function.arguments), dto.message);
           const input = resolved.input;

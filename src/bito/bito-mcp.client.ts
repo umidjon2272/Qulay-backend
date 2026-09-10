@@ -1,7 +1,7 @@
 import { BadGatewayException, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { BitoAuthMode } from '@prisma/client';
-import { bitoResponseShape, bitoSchemaShape } from './bito-shape-debug';
+import { bitoResponseShape, bitoSchemaShape, bitoSafeToolName, bitoInventorySchemaCandidate, bitoSchemaDescription } from './bito-shape-debug';
 
 export type BitoMcpCredentials = {
   serverUrl: string;
@@ -83,7 +83,7 @@ export class BitoMcpClient {
     const session = await this.initialize(credentials);
     try {
       const result = await this.rpc(credentials, session, 'tools/call', { name, arguments: args });
-      if (this.debugShapes) this.logger.log(JSON.stringify({ event: 'BITO_RESPONSE_SHAPE', tool: name, requestShape: bitoResponseShape(args), shape: bitoResponseShape(result) }));
+      if (this.debugShapes) this.logger.log(JSON.stringify({ event: 'BITO_RESPONSE_SHAPE', tool: bitoSafeToolName(name), requestShape: bitoResponseShape(args), shape: bitoResponseShape(result) }));
       if (objectOf(result).isError === true) throw new BadGatewayException('BITO_TOOL_FAILED');
       return result;
     } finally {
@@ -101,7 +101,9 @@ export class BitoMcpClient {
       const next = objectOf(result).nextCursor;
       if (next === undefined || next === null || next === '') {
         if (this.debugShapes) for (const tool of tools.values()) this.logger.log(JSON.stringify({
-          event: 'BITO_TOOL_SCHEMA', tool: tool.name,
+          event: 'BITO_TOOL_SCHEMA', tool: bitoSafeToolName(tool.name),
+          inventoryCandidate: bitoInventorySchemaCandidate(tool.name),
+          ...(bitoInventorySchemaCandidate(tool.name) ? { description: bitoSchemaDescription(tool.description), title: bitoSchemaDescription(tool.title) } : {}),
           input: bitoSchemaShape(tool.inputSchema), output: bitoSchemaShape(tool.outputSchema),
           readOnlyHint: tool.annotations?.readOnlyHint, destructiveHint: tool.annotations?.destructiveHint,
         }));
