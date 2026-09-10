@@ -1,8 +1,32 @@
 import { bitoToolSideEffect } from '../src/bito/bito-tool-policy';
 
 describe('Bito read/write boundary', () => {
-  it.each(['list_products', 'warehouse_stock', 'get_prices', 'get_sales', 'profit', 'get_reports', 'list_customers', 'analytics', 'get_payment_report', 'get_expenses'])('reads automatically: %s', name => expect(bitoToolSideEffect({ name })).toBe('READ'));
-  it.each(['create_order', 'update_order', 'create_customer', 'stock_transfer', 'delete_product', 'expense_create', 'custom_operation'])('confirms writes or unknown operations: %s', name => expect(bitoToolSideEffect({ name, inputSchema: { type: 'object', properties: { id: { type: 'string' } } } })).toBe('WRITE'));
-  it('rejects contradictory safety hints', () => expect(bitoToolSideEffect({ name: 'delete_product', annotations: { readOnlyHint: true, destructiveHint: true } })).toBe('WRITE'));
-  it('honors a read hint on an unfamiliar provider name', () => expect(bitoToolSideEffect({ name: 'ostatki', annotations: { readOnlyHint: true } })).toBe('READ'));
+  it.each([
+    'bito_employee_get_paging',
+    'bito_customer_get_by_id',
+    'bito_internal_transfer_get_paging',
+    'bito_write_off_get_paging',
+    'bito_open_ticket_get_paging',
+    'bito_report_dashboard_summary_product_chart_paging',
+    'bito_report_pos_product_stock_summary',
+  ])('executes provider reads without confirmation: %s', name => expect(bitoToolSideEffect({ name })).toBe('READ'));
+
+  it.each([
+    'bito_order_create',
+    'bito_customer_update',
+    'bito_product_delete',
+    'bito_internal_transfer_receive',
+    'bito_write_off_create',
+    'bito_production_task_produce',
+    'bito_file_attach',
+    'custom_operation',
+  ])('requires confirmation for writes or unknown operations: %s', name => expect(bitoToolSideEffect({ name, inputSchema: { type: 'object', properties: {} } })).toBe('WRITE'));
+
+  it('destructive annotation wins over a contradictory read hint', () => {
+    expect(bitoToolSideEffect({ name: 'bito_product_delete', annotations: { readOnlyHint: true, destructiveHint: true } })).toBe('WRITE');
+  });
+
+  it('honors an explicit provider read-only annotation', () => {
+    expect(bitoToolSideEffect({ name: 'provider_ostatki', annotations: { readOnlyHint: true } })).toBe('READ');
+  });
 });

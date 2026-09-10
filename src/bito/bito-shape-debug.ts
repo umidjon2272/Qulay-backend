@@ -3,7 +3,7 @@
 import { sanitizeMcpText } from './bito-mcp-payload';
 
 export const bitoSafeToolName = (name: string) => /^[A-Za-z][A-Za-z0-9_.:-]{0,127}$/.test(name) ? name : '[invalid-tool-name]';
-export const bitoInventorySchemaCandidate = (name: string) => /stock|inventory|warehouse|product|item|balance|remain|quantity|storage|sklad|ombor|qoldiq|остат|склад|товар/iu.test(name);
+export const bitoInventorySchemaCandidate = (name: string) => /^(?:bito_report_dashboard_summary_product_chart_paging|bito_report_pos_product_stock_summary|bito_report_pos_summary_product_chart_paging)$/iu.test(name) || /stock|inventory|warehouse|balance|remain|quantity|storage|sklad|ombor|qoldiq|остат|склад/iu.test(name);
 
 /** Descriptions are schema documentation only; redact examples and credentials. */
 export function bitoSchemaDescription(description: string | undefined): string | undefined {

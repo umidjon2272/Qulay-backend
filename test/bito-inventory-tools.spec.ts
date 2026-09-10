@@ -1,24 +1,37 @@
-import { selectInventoryTools } from '../src/bito/bito-inventory-tools';
+import {
+  BITO_INVENTORY_FALLBACK_TOOL,
+  BITO_INVENTORY_PRIMARY_TOOL,
+  BITO_INVENTORY_SUMMARY_TOOL,
+  selectVerifiedInventoryTools,
+} from '../src/bito/bito-inventory-tools';
 
-// All fixture_* tools below are synthetic, not production tool names.
-const read = (name: string) => ({ name, annotations: { readOnlyHint: true } });
-describe('exact inventory allowlist', () => {
-  it('never discovers a route by fuzzy name or description matching', () => {
-    expect(selectInventoryTools([read('fixture_products'), read('fixture_stock')], { products: [], stock: [] })).toBeNull();
+const tool = (name: string) => ({ name, inputSchema: { type: 'object', properties: {} } });
+
+describe('verified Bito inventory route', () => {
+  it('selects the production-verified current-stock list and optional summary', () => {
+    const selected = selectVerifiedInventoryTools([
+      tool(BITO_INVENTORY_SUMMARY_TOOL),
+      tool(BITO_INVENTORY_PRIMARY_TOOL),
+      tool('bito_report_sales_by_item_pagin'),
+    ] as never);
+    expect(selected?.list.name).toBe(BITO_INVENTORY_PRIMARY_TOOL);
+    expect(selected?.summary?.name).toBe(BITO_INVENTORY_SUMMARY_TOOL);
   });
-  it('uses configured ranking independent of discovery order and requires live tools', () => {
-    const tools = [read('fixture_stock'), read('fixture_products_fallback'), read('fixture_products')];
-    const allowlist = { products: ['fixture_products', 'fixture_products_fallback'], stock: ['fixture_stock'] };
-    expect(selectInventoryTools(tools, allowlist)?.products.name).toBe('fixture_products');
-    expect(selectInventoryTools(tools.slice(0, 2), allowlist)?.products.name).toBe('fixture_products_fallback');
-    expect(selectInventoryTools([], allowlist)).toBeNull();
+
+  it('uses the verified POS fallback only when the primary is absent', () => {
+    expect(selectVerifiedInventoryTools([tool(BITO_INVENTORY_FALLBACK_TOOL)] as never)?.list.name).toBe(BITO_INVENTORY_FALLBACK_TOOL);
   });
-  it.each(['bito_report_sales_by_item_pagin', 'bito_report_sales_by_item_top'])('rejects the observed wrong production tool even if mistakenly allowlisted: %s', name => {
-    expect(selectInventoryTools([read(name), read('fixture_stock')], { products: [name], stock: ['fixture_stock'] })).toBeNull();
+
+  it.each([
+    'bito_report_sales_by_item_pagin',
+    'bito_report_sales_by_item_top',
+    'bito_report_pos_product_top',
+    'bito_production_order_get_paging',
+  ])('never treats unrelated product/sales/production tools as current inventory: %s', (name) => {
+    expect(selectVerifiedInventoryTools([tool(name)] as never)).toBeNull();
   });
-  it('rejects writes and unknown required business inputs', () => {
-    for (const product of [{ ...read('fixture_products'), annotations: { readOnlyHint: false } }, { ...read('fixture_products'), inputSchema: { required: ['warehouseId'] } }]) {
-      expect(selectInventoryTools([product, read('fixture_stock')], { products: ['fixture_products'], stock: ['fixture_stock'] })).toBeNull();
-    }
+
+  it('fails closed if a verified name is explicitly annotated as a write', () => {
+    expect(selectVerifiedInventoryTools([{ ...tool(BITO_INVENTORY_PRIMARY_TOOL), annotations: { readOnlyHint: false } }] as never)).toBeNull();
   });
 });

@@ -165,26 +165,16 @@ export class BitoIntegrationService {
   }
 
   async test(userId: string) {
-    try {
-      const probe = await this.withFreshCredentials(userId, (credentials) => this.mcp.probe(credentials), true);
-      const now = new Date();
-      await this.prisma.bitoConnection.update({
-        where: { userId },
-        data: {
-          status: BitoConnectionStatus.CONNECTED,
-          serverName: probe.serverName ?? undefined,
-          protocolVersion: probe.protocolVersion,
-          toolCount: probe.tools.length,
-          lastUsedAt: now,
-          lastErrorAt: null,
-          lastErrorCode: null,
-        },
-      });
-      return { ok: true, protocolVersion: probe.protocolVersion, toolCount: probe.tools.length, tools: this.publicTools(probe.tools) };
-    } catch (error) {
-      await this.recordRuntimeError(userId, error);
-      throw error;
-    }
+    // Connectivity means OAuth/credentials + MCP handshake + tools/list work.
+    // Never call an arbitrary business/report tool from a health test.
+    const tools = await this.listToolsForUser(userId);
+    const connection = await this.prisma.bitoConnection.findUnique({ where: { userId } });
+    return {
+      ok: true,
+      protocolVersion: connection?.protocolVersion ?? null,
+      toolCount: tools.length,
+      tools: this.publicTools(tools),
+    };
   }
 
   async listToolsForUser(userId: string): Promise<BitoMcpTool[]> {
@@ -234,7 +224,7 @@ export class BitoIntegrationService {
         const refreshed = await this.credentialsForUser(userId, true);
         return operation(refreshed);
       }
-      if (retryRead && /BITO_MCP_(?:TIMEOUT|UNAVAILABLE|HTTP_(?:404|408|429|502|503|504))/.test(error instanceof Error ? error.message : '')) {
+      if (retryRead && /BITO_MCP_(?:TIMEOUT|UNAVAILABLE|HTTP_(?:404|408|429|500|502|503|504))/.test(error instanceof Error ? error.message : '')) {
         return operation(await this.credentialsForUser(userId, false));
       }
       throw error;

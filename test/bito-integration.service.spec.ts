@@ -44,4 +44,20 @@ describe('Bito usable status, credentials and bounded retries', () => {
     await expect(service.callToolForUser('u', 'create_order', {})).rejects.toThrow('BITO_MCP_TIMEOUT');
     expect(mcp.callTool).toHaveBeenCalledTimes(1);
   });
+  it('connection test validates tools/list only and never calls a business tool', async () => {
+    const result = await service.test('u');
+    expect(result).toMatchObject({ ok: true, toolCount: 1 });
+    expect(mcp.listTools).toHaveBeenCalled();
+    expect(mcp.callTool).not.toHaveBeenCalled();
+  });
+
+  it('retries one transient provider HTTP 500 only for a READ call', async () => {
+    mcp.callTool.mockRejectedValueOnce(new Error('BITO_MCP_HTTP_500')).mockResolvedValueOnce({ ok: true });
+    await expect(service.callToolForUser('u', 'bito_employee_get_paging', {}, true)).resolves.toEqual({ ok: true });
+    expect(mcp.callTool).toHaveBeenCalledTimes(2);
+    mcp.callTool.mockReset().mockRejectedValue(new Error('BITO_MCP_HTTP_500'));
+    await expect(service.callToolForUser('u', 'bito_order_create', {}, false)).rejects.toThrow('BITO_MCP_HTTP_500');
+    expect(mcp.callTool).toHaveBeenCalledTimes(1);
+  });
+
 });

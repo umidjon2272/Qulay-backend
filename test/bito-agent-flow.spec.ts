@@ -13,9 +13,9 @@ describe('Bito chat orchestration (mock provider/ERP)', () => {
       pendingAgentAction: { findFirst: jest.fn().mockResolvedValue(null) },
     };
     provider = { complete: jest.fn().mockResolvedValue({ message: { role: 'assistant', content: 'Cola — 12 dona.' }, model: 'fixture', usage: {} }) };
-    execution = { execute: jest.fn().mockResolvedValue({ status: 'success', data: { source: 'BITO', complete: true, productCount: 78, stockPositionCount: 46, items: [{ name: 'Cola', quantity: 12, unit: 'dona' }] } }) };
-    bridge = { listModelTools: jest.fn().mockResolvedValue([inventory, { ...inventory, name: 'bito__get_sales' }, { ...inventory, name: 'bito__get_profit' }]) };
-    const registry = { getToolDefinitionsForModel: () => ['search_files', 'search_google_drive_files', 'get_today_finance', 'bito_connection_status'].map(name => ({ name, description: name, inputSchema: {} })) };
+    execution = { execute: jest.fn().mockResolvedValue({ status: 'success', data: { source: 'BITO', complete: true, totalPositions: 46, matchedCount: 46, items: [{ name: 'Cola', quantity: 12, unit: 'dona' }] } }) };
+    bridge = { listRelevantModelTools: jest.fn().mockResolvedValue([inventory, { ...inventory, name: 'bito__get_sales' }, { ...inventory, name: 'bito__get_profit' }]) };
+    const registry = { getToolDefinitionsForModel: () => ['search_files', 'search_google_drive_files', 'get_today_finance', 'create_task', 'create_reminder', 'bito_connection_status'].map(name => ({ name, description: name, inputSchema: {} })) };
     service = new AiAgentService(prisma, provider, registry as any, execution, { logToolUsage: jest.fn().mockResolvedValue({}), logTextUsage: jest.fn().mockResolvedValue({}) } as any, { assertAiAllowed: jest.fn() } as any, { record: jest.fn().mockResolvedValue({}) } as any, bridge);
   });
   it.each(['Omborda nimalar bor?', 'Bitoda qidir omborda nimalar bor', 'Omborda nechta mahsulot bor?', 'Cola qancha qoldi?'])('prefetches inventory without file tools or confirmation: %s', async message => {
@@ -27,6 +27,13 @@ describe('Bito chat orchestration (mock provider/ERP)', () => {
     expect(tools.map((tool: any) => tool.function.name)).not.toEqual(expect.arrayContaining(['search_files']));
     expect(tools.map((tool: any) => tool.function.name)).not.toEqual(expect.arrayContaining(['search_google_drive_files']));
     expect(tools.map((tool: any) => tool.function.name)).not.toEqual(expect.arrayContaining(['bito__get_sales', 'bito__get_profit']));
+  });
+  it('uses provider search for a concrete product and hides zero rows by default', async () => {
+    await service.chat('u', { conversationId: 'c', message: 'Cola qancha qoldi?' });
+    expect(execution.execute).toHaveBeenCalledWith('u', expect.objectContaining({
+      tool: BITO_INVENTORY_TOOL_NAME,
+      input: { search: 'cola', includeZero: false },
+    }), expect.anything());
   });
   it.each(['Bugungi savdo qancha?', 'Bugungi foyda qancha?'])('requires a real Bito read for %s', async message => {
     await service.chat('u', { conversationId: 'c', message });
@@ -51,7 +58,7 @@ describe('Bito chat orchestration (mock provider/ERP)', () => {
     expect(provider.complete.mock.calls[0][4]).toBe('required');
   });
   it('returns an honest disconnected answer without guessing or calling files', async () => {
-    bridge.listModelTools.mockRejectedValue(new Error('BITO_NOT_CONNECTED'));
+    bridge.listRelevantModelTools.mockRejectedValue(new Error('BITO_NOT_CONNECTED'));
     const result = await service.chat('u', { conversationId: 'c', message: 'Omborda nimalar bor?' });
     expect(result.message).toContain('Bito ulanmagan');
     expect(provider.complete).not.toHaveBeenCalled();
@@ -65,7 +72,7 @@ describe('Bito chat orchestration (mock provider/ERP)', () => {
     expect(prisma.message.create).toHaveBeenCalledWith({ data: expect.objectContaining({ role: 'TOOL', content: expect.stringContaining('"complete":false') }) });
   });
   it('never falls back to model-selected sales when no inventory route is verified', async () => {
-    bridge.listModelTools.mockResolvedValue([{ ...inventory, name: 'bito__report_sales_by_item_pagin' }]);
+    bridge.listRelevantModelTools.mockResolvedValue([{ ...inventory, name: 'bito__report_sales_by_item_pagin' }]);
     execution.execute.mockRejectedValue(new Error('BITO_INVENTORY_TOOLS_UNAVAILABLE'));
     const result = await service.chat('u', { conversationId: 'c', message: 'Omborda nimalar bor?' });
     expect(execution.execute).toHaveBeenCalledTimes(1);
@@ -79,4 +86,30 @@ describe('Bito chat orchestration (mock provider/ERP)', () => {
     expect(execution.execute).toHaveBeenCalledTimes(1);
     expect(result.pendingConfirmation).toBeNull();
   });
+  it('does not enumerate Bito MCP tools for an unrelated personal chat', async () => {
+    await service.chat('u', { conversationId: 'c', message: 'Salom, qalaysan?' });
+    expect(bridge.listRelevantModelTools).not.toHaveBeenCalled();
+  });
+
+  it('exposes a query-scoped Bito employee read for employee questions', async () => {
+    bridge.listRelevantModelTools.mockResolvedValueOnce([{ ...inventory, name: 'bito__employee_get_paging' }]);
+    provider.complete.mockResolvedValueOnce({ message: { role: 'assistant', content: null, tool_calls: [{ id: 'e', type: 'function', function: { name: 'bito__employee_get_paging', arguments: '{}' } }] }, model: 'fixture', usage: {} })
+      .mockResolvedValueOnce({ message: { role: 'assistant', content: '3 ta xodim bor.' }, model: 'fixture', usage: {} });
+    execution.execute.mockResolvedValueOnce({ status: 'success', data: { records: [{ name: 'A' }, { name: 'B' }, { name: 'C' }] } });
+    const result = await service.chat('u', { conversationId: 'c', message: 'xodimlarni ko‘rsat' });
+    expect(bridge.listRelevantModelTools).toHaveBeenCalledWith('u', 'xodimlarni ko‘rsat', expect.objectContaining({ inventory: false }));
+    expect(execution.execute).toHaveBeenCalledWith('u', expect.objectContaining({ tool: 'bito__employee_get_paging', confirmed: false }), expect.anything());
+    expect(result.pendingConfirmation).toBeNull();
+  });
+
+
+  it('never falls back to local Qulay mutations when a Bito write capability is absent', async () => {
+    bridge.listRelevantModelTools.mockResolvedValueOnce([]);
+    provider.complete.mockResolvedValueOnce({ message: { role: 'assistant', content: 'Bito bu amalni bu ulanishda taqdim etmaydi.' }, model: 'fixture', usage: {} });
+    await service.chat('u', { conversationId: 'c', message: 'Bito topshiriq yarat' });
+    const [, tools] = provider.complete.mock.calls[0];
+    expect(tools.map((tool: any) => tool.function.name)).toEqual(['bito_connection_status']);
+    expect(execution.execute).not.toHaveBeenCalled();
+  });
+
 });

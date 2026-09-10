@@ -7,7 +7,8 @@ import { BitoIntegrationService } from './bito-integration.service';
 import { BitoMcpTool } from './bito-mcp.client';
 import { bitoToolSideEffect } from './bito-tool-policy';
 import { unwrapBitoMcpResult } from './bito-mcp-payload';
-import { selectInventoryTools } from './bito-inventory-tools';
+import { selectVerifiedInventoryTools } from './bito-inventory-tools';
+import { selectRelevantBitoTools } from './bito-tool-selector';
 import { bitoResponseShape, bitoSafeToolName } from './bito-shape-debug';
 
 export type BitoModelTool = {
@@ -23,15 +24,21 @@ type InventoryItem = {
   quantity: number;
   unit?: string;
   warehouse?: string;
+  cost?: number;
+  price?: number;
 };
 
 export const BITO_INVENTORY_TOOL_NAME = 'bito__inventory_snapshot';
 const MAX_AUTO_PAGES = 200;
 const MAX_AUTO_RECORDS = 20_000;
+const TOOL_SCHEMA_CACHE_TTL_MS = 45_000;
+const MAX_TOOL_SCHEMA_CACHE_USERS = 500;
 
 @Injectable()
 export class BitoToolBridgeService {
   private readonly logger = new Logger(BitoToolBridgeService.name);
+  private readonly toolSchemaCache = new Map<string, { expiresAt: number; tools: BitoMcpTool[] }>();
+  private readonly toolSchemaLoads = new Map<string, Promise<BitoMcpTool[]>>();
 
   constructor(private readonly bito: BitoIntegrationService, private readonly activityLog: ActivityLogService, private readonly config: ConfigService) {}
 
@@ -45,40 +52,62 @@ export class BitoToolBridgeService {
 
   async listModelTools(userId: string): Promise<BitoModelTool[]> {
     const tools = await this.toolsForUser(userId);
-    const modelTools = tools.map((tool) => {
-      const sideEffect = this.sideEffect(tool);
-      return {
-        name: this.alias(tool.name),
-        description: this.description(tool),
-        parameters: this.inputSchema(tool),
-        requiresConfirmation: sideEffect === 'WRITE',
-        sideEffect,
-      } satisfies BitoModelTool;
-    });
+    return this.toModelTools(tools, true);
+  }
 
-    const inventory = this.inventoryTools(tools);
-    if (inventory) {
-      modelTools.unshift({
-        name: BITO_INVENTORY_TOOL_NAME,
-        description:
-          'Bito ERP omboridagi mahsulotlarni inson o‘qiydigan nomlari va real qoldig‘i bilan qaytaradi. '
-          + 'Mahsulot katalogi va ombor qoldiqlarining barcha sahifalarini avtomatik yuklaydi, Product ID bo‘yicha birlashtiradi. '
-          + 'User “omborda nima bor?”, “qaysi mahsulot qancha qoldi?”, “Cola bormi?” kabi savol bersa shu toolni birinchi tanlang. '
-          + 'Bu faqat READ amal; tasdiqlash so‘ralmaydi.',
-        parameters: {
-          type: 'object',
-          properties: {
-            search: { type: 'string', description: 'Optional product-name search, for example Cola.' },
-            includeZero: { type: 'boolean', description: 'Include zero-stock products. Default false.' },
-          },
-          additionalProperties: false,
-        },
-        requiresConfirmation: false,
-        sideEffect: 'READ',
-      });
+  /**
+   * Query-scoped MCP shortlist. Bito can expose hundreds of tools; sending the
+   * whole registry to the model hurts latency and tool accuracy. This keeps
+   * every Bito domain reachable while exposing only the live tools relevant to
+   * the current user request.
+   */
+  async listRelevantModelTools(userId: string, query: string, options: { inventory?: boolean; limit?: number } = {}): Promise<BitoModelTool[]> {
+    const tools = await this.toolsForUser(userId);
+    if (options.inventory) {
+      const verified = selectVerifiedInventoryTools(tools);
+      if (!verified) throw new NotFoundException('BITO_INVENTORY_TOOLS_UNAVAILABLE');
+      return [this.inventoryModelTool()];
     }
+    const selected = selectRelevantBitoTools(tools, query, options.limit ?? 16).tools;
+    return this.toModelTools(selected, false);
+  }
 
+  private toModelTools(tools: BitoMcpTool[], includeInventory: boolean): BitoModelTool[] {
+    const modelTools = tools.map((tool) => this.toModelTool(tool));
+    if (includeInventory && selectVerifiedInventoryTools(tools)) modelTools.unshift(this.inventoryModelTool());
     return modelTools;
+  }
+
+  private toModelTool(tool: BitoMcpTool): BitoModelTool {
+    const sideEffect = this.sideEffect(tool);
+    return {
+      name: this.alias(tool.name),
+      description: this.description(tool),
+      parameters: this.inputSchema(tool),
+      requiresConfirmation: sideEffect === 'WRITE',
+      sideEffect,
+    };
+  }
+
+  private inventoryModelTool(): BitoModelTool {
+    return {
+      name: BITO_INVENTORY_TOOL_NAME,
+      description:
+        'Bito ERPdagi joriy ombor qoldiqlarini real mahsulot nomi, miqdor va birlik bilan qaytaradi. '
+        + 'User ombor, qoldiq, mahsulot mavjudligi yoki aniq mahsulot qoldig‘ini so‘rasa shu READ toolni ishlating. '
+        + 'Barcha sahifalar serverda avtomatik yig‘iladi; tasdiqlash talab qilinmaydi.',
+      parameters: {
+        type: 'object',
+        properties: {
+          search: { type: 'string', description: 'Optional product-name search, for example Cola.' },
+          includeZero: { type: 'boolean', description: 'Include zero-stock products. Default false.' },
+          includeSummary: { type: 'boolean', description: 'Fetch aggregate product-count/stock summary when the user asks for totals.' },
+        },
+        additionalProperties: false,
+      },
+      requiresConfirmation: false,
+      sideEffect: 'READ',
+    };
   }
 
   async execute(userId: string, alias: string, input: unknown, confirmed: boolean, requestId: string) {
@@ -86,6 +115,9 @@ export class BitoToolBridgeService {
       return await this.executeResolved(userId, alias, input, confirmed, requestId);
     } catch (error) {
       const code = error instanceof Error ? error.message.match(/BITO_[A-Z0-9_]+/)?.[0] : undefined;
+      if (code === 'BITO_NOT_CONNECTED' || code === 'BITO_AUTH_FAILED' || code === 'BITO_TOKEN_REFRESH_FAILED') {
+        this.toolSchemaCache.delete(userId);
+      }
       this.logger.warn({ code: code ?? 'BITO_TOOL_FAILED', requestId });
       throw error;
     }
@@ -141,7 +173,26 @@ export class BitoToolBridgeService {
   }
 
   private toolsForUser(userId: string): Promise<BitoMcpTool[]> {
-    return this.bito.listToolsForUser(userId);
+    const now = Date.now();
+    const cached = this.toolSchemaCache.get(userId);
+    if (cached && cached.expiresAt > now) return Promise.resolve(cached.tools);
+    if (cached) this.toolSchemaCache.delete(userId);
+
+    const inFlight = this.toolSchemaLoads.get(userId);
+    if (inFlight) return inFlight;
+
+    const load = this.bito.listToolsForUser(userId)
+      .then((tools) => {
+        if (this.toolSchemaCache.size >= MAX_TOOL_SCHEMA_CACHE_USERS && !this.toolSchemaCache.has(userId)) {
+          const oldest = this.toolSchemaCache.keys().next().value as string | undefined;
+          if (oldest) this.toolSchemaCache.delete(oldest);
+        }
+        this.toolSchemaCache.set(userId, { expiresAt: Date.now() + TOOL_SCHEMA_CACHE_TTL_MS, tools });
+        return tools;
+      })
+      .finally(() => this.toolSchemaLoads.delete(userId));
+    this.toolSchemaLoads.set(userId, load);
+    return load;
   }
 
   private alias(name: string): string {
@@ -163,7 +214,7 @@ export class BitoToolBridgeService {
     const readInstruction = sideEffect === 'READ'
       ? ' This is a READ operation: execute immediately without asking the user for confirmation. If the response is paginated, Qulay automatically expands supported pages.'
       : '';
-    return `Bito ERP: ${detail}. Use only real Bito data returned by this tool.${readInstruction}`;
+    return `Bito ERP operation ${tool.name}: ${detail}. Use only real Bito data returned by this tool.${readInstruction}`;
   }
 
   private inputSchema(tool: BitoMcpTool): Record<string, unknown> {
@@ -181,13 +232,13 @@ export class BitoToolBridgeService {
     const firstRecords = bestRecordArray(firstPayload);
     if (firstRecords.length > MAX_AUTO_RECORDS) throw new ServiceUnavailableException('BITO_PAGINATION_FAILED');
     if (!firstRecords.length) {
-      if ((numberOf(findMetaValue(firstPayload, ['total', 'totalCount'])) ?? 0) > 0 || findMetaValue(firstPayload, ['hasMore', 'nextCursor'])) throw new ServiceUnavailableException('BITO_PAGINATION_FAILED');
+      if ((recordTotal(firstPayload) ?? 0) > 0 || findMetaValue(firstPayload, ['hasMore', 'nextCursor'])) throw new ServiceUnavailableException('BITO_PAGINATION_FAILED');
       return firstPayload;
     }
 
     const pager = detectPager(tool.inputSchema, firstInput, firstPayload, firstRecords.length);
     if (!pager) {
-      if ((numberOf(findMetaValue(firstPayload, ['total', 'totalCount'])) ?? firstRecords.length) > firstRecords.length || findMetaValue(firstPayload, ['hasMore', 'nextCursor', 'next'])) throw new ServiceUnavailableException('BITO_PAGINATION_FAILED');
+      if ((recordTotal(firstPayload) ?? firstRecords.length) > firstRecords.length || findMetaValue(firstPayload, ['hasMore', 'nextCursor', 'next'])) throw new ServiceUnavailableException('BITO_PAGINATION_FAILED');
       return firstPayload;
     }
 
@@ -212,7 +263,7 @@ export class BitoToolBridgeService {
       const nextRecords = bestRecordArray(nextPayload);
       pagesFetched += 1;
       if (!nextRecords.length) {
-        const total = numberOf(findMetaValue(payload, ['total', 'totalCount']));
+        const total = recordTotal(payload);
         if ((total !== undefined && merged.length < total) || findMetaValue(nextPayload, ['hasMore', 'nextCursor'])) throw new ServiceUnavailableException('BITO_PAGINATION_FAILED');
         records = [];
         break;
@@ -225,7 +276,7 @@ export class BitoToolBridgeService {
       records = nextRecords;
     }
 
-    const total = numberOf(findMetaValue(payload, ['total', 'totalCount']));
+    const total = recordTotal(payload);
     if ((total !== undefined && merged.length < total)
       || (records.length > 0 && pager.hasNext(payload, records, merged.length, state))) throw new ServiceUnavailableException('BITO_PAGINATION_FAILED');
     if (pagesFetched === 1) return firstPayload;
@@ -248,8 +299,10 @@ export class BitoToolBridgeService {
       tool: toolName, pageOrdinal, recordCount: bestRecordArray(payload).length,
       hasMore: typeof findMetaValue(payload, ['hasMore']) === 'boolean' ? findMetaValue(payload, ['hasMore']) : undefined,
       hasCursor: Boolean(findMetaValue(payload, ['nextCursor', 'next'])),
-      // Presence/type only: a field named total can also be a monetary total.
-      totalType: typeof findMetaValue(payload, ['total', 'totalCount']),
+      // Presence/type only. Generic root `total` may be monetary and is not
+      // trusted as a record count by the pager.
+      genericTotalType: typeof findMetaValue(payload, ['total']),
+      recordTotalType: typeof recordTotal(payload),
       totalPagesType: typeof findMetaValue(payload, ['totalPages', 'pages']),
     });
     return payload;
@@ -261,62 +314,83 @@ export class BitoToolBridgeService {
     return COLLECTION_PATTERN.test(text) || hasPaginationProperty(tool.inputSchema);
   }
 
-  private inventoryTools(tools: BitoMcpTool[]): { products: BitoMcpTool; stock: BitoMcpTool } | null {
-    return selectInventoryTools(tools, {
-      products: this.config.get<string[]>('bito.inventoryProductTools', []),
-      stock: this.config.get<string[]>('bito.inventoryStockTools', []),
-    });
-  }
-
   async getFullInventorySnapshot(userId: string, input: Record<string, unknown> = {}) {
     const tools = await this.toolsForUser(userId);
-    const pair = this.inventoryTools(tools);
-    if (!pair) {
-      this.diagnostic('BITO_SELECTED_TOOL', { intent: 'inventory', status: 'unavailable', reason: 'no_verified_inventory_pair' });
+    const verified = selectVerifiedInventoryTools(tools);
+    if (!verified) {
+      this.diagnostic('BITO_SELECTED_TOOL', { intent: 'inventory', status: 'unavailable', reason: 'verified_inventory_tool_missing' });
       throw new NotFoundException('BITO_INVENTORY_TOOLS_UNAVAILABLE');
     }
-    this.diagnostic('BITO_SELECTED_TOOL', { intent: 'inventory', products: bitoSafeToolName(pair.products.name), stock: bitoSafeToolName(pair.stock.name) });
 
-    const productRead = this.readToolFully(userId, pair.products, defaultReadInput(pair.products.inputSchema));
-    const [productsResult, stockResult] = await Promise.all([productRead,
-      pair.products.name === pair.stock.name ? productRead : this.readToolFully(userId, pair.stock, defaultReadInput(pair.stock.inputSchema)),
-    ]);
+    this.diagnostic('BITO_SELECTED_TOOL', {
+      intent: 'inventory',
+      list: bitoSafeToolName(verified.list.name),
+      ...(verified.summary ? { summary: bitoSafeToolName(verified.summary.name) } : {}),
+    });
 
-    const productRecords = recordsFromExpandedResult(productsResult);
-    const stockRecords = recordsFromExpandedResult(stockResult);
-    if ((!productRecords.length && !hasEmptyCollection(productsResult)) || (!stockRecords.length && !hasEmptyCollection(stockResult))) throw new ServiceUnavailableException('BITO_MAPPING_FAILED');
-    let normalized: InventoryItem[];
-    try {
-      normalized = normalizeInventory(stockRecords, buildProductMap(productRecords));
-    } catch (error) {
-      this.diagnostic('BITO_INVENTORY_JOIN_SUMMARY', { status: 'failed', productCount: productRecords.length, stockPositionCount: stockRecords.length });
-      throw error;
+    const requestedSearch = typeof input.search === 'string' ? input.search.trim() : '';
+    const listInput = defaultReadInput(verified.list.inputSchema);
+    if (requestedSearch && schemaHasProperty(verified.list.inputSchema, 'search')) listInput.search = requestedSearch;
+
+    let listResult = await this.readToolFully(userId, verified.list, listInput);
+    let records = recordsFromExpandedResult(listResult);
+
+    // Some provider-side search implementations are stricter than users expect.
+    // If a search returns no rows, fetch the verified full stock list and filter
+    // locally rather than incorrectly claiming the product does not exist.
+    if (requestedSearch && records.length === 0) {
+      const retryInput = defaultReadInput(verified.list.inputSchema);
+      listResult = await this.readToolFully(userId, verified.list, retryInput);
+      records = recordsFromExpandedResult(listResult);
     }
-    this.diagnostic('BITO_INVENTORY_JOIN_SUMMARY', { status: 'complete', productCount: productRecords.length, stockPositionCount: stockRecords.length, mappedCount: normalized.length, missingUnitCount: normalized.filter(item => !item.unit).length });
-    if (stockRecords.length && !normalized.length) {
-      this.logger.warn({ code: 'BITO_MAPPING_FAILED', productCount: productRecords.length, stockCount: stockRecords.length });
-      throw new ServiceUnavailableException('BITO_MAPPING_FAILED');
-    }
-    const search = typeof input.search === 'string' ? input.search.trim().toLocaleLowerCase() : '';
+
+    if (!records.length && !hasEmptyCollection(listResult)) throw new ServiceUnavailableException('BITO_MAPPING_FAILED');
+
+    const normalized = normalizeSingleInventory(records);
     const includeZero = input.includeZero === true;
-    const filtered = normalized
-      .filter((item) => includeZero || item.quantity !== 0)
-      .filter((item) => !search || item.name.toLocaleLowerCase().includes(search))
+    const search = requestedSearch.toLocaleLowerCase();
+    const items = normalized
+      .filter(item => includeZero || item.quantity !== 0)
+      .filter(item => !search || item.name.toLocaleLowerCase().includes(search))
       .sort((a, b) => a.name.localeCompare(b.name, 'uz'));
 
+    // Summary is useful for aggregate counts/alerts but must never make the
+    // inventory list fail. Bito business/report tools may independently error.
+    let summary: unknown = undefined;
+    if (input.includeSummary === true && verified.summary) {
+      try { summary = sanitize(await this.readToolFully(userId, verified.summary, defaultReadInput(verified.summary.inputSchema))); }
+      catch { this.diagnostic('BITO_INVENTORY_SUMMARY', { status: 'unavailable' }); }
+    }
+
+    const unmapped = Math.max(0, records.length - normalized.length);
+    this.diagnostic('BITO_INVENTORY_NORMALIZATION', {
+      sourceRecordCount: records.length,
+      normalizedCount: normalized.length,
+      unmappedCount: unmapped,
+      missingUnitCount: normalized.filter(item => !item.unit).length,
+      complete: true,
+    });
+
+    // Do not fail closed merely because Bito adds/renames a display field. The
+    // safe raw rows let the model still answer from real provider data while
+    // diagnostics reveal only shape. IDs/secrets are stripped from raw rows.
+    const rawRows = unmapped > 0 ? records.filter(record => !normalizeSingleInventory([record]).length).slice(0, 500).map(compactBusinessRecord) : undefined;
     return {
       provider: 'Bito ERP',
       source: 'BITO',
       intent: 'inventory',
       complete: true,
       sourceOfTruth: true,
-      productCount: productRecords.length,
-      stockPositionCount: stockRecords.length,
-      matchedCount: filtered.length,
-      items: filtered,
-      note: 'Internal Product ID values were used only for joining and are intentionally not exposed to the user.',
+      normalizationComplete: unmapped === 0,
+      totalPositions: records.length,
+      matchedCount: items.length,
+      items,
+      ...(summary !== undefined ? { summary } : {}),
+      ...(rawRows ? { rawRows, unmappedCount: unmapped, rawRowsTruncated: unmapped > rawRows.length } : {}),
+      note: 'Bito MCP current-stock report is the source of truth. Internal identifiers are intentionally not exposed.',
     };
   }
+
 }
 
 function redact(input: Record<string, unknown>): Record<string, unknown> {
@@ -329,7 +403,7 @@ function sanitize(value: unknown, depth = 0): unknown {
   if (Array.isArray(value)) return value.slice(0, MAX_AUTO_RECORDS).map((item) => sanitize(item, depth + 1));
   if (value && typeof value === 'object') {
     const entries = Object.entries(value as Record<string, unknown>).slice(0, 180);
-    return Object.fromEntries(entries.map(([key, item]) => [key, sanitize(item, depth + 1)]));
+    return Object.fromEntries(entries.map(([key, item]) => [key, /token|secret|password|authorization|api.?key/i.test(key) ? '[REDACTED]' : sanitize(item, depth + 1)]));
   }
   return value;
 }
@@ -381,10 +455,10 @@ function bestRecordArray(value: unknown): Array<Record<string, unknown>> {
 }
 
 function recordIdentity(record: Record<string, unknown>): string {
-  const ownId = pickValue(record, ['id', 'uuid', 'rowId', 'row_id', 'recordId', 'record_id']);
-  if (ownId !== undefined && ownId !== null) return `id:${String(ownId)}`;
-  const productId = pickValue(record, ['productId', 'product_id', 'itemId', 'item_id', 'goodsId', 'goods_id', 'code', 'sku']);
   const warehouseId = pickValue(record, ['warehouseId', 'warehouse_id', 'storeId', 'store_id', 'branchId', 'branch_id']);
+  const ownId = pickValue(record, ['id', 'uuid', 'rowId', 'row_id', 'recordId', 'record_id']);
+  if (ownId !== undefined && ownId !== null) return `id:${String(ownId)}:warehouse:${String(warehouseId ?? '')}`;
+  const productId = pickValue(record, ['productId', 'product_id', 'itemId', 'item_id', 'goodsId', 'goods_id', 'code', 'sku']);
   if (productId !== undefined && productId !== null) return `product:${String(productId)}:warehouse:${String(warehouseId ?? '')}`;
   try { return `json:${JSON.stringify(record)}`; } catch { return `obj:${Object.keys(record).join(',')}`; }
 }
@@ -435,11 +509,11 @@ function detectPager(schema: Record<string, unknown> | undefined, input: Record<
       hasNext: (payload, records, mergedCount, state) => {
         if (findMetaValue(payload, ['hasMore', 'has_more']) === false) return false;
         const totalPages = numberOf(findMetaValue(payload, ['totalPages', 'total_pages', 'lastPage', 'last_page', 'pages']));
-        const total = numberOf(findMetaValue(payload, ['total', 'totalCount', 'total_count', 'recordsTotal', 'records_total']));
+        const total = recordTotal(payload);
         const page = numberOf(state.page) ?? initialPage;
         if (totalPages !== undefined) return page < totalPages;
         if (total !== undefined) return mergedCount < total;
-        return records.length > 0;
+        return records.length >= Math.max(1, numberOf(state.pageSize) ?? pageSize);
       },
       nextInput: (base, _payload, _records, state) => {
         const page = (numberOf(state.page) ?? initialPage) + 1;
@@ -456,9 +530,9 @@ function detectPager(schema: Record<string, unknown> | undefined, input: Record<
       initialState: { offset: initialOffset, pageSize },
       hasNext: (payload, records, mergedCount, state) => {
         if (findMetaValue(payload, ['hasMore', 'has_more']) === false) return false;
-        const total = numberOf(findMetaValue(payload, ['total', 'totalCount', 'total_count', 'recordsTotal', 'records_total']));
+        const total = recordTotal(payload);
         if (total !== undefined) return mergedCount < total;
-        return records.length > 0;
+        return records.length >= Math.max(1, numberOf(state.pageSize) ?? pageSize);
       },
       nextInput: (base, _payload, records, state) => {
         const offset = (numberOf(state.offset) ?? initialOffset) + Math.max(1, records.length || pageSize);
@@ -496,6 +570,60 @@ function findMetaValue(value: unknown, keys: string[], depth = 0): unknown {
   return undefined;
 }
 
+/**
+ * Record totals are intentionally stricter than generic `total`. Bito report
+ * payloads can use a root-level `total` for money/cost, which must never drive
+ * pagination. We accept explicit count-shaped keys anywhere and plain `total`
+ * only inside a pagination/meta container.
+ */
+function recordTotal(value: unknown, depth = 0, inPaginationMeta = false): number | undefined {
+  if (depth > 7 || value === null || value === undefined) return undefined;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = recordTotal(item, depth + 1, inPaginationMeta);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+  if (typeof value !== 'object') return undefined;
+
+  const object = value as Record<string, unknown>;
+  const explicitCountKeys = new Set([
+    'totalcount', 'recordstotal', 'recordcount', 'itemcount', 'itemscount', 'resultcount', 'rowcount',
+  ]);
+  for (const [key, item] of Object.entries(object)) {
+    const normalized = normalizeKey(key);
+    if (explicitCountKeys.has(normalized)) {
+      const count = numberOf(item);
+      if (count !== undefined && count >= 0) return count;
+    }
+  }
+  if (inPaginationMeta) {
+    for (const [key, item] of Object.entries(object)) {
+      if (normalizeKey(key) !== 'total') continue;
+      const count = numberOf(item);
+      if (count !== undefined && count >= 0) return count;
+    }
+  }
+
+  const parts = object.mcpPayloads;
+  if (Array.isArray(parts)) {
+    for (const part of parts) {
+      const found = recordTotal(part, depth + 1, inPaginationMeta);
+      if (found !== undefined) return found;
+    }
+  }
+
+  for (const [key, item] of Object.entries(object)) {
+    if (!item || typeof item !== 'object') continue;
+    const normalized = normalizeKey(key);
+    const meta = inPaginationMeta || ['meta', 'pagination', 'paging', 'pageinfo'].includes(normalized);
+    const found = recordTotal(item, depth + 1, meta);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
 function numberOf(value: unknown): number | undefined {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) return Number(value);
@@ -507,7 +635,7 @@ function preferredReadInput(schema: Record<string, unknown> | undefined, input: 
   const next = { ...input };
   for (const key of Object.keys(properties)) {
     const normalized = normalizeKey(key);
-    if (/^(?:limit|pagesize|perpage|take)$/.test(normalized) && next[key] === undefined) next[key] = Math.min(100, numberOf(objectOf(properties[key]).maximum) ?? 100);
+    if (/^(?:limit|pagesize|perpage|take)$/.test(normalized) && next[key] === undefined) next[key] = Math.min(200, numberOf(objectOf(properties[key]).maximum) ?? 200);
     if (/^(?:page|pagenumber|pageindex)$/.test(normalized) && next[key] === undefined) next[key] = numberOf(objectOf(properties[key]).default) ?? (normalized === 'pageindex' ? 0 : 1);
     if (/^(?:offset|skip)$/.test(normalized) && next[key] === undefined) next[key] = 0;
   }
@@ -554,123 +682,85 @@ function scalarText(value: unknown): string | undefined {
   return undefined;
 }
 
-function productIdentityCandidates(record: Record<string, unknown>, mode: 'catalog' | 'stock'): string[] {
-  const values: string[] = [];
-  const seen = new Set<string>();
-  const add = (value: unknown) => {
-    const text = scalarText(value);
-    if (!text) return;
-    const normalized = text.trim();
-    if (!normalized || seen.has(normalized)) return;
-    seen.add(normalized);
-    values.push(normalized);
-  };
-
-  // Product-specific references are safe on both catalog and stock rows.
-  const directAliases = [
-    'productId', 'product_id', 'productGuid', 'product_guid', 'productUuid', 'product_uuid', 'productUid', 'product_uid',
-    'itemId', 'item_id', 'itemGuid', 'item_guid', 'itemUuid', 'item_uuid',
-    'goodsId', 'goods_id', 'goodsGuid', 'goods_guid', 'goodsUuid', 'goods_uuid',
-    'tovarId', 'tovar_id', 'mahsulotId', 'mahsulot_id',
-    'nomenclatureId', 'nomenclature_id', 'nomenclatureGuid', 'nomenclature_guid',
-    'entityId', 'entity_id', 'productCode', 'product_code', 'productSku', 'product_sku',
-    'sku', 'barcode', 'article', 'artikul',
-  ];
-  for (const alias of directAliases) add(pickValue(record, [alias]));
-
-  const directRef = pickValue(record, ['product', 'item', 'goods', 'tovar', 'mahsulot', 'nomenclature']);
-  if (typeof directRef === 'string' || typeof directRef === 'number') add(directRef);
-  if (directRef && typeof directRef === 'object' && !Array.isArray(directRef)) {
-    const nested = directRef as Record<string, unknown>;
-    for (const alias of ['id', '_id', 'pk', 'uuid', 'guid', 'uid', 'code', 'sku', 'barcode', 'article', 'artikul', 'productId', 'product_id', 'entityId', 'entity_id']) {
-      add(pickValue(nested, [alias]));
-    }
-  }
-
-  // Bito can expose identifiers with slightly different names between tools.
-  // Match semantic product/item/goods identifier keys without ever treating a
-  // stock-row's own generic `id` as a product id.
-  for (const [key, value] of Object.entries(record)) {
-    if (typeof value !== 'string' && typeof value !== 'number') continue;
-    const normalized = normalizeKey(key);
-    const productish = /(?:product|item|goods|tovar|mahsulot|nomencl|номенклат|товар)/iu.test(normalized);
-    const identityish = /(?:id|uuid|guid|uid|code|sku|barcode|article|artikul|артикул|штрих)/iu.test(normalized);
-    if (productish && identityish) add(value);
-  }
-
-  // Generic ids/codes identify the product itself only in the catalog tool.
-  // On stock/balance rows these usually identify the stock row and caused the
-  // previous false join where only one product happened to match.
-  if (mode === 'catalog') {
-    for (const alias of ['id', '_id', 'pk', 'uuid', 'guid', 'uid', 'code', 'sku', 'barcode', 'article', 'artikul']) {
-      add(pickValue(record, [alias]));
-    }
-  }
-
-  return values;
+function schemaHasProperty(schema: Record<string, unknown> | undefined, wanted: string): boolean {
+  return Object.keys(objectOf(schema?.properties)).some(key => normalizeKey(key) === normalizeKey(wanted));
 }
 
-function productName(record: Record<string, unknown>): string | undefined {
-  const directRef = pickValue(record, ['product', 'item', 'goods', 'tovar', 'mahsulot']);
-  const nested = directRef && typeof directRef === 'object' && !Array.isArray(directRef) ? directRef as Record<string, unknown> : null;
-  const directName = typeof directRef === 'string' && !/^\d+$/.test(directRef.trim()) ? directRef : undefined;
-  const raw = pickValue(record, ['productName', 'product_name', 'productTitle', 'product_title', 'name', 'title', 'label', 'fullName', 'full_name', 'itemName', 'goodsName', 'tovarName', 'nomi'])
-    ?? (nested ? pickValue(nested, ['name', 'title', 'label', 'productName', 'product_name', 'fullName', 'full_name', 'nomi']) : undefined)
-    ?? directName;
-  return scalarText(raw);
-}
-
-function buildProductMap(records: Array<Record<string, unknown>>): Map<string, string> {
-  const map = new Map<string, string>();
-  for (const record of records) {
-    const name = productName(record);
-    if (!name) continue;
-    for (const id of productIdentityCandidates(record, 'catalog')) {
-      // Until the runtime schema is pinned, an ambiguous legacy alias must
-      // fail visibly rather than silently assigning another product's name.
-      if (map.has(id) && map.get(id) !== name) throw new ServiceUnavailableException('BITO_MAPPING_FAILED');
-      if (!map.has(id)) map.set(id, name);
-    }
-  }
-  return map;
-}
-
-function normalizeInventory(records: Array<Record<string, unknown>>, products: Map<string, string>): InventoryItem[] {
+function normalizeSingleInventory(records: Array<Record<string, unknown>>): InventoryItem[] {
   const items: InventoryItem[] = [];
   for (const record of records) {
-    const directName = productName(record);
-    const mappedNames = new Set(productIdentityCandidates(record, 'stock')
-      .map((id) => products.get(id))
-      .filter((value): value is string => Boolean(value)));
-    if (mappedNames.size > 1) throw new ServiceUnavailableException('BITO_MAPPING_FAILED');
-    const name = [...mappedNames][0] ?? directName;
-    if (!name) throw new ServiceUnavailableException('BITO_MAPPING_FAILED');
-    const quantity = quantityValue(record);
-    if (quantity === undefined) throw new ServiceUnavailableException('BITO_MAPPING_FAILED');
-    const unit = scalarText(pickValue(record, ['unit', 'unitName', 'unit_name', 'unitTitle', 'unit_title', 'measure', 'measureName', 'measure_name', 'uom', 'birlik']));
-    const warehouse = warehouseName(record);
-    // Preserve positions. Equal display names are not proof of equal products,
-    // variants, units or warehouses and must not be aggregated together.
-    items.push({ name, quantity, ...(unit ? { unit } : {}), ...(warehouse ? { warehouse } : {}) });
+    const name = deepScalar(record, [
+      'productName', 'product_name', 'productTitle', 'product_title', 'name', 'title', 'label', 'fullName', 'full_name',
+      'itemName', 'item_name', 'goodsName', 'goods_name', 'tovarName', 'tovar_name', 'nomi', 'product', 'goods', 'item',
+    ], ['product', 'goods', 'item', 'tovar', 'mahsulot', 'nomenclature']);
+    const quantity = deepNumber(record, [
+      'quantity', 'qty', 'stock', 'stockQty', 'stock_qty', 'balance', 'remainder', 'remaining', 'remainingQuantity',
+      'remaining_quantity', 'remain', 'rest', 'residue', 'onHand', 'on_hand', 'count', 'amount', 'qoldiq', 'ostatok',
+      'available', 'availableQty', 'available_qty', 'availableStock', 'available_stock', 'currentStock', 'current_stock',
+    ], ['stock', 'inventory', 'balance', 'remainder', 'product']);
+    if (!name || quantity === undefined) continue;
+    const unit = deepScalar(record, ['unit', 'unitName', 'unit_name', 'unitTitle', 'unit_title', 'measure', 'measureName', 'measure_name', 'uom', 'birlik'], ['unit', 'measure', 'uom', 'product']);
+    const warehouse = deepScalar(record, ['warehouseName', 'warehouse_name', 'storeName', 'store_name', 'omborNomi', 'skladName'], ['warehouse', 'store', 'ombor', 'sklad']);
+    const cost = deepNumber(record, ['cost', 'stockCost', 'stock_cost', 'totalCost', 'total_cost', 'costValue', 'cost_value'], ['cost', 'product']);
+    const price = deepNumber(record, ['price', 'salePrice', 'sale_price', 'retailPrice', 'retail_price'], ['price', 'product']);
+    items.push({ name, quantity: roundNumber(quantity), ...(unit ? { unit } : {}), ...(warehouse ? { warehouse } : {}), ...(cost !== undefined ? { cost: roundNumber(cost) } : {}), ...(price !== undefined ? { price: roundNumber(price) } : {}) });
   }
-  return items.map((item) => ({ ...item, quantity: roundNumber(item.quantity) }));
+  return items;
 }
 
-function quantityValue(record: Record<string, unknown>): number | undefined {
-  const raw = pickValue(record, [
-    'quantity', 'qty', 'stock', 'stockQty', 'stock_qty', 'balance', 'remainder', 'remaining', 'remainingQuantity', 'remaining_quantity', 'remain', 'rest', 'residue', 'onHand', 'on_hand', 'count', 'amount', 'qoldiq', 'ostatok', 'available', 'availableQty', 'available_qty', 'availableStock', 'available_stock',
-  ]);
-  const direct = numberOf(raw);
+function deepScalar(record: Record<string, unknown>, aliases: string[], preferredContainers: string[], depth = 0): string | undefined {
+  const direct = scalarText(pickValue(record, aliases));
+  if (direct && !looksLikeOpaqueId(direct)) return direct;
+  if (depth >= 4) return undefined;
+  for (const container of preferredContainers) {
+    const nested = nestedRecord(record, [container]);
+    if (!nested) continue;
+    const found = deepScalar(nested, aliases, preferredContainers, depth + 1);
+    if (found) return found;
+  }
+  for (const value of Object.values(record)) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+    const found = deepScalar(value as Record<string, unknown>, aliases, preferredContainers, depth + 1);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+function deepNumber(record: Record<string, unknown>, aliases: string[], preferredContainers: string[], depth = 0): number | undefined {
+  const direct = numberOf(pickValue(record, aliases));
   if (direct !== undefined) return direct;
-  const nested = nestedRecord(record, ['stock', 'inventory', 'balance', 'remainder']);
-  if (!nested) return undefined;
-  return numberOf(pickValue(nested, ['quantity', 'qty', 'amount', 'count', 'value', 'balance', 'remainder']));
+  if (depth >= 4) return undefined;
+  for (const container of preferredContainers) {
+    const nested = nestedRecord(record, [container]);
+    if (!nested) continue;
+    const found = deepNumber(nested, aliases, preferredContainers, depth + 1);
+    if (found !== undefined) return found;
+  }
+  for (const value of Object.values(record)) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+    const found = deepNumber(value as Record<string, unknown>, aliases, preferredContainers, depth + 1);
+    if (found !== undefined) return found;
+  }
+  return undefined;
 }
 
-function warehouseName(record: Record<string, unknown>): string | undefined {
-  const nested = nestedRecord(record, ['warehouse', 'store', 'ombor', 'sklad']);
-  return scalarText(pickValue(record, ['warehouseName', 'warehouse_name', 'storeName', 'omborNomi', 'skladName']))
-    ?? (nested ? scalarText(pickValue(nested, ['name', 'title'])) : undefined);
+function looksLikeOpaqueId(value: string): boolean {
+  const text = value.trim();
+  return /^[a-f0-9]{24,}$/i.test(text) || /^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(text);
+}
+
+function compactBusinessRecord(record: Record<string, unknown>, depth = 0): Record<string, unknown> {
+  if (depth > 3) return {};
+  const output: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(record).slice(0, 60)) {
+    if (/token|secret|password|authorization|api.?key/i.test(key)) continue;
+    if (/^(?:_?id|.*(?:_id|Id|uuid|guid|uid))$/i.test(key)) continue;
+    if (typeof value === 'string') output[key] = value.slice(0, 500);
+    else if (typeof value === 'number' || typeof value === 'boolean' || value === null) output[key] = value;
+    else if (Array.isArray(value)) output[key] = value.slice(0, 20).map(item => item && typeof item === 'object' && !Array.isArray(item) ? compactBusinessRecord(item as Record<string, unknown>, depth + 1) : item);
+    else if (value && typeof value === 'object') output[key] = compactBusinessRecord(value as Record<string, unknown>, depth + 1);
+  }
+  return output;
 }
 
 function roundNumber(value: number): number {

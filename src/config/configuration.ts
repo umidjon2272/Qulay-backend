@@ -58,9 +58,6 @@ export default () => ({
   },
   bito: {
     debugShapes: process.env.BITO_DEBUG_SHAPES === 'true',
-    // Populate only with exact names verified in production BITO_TOOL_SCHEMA.
-    inventoryProductTools: (process.env.BITO_INVENTORY_PRODUCT_TOOLS ?? '').split(',').map(value => value.trim()).filter(Boolean),
-    inventoryStockTools: (process.env.BITO_INVENTORY_STOCK_TOOLS ?? '').split(',').map(value => value.trim()).filter(Boolean),
     credentialEncryptionKey: process.env.BITO_CREDENTIAL_ENCRYPTION_KEY,
     serverUrl: process.env.BITO_MCP_SERVER_URL ?? 'https://mcp.bito.online',
     allowedHosts: (process.env.BITO_MCP_ALLOWED_HOSTS ?? 'mcp.bito.online,.bito.online').split(',').map((value) => value.trim()).filter(Boolean),

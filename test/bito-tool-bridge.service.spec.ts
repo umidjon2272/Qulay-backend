@@ -1,213 +1,208 @@
-import { BitoToolBridgeService, BITO_INVENTORY_TOOL_NAME } from '../src/bito/bito-tool-bridge.service';
-import type { BitoMcpTool } from '../src/bito/bito-mcp.client';
-import { ConfigService } from '@nestjs/config';
 import { Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { BitoToolBridgeService, BITO_INVENTORY_TOOL_NAME } from '../src/bito/bito-tool-bridge.service';
+import {
+  BITO_INVENTORY_PRIMARY_TOOL,
+  BITO_INVENTORY_SUMMARY_TOOL,
+} from '../src/bito/bito-inventory-tools';
+import type { BitoMcpTool } from '../src/bito/bito-mcp.client';
 
-// Synthetic contract only. These names are NOT production evidence/defaults.
-const config = new ConfigService({ bito: { debugShapes: false, inventoryProductTools: ['list_products'], inventoryStockTools: ['warehouse_stock'] } });
-
-const schema = {
+const config = new ConfigService({ bito: { debugShapes: false } });
+const pagedSchema = {
   type: 'object',
-  properties: {
-    page: { type: 'integer' },
-    limit: { type: 'integer' },
-  },
+  properties: { page: { type: 'integer' }, limit: { type: 'integer', maximum: 200 }, search: { type: 'string' } },
 };
-
-const productTool: BitoMcpTool = {
-  name: 'list_products',
-  description: 'List product catalog records',
-  inputSchema: schema,
+const inventoryTool: BitoMcpTool = {
+  name: BITO_INVENTORY_PRIMARY_TOOL,
+  description: 'Paginated product stock list with current quantity and cost',
+  inputSchema: pagedSchema,
 };
-const stockTool: BitoMcpTool = {
-  name: 'warehouse_stock',
-  description: 'Get warehouse stock balances',
-  inputSchema: schema,
+const summaryTool: BitoMcpTool = {
+  name: BITO_INVENTORY_SUMMARY_TOOL,
+  description: 'Returns total product count and stock cost',
+  inputSchema: { type: 'object', properties: {} },
+};
+const employeeTool: BitoMcpTool = {
+  name: 'bito_employee_get_paging',
+  description: 'Paginated employee list',
+  inputSchema: { type: 'object', properties: { page: { type: 'integer' }, limit: { type: 'integer', maximum: 2 } } },
 };
 const writeTool: BitoMcpTool = {
-  name: 'create_order',
+  name: 'bito_order_create',
   description: 'Create a new sales order',
-  inputSchema: { type: 'object', properties: { customerId: { type: 'string' } }, required: ['customerId'] },
+  inputSchema: { type: 'object', properties: { customer_id: { type: 'string' } }, required: ['customer_id'] },
 };
 
+function activity() { return { record: jest.fn().mockResolvedValue({}) } as never; }
+
 describe('BitoToolBridgeService', () => {
-  it('unwraps separate fenced metadata and JSON data before fully paginating more than 500 rows', async () => {
+  it('uses the production-verified current-stock tool, unwraps MCP text and paginates to completion', async () => {
     const logger = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
     try {
       const bito = {
-        listToolsForUser: jest.fn().mockResolvedValue([productTool, stockTool]),
+        listToolsForUser: jest.fn().mockResolvedValue([inventoryTool]),
         callToolForUser: jest.fn(async (_user: string, tool: string, input: Record<string, unknown>) => {
-          const page = Number(input.page), limit = Number(input.limit);
-          const rows = Array.from({ length: page === 6 ? 1 : 100 }, (_, index) => {
-            const id = (page - 1) * limit + index;
-            return tool === productTool.name ? { id, name: `Private product ${id}` } : { product_id: id, quantity: 987654, unit: 'private-unit' };
-          });
+          expect(tool).toBe(BITO_INVENTORY_PRIMARY_TOOL);
+          const page = Number(input.page);
+          const limit = Number(input.limit);
+          const count = page === 1 ? 200 : 1;
+          const rows = Array.from({ length: count }, (_, index) => ({
+            row_id: `${page}-${index}`,
+            product: { name: `Private product ${(page - 1) * limit + index}`, unit: { name: 'dona' } },
+            quantity: index === 0 && page === 1 ? 0 : 12,
+            cost: 100,
+          }));
           return { content: [
-            { type: 'text', text: 'token=secret-token Metadata: ```json\n' + JSON.stringify({ meta: { total: 501, page, totalPages: 6 } }) + '\n```' },
-            { type: 'text', text: '```json\n' + JSON.stringify(rows) + '\n```' },
+            { type: 'text', text: 'metadata ```json\n' + JSON.stringify({ meta: { total: 201, page, totalPages: 2 } }) + '\n```' },
+            { type: 'text', text: '```json\n' + JSON.stringify({ items: rows }) + '\n```' },
           ] };
         }),
       };
-      const diagnosticConfig = new ConfigService({ bito: { ...config.get('bito'), debugShapes: true } });
-      const result = await new BitoToolBridgeService(bito as never, {} as never, diagnosticConfig).getFullInventorySnapshot('a');
-      expect(result.items).toHaveLength(501);
-      expect(result.items[0]).toMatchObject({ name: expect.stringContaining('Private product'), quantity: 987654, unit: 'private-unit' });
-      expect(bito.callToolForUser).toHaveBeenCalledTimes(12);
-      for (const name of [productTool.name, stockTool.name]) expect(bito.callToolForUser.mock.calls.filter(call => call[1] === name).map(call => call[2])).toEqual(Array.from({ length: 6 }, (_, index) => ({ page: index + 1, limit: 100 })));
+      const diagnosticConfig = new ConfigService({ bito: { debugShapes: true } });
+      const service = new BitoToolBridgeService(bito as never, activity(), diagnosticConfig);
+      const result = await service.getFullInventorySnapshot('u', { includeZero: true });
+      expect(result.totalPositions).toBe(201);
+      expect(result.items).toHaveLength(201);
+      expect(result.items[0]).toMatchObject({ name: 'Private product 0', quantity: 0, unit: 'dona', cost: 100 });
+      expect(bito.callToolForUser.mock.calls.map(call => call[2])).toEqual([{ page: 1, limit: 200 }, { page: 2, limit: 200 }]);
       const logs = JSON.stringify(logger.mock.calls);
-      for (const event of ['BITO_SELECTED_TOOL', 'BITO_UNWRAPPED_PAYLOAD_SHAPE', 'BITO_PAGINATION_META', 'BITO_INVENTORY_JOIN_SUMMARY']) expect(logs).toContain(event);
-      expect(logs).not.toMatch(/Private product|987654|private-unit|secret-token/);
+      for (const event of ['BITO_SELECTED_TOOL', 'BITO_UNWRAPPED_PAYLOAD_SHAPE', 'BITO_PAGINATION_META', 'BITO_INVENTORY_NORMALIZATION']) expect(logs).toContain(event);
+      expect(logs).not.toMatch(/Private product|\"quantity\":12|\"cost\":100/);
     } finally { logger.mockRestore(); }
   });
-  it('fails closed without production allowlist entries and never calls sales tools', async () => {
-    const bito = { listToolsForUser: jest.fn().mockResolvedValue([{ name: 'bito_report_sales_by_item_pagin' }, { name: 'bito_report_sales_by_item_top' }]), callToolForUser: jest.fn() };
-    const service = new BitoToolBridgeService(bito as never, {} as never, new ConfigService());
-    await expect(service.getFullInventorySnapshot('a')).rejects.toThrow('BITO_INVENTORY_TOOLS_UNAVAILABLE');
-    expect(bito.callToolForUser).not.toHaveBeenCalled();
-  });
-  it('reloads tools for each user and does not retain a disconnected tool list', async () => {
-    const bito = { listToolsForUser: jest.fn().mockResolvedValueOnce([productTool]).mockResolvedValueOnce([stockTool]).mockRejectedValueOnce(new Error('BITO_NOT_CONNECTED')) };
-    const service = new BitoToolBridgeService(bito as never, {} as never, config);
-    expect((await service.listModelTools('a'))[0].name).toContain('list_products');
-    expect((await service.listModelTools('b'))[0].name).toContain('warehouse_stock');
-    await expect(service.listModelTools('a')).rejects.toThrow('BITO_NOT_CONNECTED');
-    expect(bito.listToolsForUser.mock.calls).toEqual([['a'], ['b'], ['a']]);
-  });
 
-  it('fetches all 78 catalog records and all 46 stock positions (synthetic schema fixture)', async () => {
-    const products = Array.from({ length: 78 }, (_, id) => ({ id, name: `Product ${id}` }));
-    const stocks = Array.from({ length: 46 }, (_, id) => ({ id: id + 1000, product_id: id, quantity: id + 1, unit: 'dona' }));
+  it('does not mistake a monetary root total for pagination record count', async () => {
     const bito = {
-      listToolsForUser: jest.fn().mockResolvedValue([productTool, stockTool]),
-      callToolForUser: jest.fn(async (_user: string, tool: string, input: Record<string, unknown>) => {
-        const rows = tool === productTool.name ? products : stocks;
-        const page = Number(input.page);
-        return { structuredContent: { items: rows.slice((page - 1) * 20, page * 20), pagination: { total: rows.length, page, hasMore: page * 20 < rows.length } } };
+      listToolsForUser: jest.fn().mockResolvedValue([inventoryTool]),
+      callToolForUser: jest.fn().mockResolvedValue({
+        total: 9_500_000,
+        items: [
+          { row_id: 'a', product: { name: 'Cola', unit: { name: 'dona' } }, quantity: 7 },
+          { row_id: 'b', product: { name: 'Fanta', unit: { name: 'dona' } }, quantity: 3 },
+        ],
+        page: 1,
       }),
     };
-    const service = new BitoToolBridgeService(bito as never, {} as never, config);
-    const result = await service.getFullInventorySnapshot('a');
-    expect(result).toMatchObject({ productCount: 78, stockPositionCount: 46, complete: true });
-    expect(result.items).toHaveLength(46);
-    expect(bito.callToolForUser).toHaveBeenCalledTimes(7);
-  });
-
-  it.each(['cursor', 'offset'])('fully collects %s pages', async mode => {
-    const tool = { name: 'list_products', inputSchema: { type: 'object', properties: { [mode]: { type: mode === 'cursor' ? 'string' : 'integer' }, limit: { type: 'integer', maximum: 2 } } } };
-    const bito = {
-      listToolsForUser: jest.fn().mockResolvedValue([tool]),
-      callToolForUser: jest.fn(async (_user: string, _tool: string, input: Record<string, unknown>) => input[mode]
-        ? { items: [{ id: 3 }], meta: { total: 3, hasMore: false, nextCursor: null } }
-        : { items: [{ id: 1 }, { id: 2 }], meta: { total: 3, hasMore: true, ...(mode === 'cursor' ? { nextCursor: 'opaque-page-2' } : {}) } }),
-    };
-    const service = new BitoToolBridgeService(bito as never, {} as never, config);
-    const [modelTool] = await service.listModelTools('a');
-    const result = await service.execute('a', modelTool.name, {}, false, 'r');
-    expect(result).toMatchObject({ status: 'success', data: { recordCount: 3, complete: true } });
-    expect(bito.callToolForUser.mock.calls[1][2]).toMatchObject({ [mode]: mode === 'cursor' ? 'opaque-page-2' : 2, limit: 2 });
-  });
-
-  it('rejects repeated pages and partial mappings instead of reporting success', async () => {
-    const bito = { listToolsForUser: jest.fn().mockResolvedValue([productTool, stockTool]), callToolForUser: jest.fn().mockResolvedValue({ items: [{ id: 1, name: 'Cola' }], meta: { total: 78 } }) };
-    const service = new BitoToolBridgeService(bito as never, {} as never, config);
-    await expect(service.getFullInventorySnapshot('a')).rejects.toThrow('BITO_PAGINATION_FAILED');
-    bito.callToolForUser.mockImplementation(async (_user: string, tool: string) => ({ items: tool === productTool.name ? [{ id: 1, name: 'Cola' }] : [{ id: 1, product_id: 'unmatched', quantity: 3 }], meta: { total: 1 } }));
-    await expect(service.getFullInventorySnapshot('a')).rejects.toThrow('BITO_MAPPING_FAILED');
-  });
-
-  it('does not call a write before confirmation', async () => {
-    const bito = { listToolsForUser: jest.fn().mockResolvedValue([writeTool]), callToolForUser: jest.fn().mockResolvedValue({ ok: true }) };
-    const service = new BitoToolBridgeService(bito as never, { record: jest.fn().mockResolvedValue({}) } as never, config);
-    const [tool] = await service.listModelTools('a');
-    expect((await service.execute('a', tool.name, { customerId: 'c' }, false, 'r')).status).toBe('confirmation_required');
-    expect(bito.callToolForUser).not.toHaveBeenCalled();
-    expect((await service.execute('a', tool.name, { customerId: 'c' }, true, 'r')).status).toBe('success');
+    const service = new BitoToolBridgeService(bito as never, activity(), config);
+    const result = await service.getFullInventorySnapshot('u');
+    expect(result.totalPositions).toBe(2);
+    expect(result.items).toHaveLength(2);
+    // page=1 + limit=200 yields only two rows, so root `total` must be treated
+    // as a business aggregate rather than 9.5M records to paginate through.
     expect(bito.callToolForUser).toHaveBeenCalledTimes(1);
   });
-  it('exposes Bito reads without confirmation and keeps writes behind confirmation', async () => {
+
+  it('uses provider-side search when supported and never asks for confirmation for inventory READ', async () => {
     const bito = {
-      listToolsForUser: jest.fn().mockResolvedValue([productTool, stockTool, writeTool]),
+      listToolsForUser: jest.fn().mockResolvedValue([inventoryTool]),
+      callToolForUser: jest.fn().mockResolvedValue({ content: [{ type: 'text', text: JSON.stringify({ items: [{ name: 'Coca-Cola', quantity: 9, unit: 'dona' }], meta: { total: 1, page: 1, totalPages: 1 } }) }] }),
+    };
+    const service = new BitoToolBridgeService(bito as never, activity(), config);
+    const result = await service.execute('u', BITO_INVENTORY_TOOL_NAME, { search: 'Cola' }, false, 'r');
+    expect(result.status).toBe('success');
+    expect(result.status === 'success' && result.data).toMatchObject({ matchedCount: 1, items: [{ name: 'Coca-Cola', quantity: 9, unit: 'dona' }] });
+    expect(bito.callToolForUser).toHaveBeenCalledWith('u', BITO_INVENTORY_PRIMARY_TOOL, expect.objectContaining({ page: 1, limit: 200, search: 'Cola' }), true);
+  });
+
+  it('keeps a safe business-row fallback if Bito changes a display field instead of inventing a mapping', async () => {
+    const bito = {
+      listToolsForUser: jest.fn().mockResolvedValue([inventoryTool]),
+      callToolForUser: jest.fn().mockResolvedValue({ structuredContent: { items: [{ _id: 'opaque-secret-id', display_label_new: 'Tea', qty_new: 5 }], meta: { total: 1, page: 1 } } }),
+    };
+    const service = new BitoToolBridgeService(bito as never, activity(), config);
+    const result = await service.getFullInventorySnapshot('u', { includeZero: true });
+    expect(result.items).toEqual([]);
+    expect(result.unmappedCount).toBe(1);
+    expect(result.rawRows).toEqual([{ display_label_new: 'Tea', qty_new: 5 }]);
+    expect(JSON.stringify(result)).not.toContain('opaque-secret-id');
+  });
+
+  it('never substitutes sales/production tools when the verified inventory tool is absent', async () => {
+    const bito = {
+      listToolsForUser: jest.fn().mockResolvedValue([
+        { name: 'bito_report_sales_by_item_pagin' },
+        { name: 'bito_report_pos_product_top' },
+        { name: 'bito_production_order_get_paging' },
+      ]),
       callToolForUser: jest.fn(),
     };
-    const service = new BitoToolBridgeService(bito as never, { record: jest.fn() } as never, config);
-
-    const tools = await service.listModelTools('user-1');
-    expect(tools.find((tool) => tool.name === BITO_INVENTORY_TOOL_NAME)).toMatchObject({
-      sideEffect: 'READ',
-      requiresConfirmation: false,
-    });
-    expect(tools.find((tool) => tool.name.includes('list_products'))).toMatchObject({ sideEffect: 'READ', requiresConfirmation: false });
-    expect(tools.find((tool) => tool.name.includes('warehouse_stock'))).toMatchObject({ sideEffect: 'READ', requiresConfirmation: false });
-    expect(tools.find((tool) => tool.name.includes('create_order'))).toMatchObject({ sideEffect: 'WRITE', requiresConfirmation: true });
+    const service = new BitoToolBridgeService(bito as never, activity(), config);
+    await expect(service.getFullInventorySnapshot('u')).rejects.toThrow('BITO_INVENTORY_TOOLS_UNAVAILABLE');
+    expect(bito.callToolForUser).not.toHaveBeenCalled();
   });
 
-  it('auto-paginates products and stock, joins Product ID internally, and returns names', async () => {
+  it('uses the optional summary independently; summary failure does not hide a valid stock list', async () => {
     const bito = {
-      listToolsForUser: jest.fn().mockResolvedValue([productTool, stockTool]),
-      callToolForUser: jest.fn(async (_userId: string, toolName: string, input: Record<string, unknown>) => {
-        const page = Number(input.page ?? 1);
-        if (toolName === 'list_products') {
-          const items = page === 1
-            ? [{ id: 1, name: 'Coca-Cola' }, { id: 2, name: 'Shaftoli' }]
-            : [{ id: 3, name: 'Pepsi' }];
-          return { content: [{ type: 'text', text: JSON.stringify({ items, meta: { page, total: 3, totalPages: 2 } }) }] };
-        }
-        const items = page === 1
-          ? [{ product_id: 1, quantity: 499, unit: 'dona' }, { product_id: 2, quantity: 30, unit: 'kg' }]
-          : [{ product_id: 3, quantity: 0, unit: 'dona' }];
-        return { content: [{ type: 'text', text: JSON.stringify({ items, meta: { page, total: 3, totalPages: 2 } }) }] };
+      listToolsForUser: jest.fn().mockResolvedValue([inventoryTool, summaryTool]),
+      callToolForUser: jest.fn(async (_user: string, name: string) => {
+        if (name === BITO_INVENTORY_SUMMARY_TOOL) throw new Error('BITO_MCP_HTTP_500');
+        return { items: [{ name: 'Shaftoli', quantity: 30, unit: 'kg' }], meta: { total: 1, page: 1 } };
       }),
     };
-    const service = new BitoToolBridgeService(bito as never, { record: jest.fn() } as never, config);
-
-    const result = await service.execute('user-1', BITO_INVENTORY_TOOL_NAME, {}, false, 'req-1');
-    expect(result.status).toBe('success');
-    const data = result.status === 'success' ? result.data as { productCount: number; stockPositionCount: number; items: Array<Record<string, unknown>> } : null;
-    expect(data?.productCount).toBe(3);
-    expect(data?.stockPositionCount).toBe(3);
-    expect(data?.items).toEqual([
-      { name: 'Coca-Cola', quantity: 499, unit: 'dona' },
-      { name: 'Shaftoli', quantity: 30, unit: 'kg' },
-    ]);
-    expect(JSON.stringify(data)).not.toContain('product_id');
-    expect(bito.callToolForUser).toHaveBeenCalledTimes(4);
+    const result = await new BitoToolBridgeService(bito as never, activity(), config).getFullInventorySnapshot('u', { includeSummary: true });
+    expect(result.items).toEqual([{ name: 'Shaftoli', quantity: 30, unit: 'kg' }]);
+    expect(result.summary).toBeUndefined();
   });
 
-  it('does not confuse a stock-row id with the product id and can join UUID/code aliases', async () => {
-    const productsByUuid: BitoMcpTool = {
-      name: 'list_products',
-      description: 'List product catalog records',
-      inputSchema: schema,
-    };
-    const stockByUuid: BitoMcpTool = {
-      name: 'warehouse_stock',
-      description: 'Get warehouse stock balances',
-      inputSchema: schema,
-    };
+  it('does not call the aggregate summary for a normal inventory list request', async () => {
     const bito = {
-      listToolsForUser: jest.fn().mockResolvedValue([productsByUuid, stockByUuid]),
-      callToolForUser: jest.fn(async (_userId: string, toolName: string) => {
-        if (toolName === 'list_products') {
-          return { content: [{ type: 'text', text: JSON.stringify({ items: [
-            { id: 9001, uuid: 'prod-cola', name: 'Coca-Cola' },
-            { id: 9002, product_code: 'SHAFTOLI-1', name: 'Shaftoli' },
-          ], meta: { page: 1, total: 2, totalPages: 1 } }) }] };
-        }
-        return { content: [{ type: 'text', text: JSON.stringify({ items: [
-          { id: 9002, product_uuid: 'prod-cola', quantity: 499, unit: 'dona' },
-          { id: 7777, product_code: 'SHAFTOLI-1', quantity: 30, unit: 'kg' },
-        ], meta: { page: 1, total: 2, totalPages: 1 } }) }] };
+      listToolsForUser: jest.fn().mockResolvedValue([inventoryTool, summaryTool]),
+      callToolForUser: jest.fn(async (_user: string, name: string) => {
+        if (name === BITO_INVENTORY_SUMMARY_TOOL) throw new Error('SUMMARY_SHOULD_NOT_BE_CALLED');
+        return { items: [{ name: 'Shaftoli', quantity: 30, unit: 'kg' }], meta: { total: 1, page: 1 } };
       }),
     };
-    const service = new BitoToolBridgeService(bito as never, { record: jest.fn() } as never, config);
-
-    const result = await service.execute('user-1', BITO_INVENTORY_TOOL_NAME, { includeZero: true }, false, 'req-uuid');
-    expect(result.status).toBe('success');
-    const data = result.status === 'success' ? result.data as { items: Array<Record<string, unknown>> } : null;
-    expect(data?.items).toEqual([
-      { name: 'Coca-Cola', quantity: 499, unit: 'dona' },
-      { name: 'Shaftoli', quantity: 30, unit: 'kg' },
-    ]);
+    const result = await new BitoToolBridgeService(bito as never, activity(), config).getFullInventorySnapshot('u');
+    expect(result.items).toEqual([{ name: 'Shaftoli', quantity: 30, unit: 'kg' }]);
+    expect(bito.callToolForUser).toHaveBeenCalledTimes(1);
   });
 
+  it('auto-paginates generic Bito READ domains such as employees', async () => {
+    const bito = {
+      listToolsForUser: jest.fn().mockResolvedValue([employeeTool]),
+      callToolForUser: jest.fn(async (_user: string, _name: string, input: Record<string, unknown>) => Number(input.page) === 1
+        ? { items: [{ id: 'e1', name: 'A' }, { id: 'e2', name: 'B' }], meta: { total: 3, page: 1, totalPages: 2 } }
+        : { items: [{ id: 'e3', name: 'C' }], meta: { total: 3, page: 2, totalPages: 2 } }),
+    };
+    const service = new BitoToolBridgeService(bito as never, activity(), config);
+    const [modelTool] = await service.listRelevantModelTools('u', 'xodimlarni ko‘rsat');
+    expect(modelTool.name).toContain('bito__bito_employee_get_paging');
+    expect(modelTool.requiresConfirmation).toBe(false);
+    const result = await service.execute('u', modelTool.name, {}, false, 'r');
+    expect(result).toMatchObject({ status: 'success', data: { complete: true, recordCount: 3, pagesFetched: 2 } });
+  });
+
+  it('never calls a Bito write before confirmation', async () => {
+    const bito = { listToolsForUser: jest.fn().mockResolvedValue([writeTool]), callToolForUser: jest.fn().mockResolvedValue({ ok: true }) };
+    const service = new BitoToolBridgeService(bito as never, activity(), config);
+    const [tool] = await service.listRelevantModelTools('u', 'Bito order yarat');
+    expect(tool).toMatchObject({ sideEffect: 'WRITE', requiresConfirmation: true });
+    expect((await service.execute('u', tool.name, { customer_id: 'c' }, false, 'r')).status).toBe('confirmation_required');
+    expect(bito.callToolForUser).not.toHaveBeenCalled();
+    expect((await service.execute('u', tool.name, { customer_id: 'c' }, true, 'r')).status).toBe('success');
+    expect(bito.callToolForUser).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a short user-scoped tool-schema cache without sharing another account registry', async () => {
+    const bito = {
+      listToolsForUser: jest.fn().mockResolvedValueOnce([employeeTool]).mockResolvedValueOnce([{ ...employeeTool, name: 'bito_customer_get_paging' }]),
+    };
+    const service = new BitoToolBridgeService(bito as never, activity(), config);
+    expect((await service.listRelevantModelTools('a', 'xodimlar'))[0].name).toContain('employee');
+    expect((await service.listRelevantModelTools('b', 'mijozlar'))[0].name).toContain('customer');
+    expect((await service.listRelevantModelTools('a', 'xodimlar'))[0].name).toContain('employee');
+    expect(bito.listToolsForUser.mock.calls).toEqual([['a'], ['b']]);
+  });
+
+  it('drops the cached schema after an auth failure so reconnect can refresh capabilities', async () => {
+    const bito = {
+      listToolsForUser: jest.fn().mockResolvedValue([employeeTool]),
+      callToolForUser: jest.fn().mockRejectedValueOnce(new Error('BITO_AUTH_FAILED')).mockResolvedValueOnce({ items: [] }),
+    };
+    const service = new BitoToolBridgeService(bito as never, activity(), config);
+    const [tool] = await service.listRelevantModelTools('u', 'xodimlarni ko‘rsat');
+    await expect(service.execute('u', tool.name, {}, false, 'r1')).rejects.toThrow('BITO_AUTH_FAILED');
+    await service.listRelevantModelTools('u', 'xodimlarni ko‘rsat');
+    expect(bito.listToolsForUser).toHaveBeenCalledTimes(2);
+  });
 });

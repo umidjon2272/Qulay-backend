@@ -1,6 +1,36 @@
 # QULAY AI — Bito audit and runtime verification
 
-This is the reviewed local fix and diagnostic stage. Production mapping is **not yet verified**. The owner will deploy to Render and supply sanitized schema logs; no production credentials were requested or used.
+## September 10 verified inventory + general ERP routing
+
+Production `BITO_TOOL_SCHEMA` logs verified that current product stock is exposed by
+`bito_report_dashboard_summary_product_chart_paging`; the optional aggregate stock summary is
+`bito_report_pos_product_stock_summary`, with `bito_report_pos_summary_product_chart_paging` kept
+only as a POS fallback. Inventory no longer requires a guessed products↔stock pair and never uses
+sales, distribution, ABC or production tools as a substitute.
+
+The Bito bridge now treats the MCP registry as a general ERP capability surface rather than an
+inventory-only integration. Query-scoped selection covers live READ/WRITE tools for customers,
+employees, sales/POS, profit/finance, debt/credit, orders, suppliers/purchases, production,
+transfers, revisions/write-offs, distribution, KPI, devices, pipeline, reasons, states/settings,
+exports, SMS/templates, marketing/source/tag/ticket and other explicit Bito domains. READ tools run
+without confirmation; all unknown or mutating operations fail closed as WRITE and require the
+existing confirmation flow. A short, user-scoped schema cache avoids duplicate `tools/list` calls
+without caching business values or sharing capabilities between accounts.
+
+Inventory questions are deterministic: the backend prefetches the verified current-stock report,
+unwraps MCP `content[].text`, expands supported pagination, normalizes product name/quantity/unit
+when present, strips internal identifiers from fallback rows, and lets the model answer only from
+that Bito result. Concrete product queries use Bito's `search` input when possible and fall back to
+the full verified list if provider search is stricter than user wording. Normal stock questions hide
+zero rows; explicit all/out-of-stock questions include them.
+
+The `/integrations/bito/test` endpoint verifies credentials/handshake/`tools/list` only; a failing
+business report no longer defines the connection as disconnected. Structure diagnostics remain
+opt-in with `BITO_DEBUG_SHAPES=true` and must be disabled after troubleshooting.
+
+The sections below preserve earlier diagnostic history for traceability. Where they refer to an
+empty inventory allowlist or an unverified products↔stock pair, the verified September 10 section
+above supersedes them. No production credentials were requested or stored in this repository.
 
 ## September 10 parser/routing diagnostic patch
 
