@@ -39,6 +39,27 @@ export class AiVoiceService {
     } catch (error) { throw this.safeError(error); }
   }
 
+  async transcribeSalesVoice(userId: string, file: VoiceUpload | undefined, durationSeconds: number) {
+    if (!file?.buffer?.length || file.size > 6 * 1024 * 1024) throw new BadRequestException('Ovoz fayli bo‘sh yoki juda katta.');
+    if (!Number.isFinite(durationSeconds) || durationSeconds <= 0 || durationSeconds > 60) throw new BadRequestException('Golos 60 soniyadan oshmasligi kerak.');
+    const extensions: Record<string, string> = { 'audio/webm': 'webm', 'video/webm': 'webm', 'audio/mp4': 'mp4', 'audio/ogg': 'ogg', 'audio/opus': 'ogg', 'audio/wav': 'wav', 'audio/mpeg': 'mp3' };
+    const mime = file.mimetype.split(';')[0];
+    const ext = extensions[mime] ?? (mime.includes('ogg') || mime.includes('opus') ? 'ogg' : undefined);
+    if (!ext) throw new BadRequestException('Ovoz formati qo‘llab-quvvatlanmaydi.');
+    await this.subscriptions.assertVoiceAllowed(userId);
+    const model = this.config.get<string>('ai.transcribeModel', 'gpt-4o-mini-transcribe');
+    try {
+      const result = await this.client().audio.transcriptions.create({
+        model,
+        file: await toFile(file.buffer, `sales-voice.${ext}`, { type: mime || 'audio/ogg' }),
+        response_format: 'json',
+        prompt: 'Sotuv kanalidagi mijozning o‘zbekcha yoki ruscha kundalik nutqini aniq matnga aylantiring. Faqat eshitilgan gapni yozing. Mahsulot nomlari, brendlar, model nomlari, sonlar, miqdorlar, narxlar va valyutalarni aniq saqlang. Jimlikda hech narsa qo‘shmang.',
+      });
+      void this.usage.logVoiceUsage({ userId, model, audioSeconds: Math.ceil(durationSeconds) }).catch(() => undefined);
+      return { text: result.text.trim() };
+    } catch (error) { throw this.safeError(error); }
+  }
+
   async speak(userId: string, text: string, requestedVoice?: 'marin' | 'cedar') {
     const [, user] = await Promise.all([
       this.subscriptions.assertVoiceAllowed(userId),

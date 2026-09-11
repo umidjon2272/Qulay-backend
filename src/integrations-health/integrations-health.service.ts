@@ -2,10 +2,11 @@ import { Injectable } from '@nestjs/common';
 import { GoogleAuthService } from '../google/google-auth.service';
 import { TelegramIntegrationService } from '../telegram/telegram-integration.service';
 import { BitoIntegrationService } from '../bito/bito-integration.service';
+import { WhatsAppSalesAgentService } from '../whatsapp/whatsapp-sales-agent.service';
 
 export type IntegrationHealthState = 'CONNECTED' | 'TEMPORARY_ISSUE' | 'RECONNECT_REQUIRED' | 'DISCONNECTED';
 
-const AUTH_FAILURE_CODES = new Set(['TOKEN_REVOKED', 'AUTH_KEY_UNREGISTERED', 'SESSION_REVOKED', 'invalid_grant', 'BITO_AUTH_FAILED', 'BITO_TOKEN_REFRESH_FAILED']);
+const AUTH_FAILURE_CODES = new Set(['TOKEN_REVOKED', 'AUTH_KEY_UNREGISTERED', 'SESSION_REVOKED', 'invalid_grant', 'BITO_AUTH_FAILED', 'BITO_TOKEN_REFRESH_FAILED', 'WHATSAPP_GRAPH_190', 'WHATSAPP_GRAPH_HTTP_401', 'WHATSAPP_GRAPH_HTTP_403']);
 const RECENT_ERROR_WINDOW_MS = 15 * 60 * 1000;
 
 const ERROR_CODE_LABELS: Record<string, string> = {
@@ -18,6 +19,9 @@ const ERROR_CODE_LABELS: Record<string, string> = {
   BITO_MCP_TIMEOUT: 'Bito javobi kechikdi',
   BITO_MCP_UNAVAILABLE: 'Bito vaqtincha ulanmayapti',
   BITO_MCP_PROTOCOL_UNSUPPORTED: 'Bito MCP protokoli mos emas',
+  WHATSAPP_GRAPH_190: 'WhatsApp ruxsati yaroqsiz',
+  WHATSAPP_GRAPH_HTTP_401: 'WhatsApp ruxsatini yangilash kerak',
+  WHATSAPP_GRAPH_HTTP_403: 'WhatsApp ruxsati yetarli emas',
 };
 
 export type IntegrationHealth = {
@@ -40,13 +44,15 @@ export class IntegrationsHealthService {
     private readonly googleAuth: GoogleAuthService,
     private readonly telegramIntegration: TelegramIntegrationService,
     private readonly bitoIntegration: BitoIntegrationService,
+    private readonly whatsAppSales: WhatsAppSalesAgentService,
   ) {}
 
-  async getHealthForUser(userId: string): Promise<{ google: IntegrationHealth; telegram: IntegrationHealth; bito: IntegrationHealth }> {
-    const [google, telegram, bito] = await Promise.all([
+  async getHealthForUser(userId: string): Promise<{ google: IntegrationHealth; telegram: IntegrationHealth; bito: IntegrationHealth; whatsapp: IntegrationHealth }> {
+    const [google, telegram, bito, whatsapp] = await Promise.all([
       this.googleAuth.status(userId),
       this.telegramIntegration.status(userId),
       this.bitoIntegration.status(userId),
+      this.whatsAppSales.getSettings(userId),
     ]);
 
     const checkedAt = new Date().toISOString();
@@ -63,6 +69,8 @@ export class IntegrationsHealthService {
       hasAuthFailureCode: this.isAuthFailureCode(telegram.lastErrorCode),
       recentError: Boolean(telegram.temporaryError),
     });
+
+    const whatsappState = whatsapp.status === 'DEGRADED' ? 'TEMPORARY_ISSUE' : this.classify({ connected: whatsapp.connected, hasAuthFailureCode: this.isAuthFailureCode(whatsapp.lastErrorCode), recentError: whatsapp.status === 'ERROR' });
 
     const bitoState = bito.status === 'DEGRADED' ? 'TEMPORARY_ISSUE' : this.classify({
       connected: bito.connected,
@@ -84,6 +92,13 @@ export class IntegrationsHealthService {
         lastSuccessfulSyncAt: telegram.lastValidatedAt ? new Date(telegram.lastValidatedAt).toISOString() : null,
         lastCheckedAt: checkedAt,
         lastErrorCode: telegramState === 'DISCONNECTED' ? null : this.friendlyErrorCode(telegram.lastErrorCode),
+      },
+      whatsapp: {
+        state: whatsappState,
+        connected: whatsapp.connected,
+        lastSuccessfulSyncAt: whatsapp.lastValidatedAt ?? whatsapp.connectedAt,
+        lastCheckedAt: checkedAt,
+        lastErrorCode: whatsappState === 'DISCONNECTED' ? null : this.friendlyErrorCode(whatsapp.lastErrorCode),
       },
       bito: {
         state: bitoState,

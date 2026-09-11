@@ -15,6 +15,6 @@ import { BitoModule } from '../bito/bito.module';
   imports: [PrismaModule, AIToolsModule, UsageModule, SubscriptionsModule, ActivityLogModule, BitoModule],
   controllers: [AiAgentController, AiVoiceController],
   providers: [AiProviderService, AiAgentService, AiVoiceService],
-  exports: [AiProviderService, AiAgentService],
+  exports: [AiProviderService, AiAgentService, AiVoiceService],
 })
 export class AiAgentModule {}

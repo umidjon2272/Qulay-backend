@@ -55,6 +55,10 @@ export const envValidationSchema = Joi.object({
   GOOGLE_CLIENT_SECRET: Joi.string().min(1).optional(),
   GOOGLE_REDIRECT_URI: Joi.string().uri().optional(),
   GOOGLE_TOKEN_ENCRYPTION_KEY: Joi.string().pattern(/^[a-fA-F0-9]{64}$/).optional(),
+  WHATSAPP_APP_SECRET: Joi.string().min(8).optional(),
+  WHATSAPP_WEBHOOK_VERIFY_TOKEN: Joi.string().min(16).max(200).optional(),
+  WHATSAPP_TOKEN_ENCRYPTION_KEY: Joi.string().pattern(/^[a-fA-F0-9]{64}$/).optional(),
+  WHATSAPP_GRAPH_API_VERSION: Joi.string().pattern(/^v\d+\.\d+$/).default('v24.0'),
   BITO_CREDENTIAL_ENCRYPTION_KEY: Joi.string().pattern(/^[a-fA-F0-9]{64}$/).optional(),
   BITO_MCP_SERVER_URL: Joi.string().uri({ scheme: ['https', 'http'] }).default('https://mcp.bito.online'),
   BITO_MCP_ALLOWED_HOSTS: Joi.string().min(1).default('mcp.bito.online,.bito.online'),
@@ -99,6 +103,10 @@ export const envValidationSchema = Joi.object({
   const googleResult = validateOptionalIntegrationGroup(value, googleEnvKeys, 'google', helpers);
   if (googleResult !== value) return googleResult;
 
+  const whatsappKeys = ['WHATSAPP_APP_SECRET', 'WHATSAPP_WEBHOOK_VERIFY_TOKEN', 'WHATSAPP_TOKEN_ENCRYPTION_KEY'];
+  const whatsappResult = validateOptionalIntegrationGroup(value, whatsappKeys, 'whatsapp', helpers);
+  if (whatsappResult !== value) return whatsappResult;
+
   if (value.BITO_OAUTH_CLIENT_SECRET && !value.BITO_OAUTH_CLIENT_ID) return helpers.error('bito.oauth.client');
   if (value.JWT_ACCESS_SECRET === value.JWT_REFRESH_SECRET) return helpers.error('jwt.secrets.same');
   if (value.TELEGRAM_LOGIN_DIAGNOSTIC_ENABLED && !value.TEST_TELEGRAM_PHONE) return helpers.error('telegram.diagnostic.phone');
@@ -111,6 +119,7 @@ export const envValidationSchema = Joi.object({
   'push.partial': 'Web Push requires WEB_PUSH_SUBJECT, WEB_PUSH_PUBLIC_KEY and WEB_PUSH_PRIVATE_KEY together',
   'integration.telegram.partial': 'Telegram integration requires all of: TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_SESSION_ENCRYPTION_KEY. Missing: {{#missing}}',
   'integration.google.partial': 'Google integration requires all of: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI, GOOGLE_TOKEN_ENCRYPTION_KEY. Missing: {{#missing}}',
+  'integration.whatsapp.partial': 'WhatsApp integration requires all of: WHATSAPP_APP_SECRET, WHATSAPP_WEBHOOK_VERIFY_TOKEN, WHATSAPP_TOKEN_ENCRYPTION_KEY. Missing: {{#missing}}',
   'bito.oauth.client': 'BITO_OAUTH_CLIENT_SECRET requires BITO_OAUTH_CLIENT_ID',
   'jwt.secrets.same': 'JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must be different',
   'telegram.diagnostic.phone': 'TEST_TELEGRAM_PHONE is required when TELEGRAM_LOGIN_DIAGNOSTIC_ENABLED=true',

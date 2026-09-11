@@ -56,6 +56,13 @@ export default () => ({
     redirectUri: process.env.GOOGLE_REDIRECT_URI,
     tokenEncryptionKey: process.env.GOOGLE_TOKEN_ENCRYPTION_KEY,
   },
+  whatsapp: {
+    configured: [process.env.WHATSAPP_APP_SECRET, process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN, process.env.WHATSAPP_TOKEN_ENCRYPTION_KEY].every(Boolean),
+    appSecret: process.env.WHATSAPP_APP_SECRET,
+    webhookVerifyToken: process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN,
+    tokenEncryptionKey: process.env.WHATSAPP_TOKEN_ENCRYPTION_KEY,
+    graphApiVersion: process.env.WHATSAPP_GRAPH_API_VERSION ?? 'v24.0',
+  },
   bito: {
     debugShapes: process.env.BITO_DEBUG_SHAPES === 'true',
     credentialEncryptionKey: process.env.BITO_CREDENTIAL_ENCRYPTION_KEY,

@@ -21,6 +21,8 @@ import { UsageModule } from './usage/usage.module';
 import { FinanceModule } from './finance/finance.module';
 import { AIToolsModule } from './ai-tools/ai-tools.module';
 import { TelegramModule } from './telegram/telegram.module';
+import { TelegramSalesAgentModule } from './telegram/telegram-sales-agent.module';
+import { WhatsAppModule } from './whatsapp/whatsapp.module';
 import { GoogleModule } from './google/google.module';
 import { BitoModule } from './bito/bito.module';
 import { NotificationsModule } from './notifications/notifications.module';
@@ -67,6 +69,8 @@ import { AgentSchedulerModule } from './agent-scheduler/agent-scheduler.module';
     AdminModule,
     SubscriptionsModule,
     AiAgentModule,
+    TelegramSalesAgentModule,
+    WhatsAppModule,
     AgentSettingsModule,
     IntegrationsHealthModule,
     BriefingModule,

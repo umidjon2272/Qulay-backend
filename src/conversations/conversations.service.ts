@@ -14,6 +14,7 @@ export class ConversationsService {
     const where: Prisma.ConversationWhereInput = {
       userId,
       isTemporary: false,
+      source: 'APP',
       ...(query.search
         ? { title: { contains: query.search.trim(), mode: 'insensitive' } }
         : {}),

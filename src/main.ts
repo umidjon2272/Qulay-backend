@@ -22,7 +22,7 @@ export function configureApp(app: INestApplication): void {
   app.setGlobalPrefix('api');
   httpServer.disable('x-powered-by');
   app.use(helmet({ contentSecurityPolicy: false }));
-  app.use(json({ limit: configService.get<string>('requestBodyLimit', '1mb') }));
+  app.use(json({ limit: configService.get<string>('requestBodyLimit', '1mb'), verify: (request, _response, buffer) => { (request as Request & { rawBody?: Buffer }).rawBody = Buffer.from(buffer); } }));
   app.use(urlencoded({ extended: true, limit: configService.get<string>('requestBodyLimit', '1mb') }));
   app.useGlobalPipes(
     new ValidationPipe({

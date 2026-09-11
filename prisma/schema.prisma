@@ -131,6 +131,13 @@ enum TelegramConnectionStatus {
   ERROR
 }
 
+enum WhatsAppConnectionStatus {
+  DISCONNECTED
+  CONNECTED
+  DEGRADED
+  ERROR
+}
+
 enum GoogleConnectionStatus {
   DISCONNECTED
   CONNECTED
@@ -244,6 +251,10 @@ model User {
   financeCategories      FinanceCategory[]
   financeAccounts        FinanceAccount[]
   telegramConnection     TelegramConnection?
+  telegramSalesSessions  TelegramSalesSession[]
+  whatsAppConnection     WhatsAppConnection?
+  whatsAppSalesSessions  WhatsAppSalesSession[]
+  whatsAppInboundReceipts WhatsAppInboundReceipt[]
   googleConnection       GoogleConnection?
   bitoConnection         BitoConnection?
   notifications          Notification[]
@@ -393,11 +404,91 @@ model TelegramConnection {
   lastErrorAt            DateTime?
   lastErrorCode          String?                  @db.VarChar(100)
   lastUsedAt             DateTime?
+  salesAgentEnabled      Boolean                  @default(false)
+  salesPrivateChats      Boolean                  @default(true)
+  salesGroups            Boolean                  @default(false)
+  salesVoiceEnabled      Boolean                  @default(true)
+  salesVoiceMaxSeconds   Int                      @default(60)
   createdAt              DateTime                 @default(now())
   updatedAt              DateTime                 @updatedAt
   user                   User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([status])
+}
+
+model TelegramSalesSession {
+  id                   String       @id @default(uuid()) @db.Uuid
+  userId               String       @db.Uuid
+  peerId               String       @db.VarChar(100)
+  peerType             String       @db.VarChar(20)
+  peerName             String?      @db.VarChar(200)
+  conversationId       String       @unique @db.Uuid
+  lastInboundMessageId Int?
+  lastInboundAt        DateTime?
+  lastOutboundAt       DateTime?
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+  user                 User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversation         Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, peerId])
+  @@index([userId, updatedAt])
+}
+
+model WhatsAppConnection {
+  id                   String                    @id @default(uuid()) @db.Uuid
+  userId               String                    @unique @db.Uuid
+  phoneNumberId        String                    @unique @db.VarChar(40)
+  wabaId               String?                   @db.VarChar(40)
+  displayPhoneNumber   String?                   @db.VarChar(50)
+  verifiedName         String?                   @db.VarChar(200)
+  qualityRating        String?                   @db.VarChar(50)
+  encryptedAccessToken String                    @db.Text
+  status               WhatsAppConnectionStatus @default(DISCONNECTED)
+  webhookSubscribed    Boolean                   @default(false)
+  salesAgentEnabled    Boolean                   @default(false)
+  salesOnly            Boolean                   @default(true)
+  salesVoiceEnabled    Boolean                   @default(true)
+  salesVoiceMaxSeconds Int                       @default(60)
+  connectedAt          DateTime?
+  lastValidatedAt      DateTime?
+  lastUsedAt           DateTime?
+  lastErrorAt          DateTime?
+  lastErrorCode        String?                   @db.VarChar(100)
+  createdAt            DateTime                  @default(now())
+  updatedAt            DateTime                  @updatedAt
+  user                 User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@index([wabaId])
+}
+
+model WhatsAppSalesSession {
+  id                String       @id @default(uuid()) @db.Uuid
+  userId            String       @db.Uuid
+  waId              String       @db.VarChar(40)
+  customerName      String?      @db.VarChar(200)
+  conversationId    String       @unique @db.Uuid
+  salesContextUntil DateTime?
+  lastInboundAt     DateTime?
+  lastOutboundAt    DateTime?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  user              User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversation      Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, waId])
+  @@index([userId, updatedAt])
+}
+
+model WhatsAppInboundReceipt {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @db.Uuid
+  messageId String   @unique @db.VarChar(255)
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
 }
 
 model RefreshToken {
@@ -516,11 +607,14 @@ model Conversation {
   userId              String               @db.Uuid
   title               String               @db.VarChar(200)
   isTemporary         Boolean              @default(false)
+  source              String               @default("APP") @db.VarChar(32)
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
   user                User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
   messages            Message[]
   pendingAgentActions PendingAgentAction[]
+  telegramSalesSession TelegramSalesSession?
+  whatsAppSalesSession WhatsAppSalesSession?
 
   @@index([userId, updatedAt])
 }

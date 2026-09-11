@@ -11,6 +11,21 @@ import { classifyTelegramError, TelegramAdapterError } from './telegram.errors';
 export type TelegramAccount = { telegramUserId: string; username: string | null; displayName: string | null; phoneNumber: string | null };
 export type TelegramPeer = { peerId: string; type: 'USER' | 'GROUP' | 'CHANNEL'; displayName: string; username: string | null; lastActivity: string | null };
 export type TelegramPendingLogin = { encryptedSessionSource: string; phoneCodeHash: string };
+export type TelegramIncomingVoice = { durationSeconds: number; mimeType: string; download: () => Promise<Buffer | null> };
+export type TelegramIncomingMessage = {
+  peer: TelegramPeer;
+  messageId: number;
+  senderId: string | null;
+  senderUsername: string | null;
+  senderDisplayName: string | null;
+  senderIsBot: boolean;
+  text: string;
+  mentioned: boolean;
+  replyToOwnMessage: boolean;
+  voice: TelegramIncomingVoice | null;
+  receivedAt: string;
+};
+export type TelegramMessageListener = { stop: () => Promise<void> };
 
 /** Normalized delivery channel derived from Telegram's real `auth.SentCodeType`/`auth.CodeType` constructor. */
 export type TelegramDeliveryType = 'telegram_app' | 'sms' | 'call' | 'email' | 'fragment' | 'firebase_sms' | 'email_setup' | 'unknown';
@@ -45,6 +60,7 @@ export abstract class TelegramClientService {
   abstract chats(session: string, search: string | undefined, limit: number): Promise<TelegramPeer[]>;
   abstract resolvePeer(session: string, peerId: string): Promise<TelegramPeer>;
   abstract sendMessage(session: string, peerId: string, text: string): Promise<{ messageId: string; recipient: TelegramPeer }>;
+  abstract listenIncomingMessages(session: string, onMessage: (message: TelegramIncomingMessage) => Promise<void>): Promise<TelegramMessageListener>;
 }
 
 @Injectable()
@@ -666,6 +682,94 @@ export class GramJsTelegramClientService extends TelegramClientService {
   }
 
 
+  async listenIncomingMessages(session: string, onMessage: (message: TelegramIncomingMessage) => Promise<void>): Promise<TelegramMessageListener> {
+    const client = this.client(session);
+    try {
+      await client.connect();
+      if (!(await client.checkAuthorization())) throw new TelegramAdapterError('CONNECTION_EXPIRED');
+      const { NewMessage } = await import('telegram/events');
+      const builder = new NewMessage({ incoming: true });
+      const handler = async (event: any) => {
+        try {
+          const message = event?.message as any;
+          if (!message || message.out === true || typeof message.id !== 'number') return;
+          const chat = typeof message.getChat === 'function' ? await message.getChat() : null;
+          if (!chat) return;
+          const peer = this.entityToPeer(chat as Api.TypeUser | Api.TypeChat);
+          const className = String((chat as any).className ?? '');
+          if (className.includes('Channel') && ((chat as any).megagroup === true || (chat as any).gigagroup === true)) peer.type = 'GROUP';
+
+          const sender = typeof message.getSender === 'function' ? await message.getSender().catch(() => null) : null;
+          const senderValue = sender as any;
+          const senderDisplayName = senderValue
+            ? ([senderValue.firstName, senderValue.lastName].filter(Boolean).join(' ') || senderValue.title || null)
+            : null;
+          const senderUsername = senderValue?.username ? `@${senderValue.username}` : null;
+          const senderId = senderValue?.id !== undefined ? String(senderValue.id) : message.senderId ? String(message.senderId) : null;
+
+          let replyToOwnMessage = false;
+          if (message.isReply === true && typeof message.getReplyMessage === 'function') {
+            const replied = await message.getReplyMessage().catch(() => null) as any;
+            replyToOwnMessage = replied?.out === true;
+          }
+
+          let voice: TelegramIncomingVoice | null = null;
+          const document = (message.document ?? message.media?.document) as any;
+          const attributes = Array.isArray(document?.attributes) ? document.attributes : [];
+          const audio = attributes.find((item: any) => item?.voice === true || (String(item?.className ?? '').includes('DocumentAttributeAudio') && item?.voice === true));
+          if (audio) {
+            const durationSeconds = Math.max(0, Number(audio.duration ?? 0));
+            voice = {
+              durationSeconds,
+              mimeType: typeof document?.mimeType === 'string' ? document.mimeType : 'audio/ogg',
+              download: async () => {
+                let downloaded: unknown = null;
+                if (typeof message.downloadMedia === 'function') downloaded = await message.downloadMedia({}).catch(() => null);
+                if (!downloaded && message.media) downloaded = await client.downloadMedia(message.media, {}).catch(() => null);
+                return Buffer.isBuffer(downloaded)
+                  ? downloaded
+                  : downloaded instanceof Uint8Array
+                    ? Buffer.from(downloaded)
+                    : null;
+              },
+            };
+          }
+
+          await onMessage({
+            peer,
+            messageId: message.id,
+            senderId,
+            senderUsername,
+            senderDisplayName,
+            senderIsBot: senderValue?.bot === true,
+            text: typeof message.message === 'string' ? message.message.trim() : '',
+            mentioned: message.mentioned === true,
+            replyToOwnMessage,
+            voice,
+            receivedAt: new Date((Number(message.date) || Math.floor(Date.now() / 1000)) * 1000).toISOString(),
+          });
+        } catch (error) {
+          this.logger.warn({ event: 'telegram_sales_incoming_handler_failed', code: classifyTelegramError(error).code });
+        }
+      };
+      client.addEventHandler(handler as any, builder as any);
+      let stopped = false;
+      return {
+        stop: async () => {
+          if (stopped) return;
+          stopped = true;
+          try { (client as any).removeEventHandler?.(handler, builder); } catch { /* best effort */ }
+          await client.disconnect().catch(() => undefined);
+        },
+      };
+    } catch (error) {
+      await client.disconnect().catch(() => undefined);
+      if (error instanceof TelegramAdapterError) throw error;
+      throw classifyTelegramError(error);
+    }
+  }
+
+
   private async findPeerEntity(client: TelegramClient, session: string, peerId: string): Promise<{ entity: Api.TypeUser | Api.TypeChat; peer: TelegramPeer } | null> {
     const cached = this.getRememberedPeerEntity(session, peerId);
     if (cached) return { entity: cached.entity, peer: cached.peer };
@@ -777,7 +881,8 @@ export class GramJsTelegramClientService extends TelegramClientService {
   private entityToPeer(entity: Api.TypeUser | Api.TypeChat): TelegramPeer {
     const value = entity as unknown as { firstName?: string; lastName?: string; title?: string; username?: string; className?: string };
     const className = value.className ?? '';
-    const type: TelegramPeer['type'] = className.includes('User') ? 'USER' : className.includes('Channel') ? 'CHANNEL' : 'GROUP';
+    const isSupergroup = className.includes('Channel') && ((entity as any).megagroup === true || (entity as any).gigagroup === true);
+    const type: TelegramPeer['type'] = className.includes('User') ? 'USER' : isSupergroup ? 'GROUP' : className.includes('Channel') ? 'CHANNEL' : 'GROUP';
     return {
       peerId: getPeerId(entity as any, true),
       type,

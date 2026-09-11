@@ -28,6 +28,13 @@ describe('Voice service', () => {
     await expect(service.transcribe('a', { buffer: Buffer.from('html'), size: 4, mimetype: 'text/html' }, 1)).rejects.toThrow();
     expect(transcribe).not.toHaveBeenCalled();
   });
+  it('transcribes Telegram sales voice up to 60 seconds and rejects longer notes', async () => {
+    transcribe.mockResolvedValue({ text: ' Cola 20 ta bormi? ' });
+    await expect(service.transcribeSalesVoice('owner-a', { buffer: Buffer.from('voice'), size: 5, mimetype: 'audio/ogg' }, 60)).resolves.toEqual({ text: 'Cola 20 ta bormi?' });
+    expect(subscriptions.assertVoiceAllowed).toHaveBeenCalledWith('owner-a');
+    expect(usage.logVoiceUsage).toHaveBeenCalledWith(expect.objectContaining({ userId: 'owner-a', audioSeconds: 60 }));
+    await expect(service.transcribeSalesVoice('owner-a', { buffer: Buffer.from('voice'), size: 5, mimetype: 'audio/ogg' }, 61)).rejects.toThrow(/60/);
+  });
   it('returns real provider audio without an API key in the browser response', async () => {
     speak.mockResolvedValue({ arrayBuffer: async () => Buffer.from('audio bytes') });
     const result = await service.speak('owner-a', 'Amal bajarildi.');
