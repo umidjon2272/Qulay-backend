@@ -78,12 +78,15 @@ export class IntegrationsHealthService {
       recentError: Boolean(telegram.temporaryError),
     });
 
-    const whatsappConnected = whatsapp?.status === 'CONNECTED';
-    const whatsappState = whatsapp?.status === 'DEGRADED' ? 'TEMPORARY_ISSUE' : this.classify({
-      connected: whatsappConnected,
-      hasAuthFailureCode: this.isAuthFailureCode(whatsapp?.lastErrorCode),
-      recentError: whatsapp?.status === 'ERROR',
-    });
+    const whatsappStatus = whatsapp?.status ?? 'DISCONNECTED';
+    const whatsappConnected = whatsappStatus === 'CONNECTED';
+    const whatsappState = whatsappStatus === 'DEGRADED'
+      ? 'TEMPORARY_ISSUE'
+      : this.classify({
+          connected: whatsappConnected,
+          hasAuthFailureCode: this.isAuthFailureCode(whatsapp?.lastErrorCode),
+          recentError: whatsappStatus === 'ERROR',
+        });
 
     const bitoState = bito.status === 'DEGRADED' ? 'TEMPORARY_ISSUE' : this.classify({
       connected: bito.connected,
@@ -109,7 +112,10 @@ export class IntegrationsHealthService {
       whatsapp: {
         state: whatsappState,
         connected: whatsappConnected,
-        lastSuccessfulSyncAt: whatsapp?.lastValidatedAt?.toISOString() ?? whatsapp?.connectedAt?.toISOString() ?? null,
+        lastSuccessfulSyncAt:
+          whatsapp?.lastValidatedAt?.toISOString() ??
+          whatsapp?.connectedAt?.toISOString() ??
+          null,
         lastCheckedAt: checkedAt,
         lastErrorCode: whatsappState === 'DISCONNECTED' ? null : this.friendlyErrorCode(whatsapp?.lastErrorCode),
       },
