@@ -13,6 +13,15 @@ WHATSAPP_TOKEN_ENCRYPTION_KEY=<64 hex chars>
 WHATSAPP_GRAPH_API_VERSION=v24.0
 ```
 
+For the recommended one-click **Meta Embedded Signup** flow, also set:
+
+```env
+WHATSAPP_APP_ID=<Meta App ID>
+WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID=<Embedded Signup configuration ID>
+```
+
+`WHATSAPP_APP_ID` and `WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID` must be configured together. The manual Cloud API connection remains available under **Qo‘lda ulash (Advanced)** as a fallback.
+
 Generate the encryption key:
 
 ```bash
@@ -42,7 +51,17 @@ POST webhook requests are verified with Meta's `X-Hub-Signature-256` HMAC using 
 
 ## 3. QULAY Integrations screen
 
-Open **Sozlamalar → Integratsiyalar → WhatsApp** and provide:
+The normal user flow is now:
+
+1. Open **Sozlamalar → Integratsiyalar → WhatsApp**.
+2. Click **Meta orqali WhatsAppni ulash**.
+3. Sign in to Meta/Facebook.
+4. Select the business and WhatsApp phone number.
+5. Approve access. QULAY receives the temporary authorization code, exchanges it server-side, verifies the selected phone number, subscribes the WABA webhook, encrypts the access token and stores the connection.
+
+The user does **not** need to find Phone Number ID, WABA ID or Access Token manually in the normal flow.
+
+If Embedded Signup has not been configured yet, **Qo‘lda ulash (Advanced)** still accepts:
 
 - Phone Number ID
 - WhatsApp Business Account ID (WABA ID) — recommended
@@ -50,9 +69,11 @@ Open **Sozlamalar → Integratsiyalar → WhatsApp** and provide:
 
 The access token is encrypted with AES-256-GCM before it is stored. It is never returned to the frontend after connection.
 
-If the token also has WhatsApp Business Management permission, QULAY attempts to subscribe the WABA automatically. Otherwise configure the webhook subscription once in Meta.
+## 4. Subscription requirement
 
-## 4. Sales agent behavior
+WhatsApp AI Sales Agent belongs to the **Sales AI** tariff. Connection/test/settings and automatic customer replies require an active Sales AI subscription. If the subscription expires or is downgraded, the saved connection is not deleted, but the sales agent stops replying until the required tariff is active again.
+
+## 5. Sales agent behavior
 
 - Individual inbound sales chats: supported.
 - Incoming text: sales-relevance gate prevents replies to clearly unrelated new topics.
@@ -62,6 +83,6 @@ If the token also has WhatsApp Business Management permission, QULAY attempts to
 - Internal employees, profit, debt, supplier, internal finance/reporting and write actions are not exposed to external customers.
 - Any order/write action remains operator-controlled; customer chat does not silently mutate ERP data.
 
-## 5. WhatsApp messaging window
+## 6. WhatsApp messaging window
 
 The sales agent replies to a message the customer has just sent, so free-form replies occur inside the customer service conversation window. Proactive business-initiated messaging outside that window should use approved WhatsApp templates; that is a separate future workflow.

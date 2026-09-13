@@ -5,16 +5,29 @@ import { ExecuteToolDto } from './dto/execute-tool.dto';
 import { AIToolRegistryService } from './ai-tool-registry.service';
 import { AIToolConfirmationRequired, AIToolExecutionContext, AIToolExecutionSuccess } from './types/ai-tool.types';
 import { BitoToolBridgeService } from '../bito/bito-tool-bridge.service';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
+import { AiUsageService } from '../usage/usage.service';
 
 @Injectable()
 export class AIToolExecutionService {
-  constructor(private readonly registry: AIToolRegistryService, private readonly bitoTools: BitoToolBridgeService) {}
+  constructor(
+    private readonly registry: AIToolRegistryService,
+    private readonly bitoTools: BitoToolBridgeService,
+    private readonly subscriptions: SubscriptionsService,
+    private readonly usage: AiUsageService,
+  ) {}
 
   async execute(userId: string, request: ExecuteToolDto, contextOptions: { locale?: string; timezone?: string; requestId?: string } = {}): Promise<AIToolExecutionSuccess | AIToolConfirmationRequired> {
     const requestId = request.requestId ?? contextOptions.requestId ?? randomUUID();
+    await this.subscriptions.assertToolAllowed(userId);
     if (this.bitoTools.isBitoAlias(request.tool)) {
-      return this.bitoTools.execute(userId, request.tool, request.input, Boolean(request.confirmed), requestId);
+      await this.subscriptions.assertFeatureAllowed(userId, 'BITO');
+      const result = await this.bitoTools.execute(userId, request.tool, request.input, Boolean(request.confirmed), requestId);
+      if (result.status === 'success') void this.usage.logToolUsage({ userId, model: 'tool-registry' }).catch(() => undefined);
+      return result;
     }
+    if (request.tool.includes('google_')) await this.subscriptions.assertFeatureAllowed(userId, 'GOOGLE');
+    if (request.tool.includes('telegram_')) await this.subscriptions.assertFeatureAllowed(userId, 'TELEGRAM');
     const tool = this.registry.get(request.tool);
     const context: AIToolExecutionContext = {
       userId,
@@ -34,6 +47,7 @@ export class AIToolExecutionService {
 
     const data = await tool.execute(context, input);
     if (tool.sideEffect === 'WRITE') await this.registry.recordWriteExecution(tool.name, userId, data).catch(() => undefined);
+    void this.usage.logToolUsage({ userId, model: 'tool-registry' }).catch(() => undefined);
     return { status: 'success', tool: tool.name, data, meta: { executedAt: new Date().toISOString(), requestId: context.requestId } };
   }
 }

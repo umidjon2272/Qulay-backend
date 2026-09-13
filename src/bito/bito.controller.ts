@@ -10,6 +10,7 @@ import { BitoIntegrationService } from './bito-integration.service';
 import { BitoOAuthService } from './bito-oauth.service';
 import { ConnectBitoDto } from './dto/bito.dto';
 import { bitoToolSideEffect } from './bito-tool-policy';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 
 @Controller('integrations/bito')
 export class BitoController {
@@ -20,6 +21,7 @@ export class BitoController {
     private readonly oauth: BitoOAuthService,
     private readonly config: ConfigService,
     private readonly rateLimiter: SecurityRateLimitService,
+    private readonly subscriptions: SubscriptionsService,
   ) {}
 
   @Get('status')
@@ -31,6 +33,7 @@ export class BitoController {
   @Get('auth-url')
   @UseGuards(JwtAuthGuard)
   async authUrl(@CurrentUser() user: AuthenticatedUser) {
+    await this.subscriptions.assertFeatureAllowed(user.sub, 'BITO');
     const result = await this.bito.startOAuth(user.sub);
     return result.status === 'connected'
       ? { connected: true, url: null, serverName: result.serverName, toolCount: result.toolCount }
@@ -81,19 +84,22 @@ export class BitoController {
   // Backwards-compatible manual credentials endpoint.
   @Post('connect')
   @UseGuards(JwtAuthGuard)
-  connect(@CurrentUser() user: AuthenticatedUser, @Body() dto: ConnectBitoDto) {
+  async connect(@CurrentUser() user: AuthenticatedUser, @Body() dto: ConnectBitoDto) {
+    await this.subscriptions.assertFeatureAllowed(user.sub, 'BITO');
     return this.bito.connect(user.sub, dto);
   }
 
   @Post('test')
   @UseGuards(JwtAuthGuard)
-  test(@CurrentUser() user: AuthenticatedUser) {
+  async test(@CurrentUser() user: AuthenticatedUser) {
+    await this.subscriptions.assertFeatureAllowed(user.sub, 'BITO');
     return this.bito.test(user.sub);
   }
 
   @Get('tools')
   @UseGuards(JwtAuthGuard)
   async tools(@CurrentUser() user: AuthenticatedUser) {
+    await this.subscriptions.assertFeatureAllowed(user.sub, 'BITO');
     const tools = await this.bito.listToolsForUser(user.sub);
     return tools.map((tool) => ({
       name: tool.name,

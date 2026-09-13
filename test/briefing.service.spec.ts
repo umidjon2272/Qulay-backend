@@ -14,6 +14,7 @@ describe('BriefingService', () => {
   } as any;
   const aiProvider = { configured: jest.fn(), complete: jest.fn() } as any;
   const prisma = { note: { findMany: jest.fn().mockResolvedValue([]) } } as any;
+  const subscriptions = { assertAiAllowed: jest.fn().mockResolvedValue(undefined) } as any;
   let service: BriefingService;
 
   beforeEach(() => {
@@ -22,7 +23,7 @@ describe('BriefingService', () => {
     financeService.getPeriodSummary.mockResolvedValue({ transactionCount: 0 });
     financeService.getTodayForUser.mockResolvedValue({ recentTransactions: [] });
     prisma.note.findMany.mockResolvedValue([]);
-    service = new BriefingService(todayService, financeService, integrationsHealth, aiProvider, prisma);
+    service = new BriefingService(todayService, financeService, integrationsHealth, aiProvider, prisma, subscriptions);
   });
 
   it('never throws and returns the deterministic fallback narrative when no AI provider is configured', async () => {
@@ -37,6 +38,14 @@ describe('BriefingService', () => {
     aiProvider.complete.mockRejectedValue(new Error('provider unavailable'));
     const briefing = await service.buildMorningBriefing('user-a');
     expect(briefing.narrative).toBeTruthy();
+  });
+
+  it('does not spend provider tokens when the user has no active AI entitlement', async () => {
+    aiProvider.configured.mockReturnValue(true);
+    subscriptions.assertAiAllowed.mockRejectedValueOnce(new Error('subscription required'));
+    const briefing = await service.buildMorningBriefing('user-a');
+    expect(briefing.narrative).toBeTruthy();
+    expect(aiProvider.complete).not.toHaveBeenCalled();
   });
 
   it('only includes finance currencies that actually had activity this week', async () => {

@@ -3,6 +3,7 @@ import { AiProviderService } from '../ai-agent/ai-provider.service';
 import { FinanceModule } from '../finance/finance.module';
 import { IntegrationsHealthModule } from '../integrations-health/integrations-health.module';
 import { PrismaModule } from '../prisma/prisma.module';
+import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 import { TodayModule } from '../today/today.module';
 import { UsageModule } from '../usage/usage.module';
 import { BriefingController } from './briefing.controller';
@@ -13,7 +14,7 @@ import { BriefingService } from './briefing.service';
 // AiProviderService has no state beyond the global ConfigService, so a second
 // instance is harmless.
 @Module({
-  imports: [PrismaModule, TodayModule, FinanceModule, IntegrationsHealthModule, UsageModule],
+  imports: [PrismaModule, TodayModule, FinanceModule, IntegrationsHealthModule, UsageModule, SubscriptionsModule],
   controllers: [BriefingController],
   providers: [BriefingService, AiProviderService],
   exports: [BriefingService],

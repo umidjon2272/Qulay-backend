@@ -42,7 +42,12 @@ describe('AI tool registry and execution', () => {
       financeToolsService as any, todayService as any, telegramIntegrationService as any, briefingService as any,
       activityLog as any, googleCalendarService as any, googleDriveService as any,
     );
-    execution = new AIToolExecutionService(registry, { isBitoAlias: (name: string) => name.startsWith('bito__') } as any);
+    execution = new AIToolExecutionService(
+      registry,
+      { isBitoAlias: (name: string) => name.startsWith('bito__') } as any,
+      { assertToolAllowed: jest.fn().mockResolvedValue(undefined), assertFeatureAllowed: jest.fn().mockResolvedValue(undefined) } as any,
+      { logToolUsage: jest.fn().mockResolvedValue(undefined) } as any,
+    );
   });
 
   it('lists all first-party tools with confirmation metadata', () => {

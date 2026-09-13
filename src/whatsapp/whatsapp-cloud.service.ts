@@ -26,6 +26,46 @@ export class WhatsAppCloudService {
     );
   }
 
+
+  embeddedSignupConfigured(): boolean {
+    return Boolean(
+      this.config.get<string>('whatsapp.appId') &&
+      this.config.get<string>('whatsapp.embeddedSignupConfigId') &&
+      this.appSecret() &&
+      this.config.get<string>('whatsapp.tokenEncryptionKey'),
+    );
+  }
+
+  embeddedSignupPublicConfig(): { ready: boolean; appId: string | null; configId: string | null; graphApiVersion: string } {
+    return {
+      ready: this.embeddedSignupConfigured(),
+      appId: this.config.get<string>('whatsapp.appId') ?? null,
+      configId: this.config.get<string>('whatsapp.embeddedSignupConfigId') ?? null,
+      graphApiVersion: this.graphVersion(),
+    };
+  }
+
+  async exchangeEmbeddedSignupCode(code: string): Promise<string> {
+    const cleanCode = code.trim();
+    const appId = this.config.get<string>('whatsapp.appId');
+    const appSecret = this.appSecret();
+    if (!this.embeddedSignupConfigured() || !appId || !appSecret) {
+      throw new ServiceUnavailableException('WhatsApp Embedded Signup hali sozlanmagan');
+    }
+    if (!cleanCode || cleanCode.length > 4096) throw new BadRequestException('WhatsApp authorization code noto‘g‘ri');
+    const params = new URLSearchParams({ client_id: appId, client_secret: appSecret, code: cleanCode });
+    const response = await fetch(`https://graph.facebook.com/${this.graphVersion()}/oauth/access_token?${params.toString()}`, {
+      method: 'GET',
+      signal: AbortSignal.timeout(15_000),
+    }).catch(() => { throw new ServiceUnavailableException('WhatsApp authorization tokenini olib bo‘lmadi'); });
+    const body = await response.json().catch(() => ({})) as { access_token?: string; error?: { code?: number } };
+    if (!response.ok || !body.access_token) {
+      const codeValue = body.error?.code ? `WHATSAPP_GRAPH_${body.error.code}` : `WHATSAPP_GRAPH_HTTP_${response.status}`;
+      throw new ServiceUnavailableException(codeValue);
+    }
+    return body.access_token;
+  }
+
   graphVersion(): string {
     return this.config.get<string>('whatsapp.graphApiVersion', 'v24.0');
   }

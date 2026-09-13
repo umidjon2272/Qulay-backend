@@ -1,6 +1,6 @@
 import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { ActivityLog, FileSource, FileStatus, GoogleConnectionStatus, NotificationStatus, Prisma, TelegramConnectionStatus, UsageType, UserRole, UserStatus } from '@prisma/client';
+import { ActivityLog, FileSource, FileStatus, GoogleConnectionStatus, NotificationStatus, Prisma, SubscriptionRequestStatus, TelegramConnectionStatus, UsageType, UserRole, UserStatus } from '@prisma/client';
 import { ActivityLogService } from '../activity-log/activity-log.service';
 import { paginationMeta, paginationSkip } from '../common/dto/pagination-query.dto';
 import { NotificationWorkerService } from '../notifications/notification-worker.service';
@@ -79,19 +79,33 @@ export class AdminService {
     const user = await this.prisma.user.findUnique({ where: { id }, select: {
       id: true, email: true, firstName: true, lastName: true, avatarUrl: true, role: true, status: true, createdAt: true, updatedAt: true,
       telegramConnection: { select: { status: true, connectedAt: true } }, googleConnection: { select: { status: true, connectedAt: true } },
-      activityLogs: { orderBy: { createdAt: 'desc' }, take: 10, select: { id: true, action: true, entityType: true, entityId: true, createdAt: true } }, subscription: { select: { tier: true, status: true, currentPeriodEnd: true } },
+      activityLogs: { orderBy: { createdAt: 'desc' }, take: 10, select: { id: true, action: true, entityType: true, entityId: true, createdAt: true } }, subscription: { select: { tier: true, status: true, currentPeriodStart: true, currentPeriodEnd: true, bonusCredits: true } }, subscriptionRequests: { where: { status: SubscriptionRequestStatus.PENDING }, orderBy: { requestedAt: 'desc' }, take: 1, select: { id: true, tier: true, status: true, requestedAt: true } },
     } });
     if (!user) throw new NotFoundException('User was not found');
     const now = new Date();
     const [tasks, reminders, meetings, notes, contacts, finance, files, aiUsage, sessions, resetRequests] = await Promise.all([
       this.prisma.task.count({ where: { userId: id } }), this.prisma.reminder.count({ where: { userId: id } }), this.prisma.meeting.count({ where: { userId: id } }), this.prisma.note.count({ where: { userId: id } }), this.prisma.contact.count({ where: { userId: id } }), this.prisma.financeTransaction.count({ where: { userId: id } }), this.prisma.userFile.count({ where: { userId: id, status: { not: FileStatus.DELETED } } }), this.prisma.aiUsage.count({ where: { userId: id } }), this.prisma.refreshToken.count({ where: { userId: id, revokedAt: null, expiresAt: { gt: now } } }), this.prisma.passwordResetToken.count({ where: { userId: id } }),
     ]);
-    return { ...user, lastActivity: user.activityLogs[0]?.createdAt ?? null, activity: user.activityLogs, usage: { tasks, reminders, meetings, notes, contacts, financeTransactions: finance, files, aiRequests: aiUsage }, security: { activeRefreshSessions: sessions, passwordResetRequests: resetRequests }, integrations: { telegram: { connected: user.telegramConnection?.status === TelegramConnectionStatus.CONNECTED, status: user.telegramConnection?.status ?? TelegramConnectionStatus.DISCONNECTED }, google: { connected: user.googleConnection?.status === GoogleConnectionStatus.CONNECTED, status: user.googleConnection?.status ?? GoogleConnectionStatus.DISCONNECTED } }, telegramConnection: undefined, googleConnection: undefined, activityLogs: undefined };
+    return { ...user, pendingSubscriptionRequest: user.subscriptionRequests[0] ?? null, subscriptionRequests: undefined, lastActivity: user.activityLogs[0]?.createdAt ?? null, activity: user.activityLogs, usage: { tasks, reminders, meetings, notes, contacts, financeTransactions: finance, files, aiRequests: aiUsage }, security: { activeRefreshSessions: sessions, passwordResetRequests: resetRequests }, integrations: { telegram: { connected: user.telegramConnection?.status === TelegramConnectionStatus.CONNECTED, status: user.telegramConnection?.status ?? TelegramConnectionStatus.DISCONNECTED }, google: { connected: user.googleConnection?.status === GoogleConnectionStatus.CONNECTED, status: user.googleConnection?.status ?? GoogleConnectionStatus.DISCONNECTED } }, telegramConnection: undefined, googleConnection: undefined, activityLogs: undefined };
   }
 
   listPlans() { return this.subscriptions.listPlans(true); }
   updatePlan(actorId: string, tier: import('@prisma/client').SubscriptionTier, dto: Parameters<SubscriptionsService['updatePlan']>[2]) { return this.subscriptions.updatePlan(actorId, tier, dto); }
   assignSubscription(actorId: string, userId: string, tier: import('@prisma/client').SubscriptionTier, status?: import('@prisma/client').SubscriptionStatus) { return this.subscriptions.assignPlan(actorId, userId, tier, status); }
+  async addSubscriptionCredits(actorId: string, userId: string, amount: number) { const result = await this.subscriptions.addCredits(userId, amount); await this.activityLog.record({ userId: actorId, action: 'ADMIN_SUBSCRIPTION_CREDITS_ADDED', entityType: 'USER_SUBSCRIPTION', entityId: userId, metadata: { targetUserId: userId, amount } }); return result; }
+  listSubscriptionRequests(status: SubscriptionRequestStatus = SubscriptionRequestStatus.PENDING) { return this.subscriptions.listRequests(status); }
+
+  async approveSubscriptionRequest(actorId: string, requestId: string) {
+    const result = await this.subscriptions.approveRequest(actorId, requestId);
+    await this.activityLog.record({ userId: actorId, action: 'ADMIN_SUBSCRIPTION_APPROVED', entityType: 'SUBSCRIPTION_REQUEST', entityId: requestId, metadata: { targetUserId: result.userId, tier: result.tier } });
+    return result;
+  }
+
+  async rejectSubscriptionRequest(actorId: string, requestId: string) {
+    const result = await this.subscriptions.rejectRequest(actorId, requestId);
+    await this.activityLog.record({ userId: actorId, action: 'ADMIN_SUBSCRIPTION_REJECTED', entityType: 'SUBSCRIPTION_REQUEST', entityId: requestId, metadata: { targetUserId: result.userId, tier: result.tier } });
+    return result;
+  }
 
   async updateUserStatus(actorId: string, userId: string, status: UserStatus) {
     if (actorId === userId && status === UserStatus.BLOCKED) throw new ForbiddenException('An admin cannot block their own account');

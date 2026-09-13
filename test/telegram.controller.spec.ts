@@ -7,7 +7,8 @@ describe('TelegramController', () => {
     resendCode: jest.fn(),
     restartCode: jest.fn(),
   } as any;
-  const controller = new TelegramController(telegram, { isAllowed: () => true } as any);
+  const subscriptions = { assertFeatureAllowed: jest.fn().mockResolvedValue(undefined) } as any;
+  const controller = new TelegramController(telegram, { isAllowed: () => true } as any, subscriptions);
 
   beforeEach(() => jest.clearAllMocks());
 

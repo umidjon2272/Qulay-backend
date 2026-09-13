@@ -25,6 +25,7 @@ describe('TelegramSalesAgentService', () => {
   const telegram = { sendMessage: jest.fn().mockResolvedValue({}) } as any;
   const ai = { chat: jest.fn().mockResolvedValue({ message: 'Ha, mavjud.', pendingConfirmation: null }) } as any;
   const voice = { transcribeSalesVoice: jest.fn().mockResolvedValue({ text: 'Coladan 20 ta bormi?' }) } as any;
+  const subscriptions = { assertFeatureAllowed: jest.fn().mockResolvedValue(undefined), assertAiAllowed: jest.fn().mockResolvedValue(undefined) } as any;
   let service: TelegramSalesAgentService;
 
   beforeEach(() => {
@@ -39,7 +40,7 @@ describe('TelegramSalesAgentService', () => {
       salesVoiceEnabled: true,
       salesVoiceMaxSeconds: 60,
     });
-    service = new TelegramSalesAgentService(prisma, crypto, telegramClient, telegram, ai, voice);
+    service = new TelegramSalesAgentService(prisma, crypto, telegramClient, telegram, ai, voice, subscriptions);
   });
 
   afterEach(async () => {

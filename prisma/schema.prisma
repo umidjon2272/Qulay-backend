@@ -104,6 +104,7 @@ enum SubscriptionTier {
   STARTER
   PRO
   BUSINESS
+  SALES_AI
 }
 
 enum SubscriptionStatus {
@@ -112,6 +113,13 @@ enum SubscriptionStatus {
   PAST_DUE
   CANCELED
   EXPIRED
+}
+
+enum SubscriptionRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELED
 }
 
 enum AgentActionStatus {
@@ -269,6 +277,8 @@ model User {
   proactiveSuggestions   ProactiveSuggestion[]
   financeBudgets         FinanceBudget[]
   updatedPlans           SubscriptionPlanConfig[] @relation("PlanUpdatedBy")
+  subscriptionRequests   SubscriptionRequest[]    @relation("SubscriptionRequestUser")
+  reviewedSubscriptionRequests SubscriptionRequest[] @relation("SubscriptionRequestReviewer")
 
   @@index([createdAt])
   @@index([status, createdAt])
@@ -799,18 +809,36 @@ model UserSubscription {
   id                 String             @id @default(uuid()) @db.Uuid
   userId             String             @unique @db.Uuid
   tier               SubscriptionTier   @default(STARTER)
-  status             SubscriptionStatus @default(TRIALING)
+  status             SubscriptionStatus @default(EXPIRED)
   trialEndsAt        DateTime?
   currentPeriodStart DateTime           @default(now())
   currentPeriodEnd   DateTime?
   cancelAtPeriodEnd  Boolean            @default(false)
   entitlementSnapshot Json?
+  bonusCredits        Int                @default(0)
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
   user               User               @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([status, currentPeriodEnd])
   @@index([tier, status])
+}
+
+model SubscriptionRequest {
+  id         String                    @id @default(uuid()) @db.Uuid
+  userId     String                    @db.Uuid
+  tier       SubscriptionTier
+  status     SubscriptionRequestStatus @default(PENDING)
+  requestedAt DateTime                 @default(now())
+  reviewedAt DateTime?
+  reviewedBy String?                   @db.Uuid
+  createdAt  DateTime                  @default(now())
+  updatedAt  DateTime                  @updatedAt
+  user       User                      @relation("SubscriptionRequestUser", fields: [userId], references: [id], onDelete: Cascade)
+  reviewer   User?                     @relation("SubscriptionRequestReviewer", fields: [reviewedBy], references: [id], onDelete: SetNull)
+
+  @@index([status, requestedAt])
+  @@index([userId, requestedAt])
 }
 
 model SubscriptionPlanConfig {

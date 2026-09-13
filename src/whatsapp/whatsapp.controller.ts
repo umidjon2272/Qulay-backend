@@ -6,11 +6,19 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { WhatsAppCloudService } from './whatsapp-cloud.service';
 import { WhatsAppSalesAgentService } from './whatsapp-sales-agent.service';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 
 class ConnectWhatsAppDto {
   @IsString() @Matches(/^\d{5,30}$/) phoneNumberId!: string;
   @IsOptional() @IsString() @Matches(/^\d{5,30}$/) wabaId?: string;
   @IsString() @MinLength(20) accessToken!: string;
+}
+
+
+class EmbeddedConnectWhatsAppDto {
+  @IsString() @MinLength(1) code!: string;
+  @IsString() @Matches(/^\d{5,30}$/) phoneNumberId!: string;
+  @IsString() @Matches(/^\d{5,30}$/) wabaId!: string;
 }
 
 class UpdateWhatsAppSalesDto {
@@ -21,7 +29,7 @@ class UpdateWhatsAppSalesDto {
 
 @Controller('integrations/whatsapp')
 export class WhatsAppController {
-  constructor(private readonly sales: WhatsAppSalesAgentService, private readonly cloud: WhatsAppCloudService) {}
+  constructor(private readonly sales: WhatsAppSalesAgentService, private readonly cloud: WhatsAppCloudService, private readonly subscriptions: SubscriptionsService) {}
 
   @Get('webhook')
   verifyWebhook(
@@ -46,17 +54,25 @@ export class WhatsAppController {
   @UseGuards(JwtAuthGuard)
   status(@CurrentUser() user: AuthenticatedUser) { return this.sales.getSettings(user.sub); }
 
+  @Get('embedded-config')
+  @UseGuards(JwtAuthGuard)
+  async embeddedConfig(@CurrentUser() user: AuthenticatedUser) { await this.subscriptions.assertFeatureAllowed(user.sub, 'WHATSAPP_SALES'); return this.cloud.embeddedSignupPublicConfig(); }
+
+  @Post('embedded-connect')
+  @UseGuards(JwtAuthGuard)
+  async embeddedConnect(@CurrentUser() user: AuthenticatedUser, @Body() dto: EmbeddedConnectWhatsAppDto) { await this.subscriptions.assertFeatureAllowed(user.sub, 'WHATSAPP_SALES'); return this.sales.connectEmbedded(user.sub, dto); }
+
   @Post('connect')
   @UseGuards(JwtAuthGuard)
-  connect(@CurrentUser() user: AuthenticatedUser, @Body() dto: ConnectWhatsAppDto) { return this.sales.connect(user.sub, dto); }
+  async connect(@CurrentUser() user: AuthenticatedUser, @Body() dto: ConnectWhatsAppDto) { await this.subscriptions.assertFeatureAllowed(user.sub, 'WHATSAPP_SALES'); return this.sales.connect(user.sub, dto); }
 
   @Post('test')
   @UseGuards(JwtAuthGuard)
-  test(@CurrentUser() user: AuthenticatedUser) { return this.sales.test(user.sub); }
+  async test(@CurrentUser() user: AuthenticatedUser) { await this.subscriptions.assertFeatureAllowed(user.sub, 'WHATSAPP_SALES'); return this.sales.test(user.sub); }
 
   @Patch('sales-agent')
   @UseGuards(JwtAuthGuard)
-  update(@CurrentUser() user: AuthenticatedUser, @Body() dto: UpdateWhatsAppSalesDto) { return this.sales.updateSettings(user.sub, dto); }
+  async update(@CurrentUser() user: AuthenticatedUser, @Body() dto: UpdateWhatsAppSalesDto) { await this.subscriptions.assertFeatureAllowed(user.sub, 'WHATSAPP_SALES'); return this.sales.updateSettings(user.sub, dto); }
 
   @Delete('disconnect')
   @UseGuards(JwtAuthGuard)

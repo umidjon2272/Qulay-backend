@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 import { ActivityLogModule } from '../activity-log/activity-log.module';
 import { PrismaModule } from '../prisma/prisma.module';
 import { TelegramController } from './telegram.controller';
@@ -8,7 +9,7 @@ import { TelegramCryptoService } from './telegram-crypto.service';
 import { TelegramLoginDiagnosticService } from './telegram-login-diagnostic.service';
 
 @Module({
-  imports: [PrismaModule, ActivityLogModule],
+  imports: [PrismaModule, ActivityLogModule, SubscriptionsModule],
   controllers: [TelegramController],
   providers: [
     TelegramCryptoService,

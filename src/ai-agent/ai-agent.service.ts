@@ -229,7 +229,6 @@ Follow-up: ${externalSalesSelectionText || dto.message}`
           { locale: user.language, timezone: user.timezone },
         );
         if (result.status !== 'success') throw new Error('Bito inventory read unexpectedly required confirmation');
-        void this.usage.logToolUsage({ userId, model: 'tool-registry' }).catch(() => undefined);
         const toolOutput = JSON.stringify({ ok: true, tool: BITO_INVENTORY_TOOL_NAME, data: result.data });
         await this.appendMessage({
           data: { conversationId: conversation.id, role: MessageRole.TOOL, content: JSON.stringify({ source: 'BITO', intent: 'inventory', complete: true, tool: BITO_INVENTORY_TOOL_NAME, query: dto.message }) },
@@ -257,7 +256,6 @@ Follow-up: ${externalSalesSelectionText || dto.message}`
       try {
         const result = await this.execution.execute(userId, { tool: 'get_all_time_finance', input: {}, confirmed: false, requestId: callId }, { locale: user.language, timezone: user.timezone });
         if (result.status !== 'success') throw new Error('Finance read did not complete');
-        void this.usage.logToolUsage({ userId, model: 'tool-registry' }).catch(() => undefined);
         messages.push({ role: 'tool', tool_call_id: callId, content: JSON.stringify({ ok: true, tool: 'get_all_time_finance', data: result.data }) });
       } catch {
         const answer = user.language === 'ru' ? 'Не удалось получить общие данные по финансам. Это не означает, что записей нет. Попробуйте ещё раз.' : 'Umumiy moliya ma’lumotlarini hozir yuklay olmadim. Bu daromad yozuvlari yo‘q degani emas. Qayta urinib ko‘ring.';
@@ -335,8 +333,7 @@ Follow-up: ${externalSalesSelectionText || dto.message}`
           }
 
           attemptedTools.set(fingerprint, JSON.stringify({ ok: true, tool: resolved.tool, data: execution.data, repeated: true }));
-          void this.usage.logToolUsage({ userId, model: 'tool-registry' }).catch(() => undefined);
-          await this.appendMessage({ data: { conversationId: conversation.id, role: MessageRole.TOOL, content: JSON.stringify({ tool: resolved.tool, data: execution.data }).slice(0, 18000) }, knownTemporary: Boolean(conversation.isTemporary) }).catch(() => undefined);
+            await this.appendMessage({ data: { conversationId: conversation.id, role: MessageRole.TOOL, content: JSON.stringify({ tool: resolved.tool, data: execution.data }).slice(0, 18000) }, knownTemporary: Boolean(conversation.isTemporary) }).catch(() => undefined);
           messages.push({
             role: 'tool',
             tool_call_id: call.id,
@@ -426,7 +423,6 @@ Follow-up: ${externalSalesSelectionText || dto.message}`
         if (result.status !== 'success') throw new ConflictException('Tasdiqlangan amal bajarilmadi');
         data.push(result.data);
         // An analytics failure must never turn an already completed write into a retry.
-        void this.usage.logToolUsage({ userId, model: 'tool-registry' }).catch(() => undefined);
         if (action.conversationId) await this.appendMessage({ data: { conversationId: action.conversationId, role: MessageRole.TOOL, content: JSON.stringify({ tool: item.toolName, data: result.data }).slice(0, 18000) } }).catch(() => undefined);
       }
     } catch (error) {

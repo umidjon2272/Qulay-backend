@@ -58,6 +58,8 @@ export default () => ({
   },
   whatsapp: {
     configured: [process.env.WHATSAPP_APP_SECRET, process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN, process.env.WHATSAPP_TOKEN_ENCRYPTION_KEY].every(Boolean),
+    appId: process.env.WHATSAPP_APP_ID,
+    embeddedSignupConfigId: process.env.WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID,
     appSecret: process.env.WHATSAPP_APP_SECRET,
     webhookVerifyToken: process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN,
     tokenEncryptionKey: process.env.WHATSAPP_TOKEN_ENCRYPTION_KEY,

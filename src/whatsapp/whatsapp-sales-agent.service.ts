@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
@@ -6,10 +6,12 @@ import { AiAgentService } from '../ai-agent/ai-agent.service';
 import { AiVoiceService } from '../ai-agent/ai-voice.service';
 import { WhatsAppCloudService } from './whatsapp-cloud.service';
 import { WhatsAppCryptoService } from './whatsapp-crypto.service';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { isWhatsAppSalesRelevant, oggOpusDurationSeconds, shouldActivateWhatsAppSalesContext } from './whatsapp-sales-policy';
 
 export type WhatsAppSalesAgentSettings = {
   configured: boolean;
+  embeddedSignupReady: boolean;
   connected: boolean;
   status: 'DISCONNECTED' | 'CONNECTED' | 'DEGRADED' | 'ERROR' | 'not_configured';
   displayPhoneNumber: string | null;
@@ -65,13 +67,14 @@ export class WhatsAppSalesAgentService {
     private readonly crypto: WhatsAppCryptoService,
     private readonly ai: AiAgentService,
     private readonly voice: AiVoiceService,
+    private readonly subscriptions: SubscriptionsService,
   ) {}
 
   async getSettings(userId: string): Promise<WhatsAppSalesAgentSettings> {
     const connection = await this.prisma.whatsAppConnection.findUnique({ where: { userId } });
     if (!connection) {
       return {
-        configured: this.cloud.configured(), connected: false, status: this.cloud.configured() ? 'DISCONNECTED' : 'not_configured',
+        configured: this.cloud.configured(), embeddedSignupReady: this.cloud.embeddedSignupConfigured(), connected: false, status: this.cloud.configured() ? 'DISCONNECTED' : 'not_configured',
         displayPhoneNumber: null, verifiedName: null, phoneNumberId: null, wabaId: null, webhookSubscribed: false,
         enabled: false, salesOnly: true, voiceEnabled: true, maxVoiceSeconds: 60, replyMode: 'TEXT',
         connectedAt: null, lastValidatedAt: null, lastErrorCode: null,
@@ -79,6 +82,7 @@ export class WhatsAppSalesAgentService {
     }
     return {
       configured: this.cloud.configured(),
+      embeddedSignupReady: this.cloud.embeddedSignupConfigured(),
       connected: connection.status === 'CONNECTED',
       status: connection.status,
       displayPhoneNumber: connection.displayPhoneNumber,
@@ -101,13 +105,23 @@ export class WhatsAppSalesAgentService {
     if (!this.cloud.configured()) throw new ServiceUnavailableException('WhatsApp server sozlamalari hali tayyor emas');
     const token = input.accessToken.trim();
     if (token.length < 20) throw new BadRequestException('WhatsApp access token noto‘g‘ri');
-    const profile = await this.cloud.verifyPhoneNumber(token, input.phoneNumberId);
-    const webhookSubscribed = input.wabaId ? await this.cloud.subscribeWaba(token, input.wabaId) : false;
+    return this.connectWithToken(userId, token, input.phoneNumberId, input.wabaId);
+  }
+
+  async connectEmbedded(userId: string, input: { code: string; phoneNumberId: string; wabaId: string }): Promise<WhatsAppSalesAgentSettings> {
+    const token = await this.cloud.exchangeEmbeddedSignupCode(input.code);
+    return this.connectWithToken(userId, token, input.phoneNumberId, input.wabaId);
+  }
+
+  private async connectWithToken(userId: string, token: string, phoneNumberId: string, wabaId?: string): Promise<WhatsAppSalesAgentSettings> {
+    const profile = await this.cloud.verifyPhoneNumber(token, phoneNumberId);
+    const cleanWabaId = wabaId?.trim() || null;
+    const webhookSubscribed = cleanWabaId ? await this.cloud.subscribeWaba(token, cleanWabaId) : false;
     await this.prisma.whatsAppConnection.upsert({
       where: { userId },
       update: {
         phoneNumberId: profile.phoneNumberId,
-        wabaId: input.wabaId?.trim() || null,
+        wabaId: cleanWabaId,
         displayPhoneNumber: profile.displayPhoneNumber,
         verifiedName: profile.verifiedName,
         qualityRating: profile.qualityRating,
@@ -116,7 +130,7 @@ export class WhatsAppSalesAgentService {
         connectedAt: new Date(), lastValidatedAt: new Date(), lastErrorAt: null, lastErrorCode: null,
       },
       create: {
-        userId, phoneNumberId: profile.phoneNumberId, wabaId: input.wabaId?.trim() || null,
+        userId, phoneNumberId: profile.phoneNumberId, wabaId: cleanWabaId,
         displayPhoneNumber: profile.displayPhoneNumber, verifiedName: profile.verifiedName, qualityRating: profile.qualityRating,
         encryptedAccessToken: this.crypto.encrypt(token), status: 'CONNECTED', webhookSubscribed,
         connectedAt: new Date(), lastValidatedAt: new Date(),
@@ -183,6 +197,10 @@ export class WhatsAppSalesAgentService {
     if (this.processing.has(processKey)) return;
     this.processing.add(processKey);
     try {
+      await Promise.all([
+        this.subscriptions.assertFeatureAllowed(userId, 'WHATSAPP_SALES'),
+        this.subscriptions.assertAiAllowed(userId),
+      ]);
       const accepted = await this.reserveMessage(userId, message.id);
       if (!accepted) return;
       const connection = await this.prisma.whatsAppConnection.findUnique({ where: { userId } });
@@ -237,6 +255,7 @@ export class WhatsAppSalesAgentService {
       await this.cloud.sendText(userId, message.from, answer);
       await this.prisma.whatsAppSalesSession.update({ where: { id: session.id }, data: { lastInboundAt: new Date(), lastOutboundAt: new Date(), customerName: displayName ?? session.customerName } });
     } catch (error) {
+      if (error instanceof ForbiddenException) return;
       this.logger.warn({ event: 'whatsapp_sales_message_failed', userId: this.safeId(userId), type: message?.type, code: this.errorCode(error) });
       await this.cloud.sendText(userId, message?.from ?? '', 'Hozir javobni tayyorlay olmadim. Iltimos, birozdan keyin qayta yozing.').catch(() => undefined);
     } finally {

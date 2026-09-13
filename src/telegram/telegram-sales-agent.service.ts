@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger, OnModuleDestroy, OnModuleInit, NotFoundException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { TelegramConnectionStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -7,6 +7,7 @@ import { AiVoiceService } from '../ai-agent/ai-voice.service';
 import { TelegramClientService, TelegramIncomingMessage, TelegramMessageListener } from './telegram-client.service';
 import { TelegramCryptoService } from './telegram-crypto.service';
 import { TelegramIntegrationService } from './telegram-integration.service';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 
 export type TelegramSalesAgentSettings = {
   enabled: boolean;
@@ -43,6 +44,7 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
     private readonly telegram: TelegramIntegrationService,
     private readonly ai: AiAgentService,
     private readonly voice: AiVoiceService,
+    private readonly subscriptions: SubscriptionsService,
   ) {}
 
   onModuleInit(): void {
@@ -121,7 +123,18 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
         },
         select: { userId: true, encryptedSession: true },
       });
-      const enabled = new Set(rows.map(row => row.userId));
+      const eligibleRows = (await Promise.all(rows.map(async row => {
+        try {
+          await Promise.all([
+            this.subscriptions.assertFeatureAllowed(row.userId, 'TELEGRAM_SALES'),
+            this.subscriptions.assertAiAllowed(row.userId),
+          ]);
+          return row;
+        } catch {
+          return null;
+        }
+      }))).filter((row): row is (typeof rows)[number] => row !== null);
+      const enabled = new Set(eligibleRows.map(row => row.userId));
 
       for (const [userId, active] of this.listeners) {
         if (enabled.has(userId)) continue;
@@ -129,7 +142,7 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
         await active.listener.stop().catch(() => undefined);
       }
 
-      for (const row of rows) {
+      for (const row of eligibleRows) {
         if (!row.encryptedSession) continue;
         const fingerprint = createHash('sha256').update(row.encryptedSession).digest('hex').slice(0, 20);
         const active = this.listeners.get(row.userId);
@@ -158,6 +171,10 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
     if (this.processing.has(key)) return;
     this.processing.add(key);
     try {
+      await Promise.all([
+        this.subscriptions.assertFeatureAllowed(userId, 'TELEGRAM_SALES'),
+        this.subscriptions.assertAiAllowed(userId),
+      ]);
       const connection = await this.prisma.telegramConnection.findUnique({
         where: { userId },
         select: {
@@ -234,6 +251,7 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
       await this.safeReply(userId, incoming.peer.peerId, answer);
       await this.markProcessed(salesSession.id, incoming.messageId, true);
     } catch (error) {
+      if (error instanceof ForbiddenException) return;
       this.logger.warn({
         event: 'telegram_sales_message_failed',
         userId: this.safeUserId(userId),

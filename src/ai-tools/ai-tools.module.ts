@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
+import { UsageModule } from '../usage/usage.module';
 import { ActivityLogModule } from '../activity-log/activity-log.module';
 import { ContactsModule } from '../contacts/contacts.module';
 import { FinanceModule } from '../finance/finance.module';
@@ -18,7 +20,7 @@ import { AIToolsController } from './ai-tools.controller';
 import { AIToolRegistryService } from './ai-tool-registry.service';
 
 @Module({
-  imports: [ActivityLogModule, ContactsModule, FinanceModule, MemoryModule, MeetingsModule, NotesModule, RemindersModule, TasksModule, TodayModule, TelegramModule, GoogleModule, FilesModule, BriefingModule, BitoModule],
+  imports: [ActivityLogModule, ContactsModule, FinanceModule, MemoryModule, MeetingsModule, NotesModule, RemindersModule, TasksModule, TodayModule, TelegramModule, GoogleModule, FilesModule, BriefingModule, BitoModule, SubscriptionsModule, UsageModule],
   controllers: [AIToolsController],
   providers: [AIToolRegistryService, AIToolExecutionService],
   exports: [AIToolRegistryService, AIToolExecutionService],

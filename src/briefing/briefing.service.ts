@@ -6,6 +6,7 @@ import { FinanceService } from '../finance/finance.service';
 import { IntegrationsHealthService } from '../integrations-health/integrations-health.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { TodayService } from '../today/today.service';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { AiUsageService } from '../usage/usage.service';
 
 const FALLBACK_MORNING_NOTE = 'Kunni rejalashtirilgan ishlardan boshlang. AI tahlili hozircha mavjud emas.';
@@ -27,6 +28,7 @@ export class BriefingService {
     private readonly integrationsHealth: IntegrationsHealthService,
     private readonly aiProvider: AiProviderService,
     private readonly prisma: PrismaService,
+    private readonly subscriptions: SubscriptionsService,
     @Optional() private readonly usage?: AiUsageService,
   ) {}
 
@@ -128,6 +130,9 @@ export class BriefingService {
   private async narrate(userId: string, prompt: string, fallback: string): Promise<string> {
     if (!this.aiProvider.configured()) return fallback;
     try {
+      // Briefings are allowed to return their deterministic sections without an
+      // active plan, but must not spend provider tokens outside the subscription.
+      await this.subscriptions.assertAiAllowed(userId);
       const result = await this.aiProvider.complete([{ role: 'system', content: prompt }], []);
       if (this.usage) {
         await this.usage.logTextUsage({ userId, model: result.model, inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens }).catch(() => undefined);

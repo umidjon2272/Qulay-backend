@@ -13,6 +13,8 @@ type UsageInput = {
   creditUnits?: number;
 };
 
+const TOKENS_PER_CREDIT = 1_000;
+
 @Injectable()
 export class AiUsageService {
   constructor(private readonly prisma: PrismaService) {}
@@ -79,7 +81,7 @@ export class AiUsageService {
         outputTokens: input.outputTokens ?? 0,
         audioSeconds: input.audioSeconds ?? 0,
         estimatedCost: input.estimatedCost ?? 0,
-        creditUnits: input.creditUnits ?? (input.type === UsageType.TEXT ? 1 : 0),
+        creditUnits: input.creditUnits ?? (input.type === UsageType.TEXT ? Math.max(1, Math.ceil(((input.inputTokens ?? 0) + (input.outputTokens ?? 0)) / TOKENS_PER_CREDIT)) : 0),
       },
     });
   }

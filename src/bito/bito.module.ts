@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 import { ActivityLogModule } from '../activity-log/activity-log.module';
 import { PrismaModule } from '../prisma/prisma.module';
 import { BitoController } from './bito.controller';
@@ -10,7 +11,7 @@ import { BitoUrlPolicyService } from './bito-url-policy.service';
 import { BitoToolBridgeService } from './bito-tool-bridge.service';
 
 @Module({
-  imports: [PrismaModule, ActivityLogModule],
+  imports: [PrismaModule, ActivityLogModule, SubscriptionsModule],
   controllers: [BitoController],
   providers: [BitoCryptoService, BitoUrlPolicyService, BitoMcpClient, BitoOAuthService, BitoIntegrationService, BitoToolBridgeService],
   exports: [BitoIntegrationService, BitoToolBridgeService, BitoOAuthService],

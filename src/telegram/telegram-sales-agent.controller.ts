@@ -4,6 +4,7 @@ import { AuthenticatedUser } from '../auth/types/jwt-payload.type';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { TelegramSalesAgentService } from './telegram-sales-agent.service';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 
 export class UpdateTelegramSalesAgentDto {
   @IsOptional() @IsBoolean() enabled?: boolean;
@@ -15,15 +16,17 @@ export class UpdateTelegramSalesAgentDto {
 @Controller('integrations/telegram/sales-agent')
 @UseGuards(JwtAuthGuard)
 export class TelegramSalesAgentController {
-  constructor(private readonly salesAgent: TelegramSalesAgentService) {}
+  constructor(private readonly salesAgent: TelegramSalesAgentService, private readonly subscriptions: SubscriptionsService) {}
 
   @Get()
-  get(@CurrentUser() user: AuthenticatedUser) {
+  async get(@CurrentUser() user: AuthenticatedUser) {
+    await this.subscriptions.assertFeatureAllowed(user.sub, 'TELEGRAM_SALES');
     return this.salesAgent.getSettings(user.sub);
   }
 
   @Patch()
-  update(@CurrentUser() user: AuthenticatedUser, @Body() dto: UpdateTelegramSalesAgentDto) {
+  async update(@CurrentUser() user: AuthenticatedUser, @Body() dto: UpdateTelegramSalesAgentDto) {
+    await this.subscriptions.assertFeatureAllowed(user.sub, 'TELEGRAM_SALES');
     return this.salesAgent.updateSettings(user.sub, dto);
   }
 }

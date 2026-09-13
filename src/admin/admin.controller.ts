@@ -5,7 +5,7 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
-import { AdminActivityQueryDto, AdminFilesQueryDto, AdminRangeQueryDto, AdminRoleDto, AdminStatusDto, AdminUsersQueryDto, AssignUserSubscriptionDto, UpdateAdminPlatformSettingsDto, UpdateSubscriptionPlanDto } from './dto/admin-query.dto';
+import { AddSubscriptionCreditsDto, AdminActivityQueryDto, AdminFilesQueryDto, AdminRangeQueryDto, AdminRoleDto, AdminStatusDto, AdminSubscriptionRequestsQueryDto, AdminUsersQueryDto, AssignUserSubscriptionDto, UpdateAdminPlatformSettingsDto, UpdateSubscriptionPlanDto } from './dto/admin-query.dto';
 import { AdminService } from './admin.service';
 import { TelegramLoginDiagnosticService } from '../telegram/telegram-login-diagnostic.service';
 
@@ -21,7 +21,11 @@ export class AdminController {
   @Patch('users/:id/status') status(@CurrentUser() actor: AuthenticatedUser, @Param('id', new ParseUUIDPipe({ version: '4' })) id: string, @Body() dto: AdminStatusDto) { return this.admin.updateUserStatus(actor.sub, id, dto.status); }
   @Patch('users/:id/role') role(@CurrentUser() actor: AuthenticatedUser, @Param('id', new ParseUUIDPipe({ version: '4' })) id: string, @Body() dto: AdminRoleDto) { return this.admin.updateUserRole(actor.sub, id, dto.role); }
   @Patch('users/:id/subscription') subscription(@CurrentUser() actor: AuthenticatedUser, @Param('id', new ParseUUIDPipe({ version: '4' })) id: string, @Body() dto: AssignUserSubscriptionDto) { return this.admin.assignSubscription(actor.sub, id, dto.tier, dto.status); }
+  @Patch('users/:id/subscription/credits') addCredits(@CurrentUser() actor: AuthenticatedUser, @Param('id', new ParseUUIDPipe({ version: '4' })) id: string, @Body() dto: AddSubscriptionCreditsDto) { return this.admin.addSubscriptionCredits(actor.sub, id, dto.amount); }
   @Get('plans') plans() { return this.admin.listPlans(); }
+  @Get('subscription-requests') subscriptionRequests(@Query() query: AdminSubscriptionRequestsQueryDto) { return this.admin.listSubscriptionRequests(query.status); }
+  @Patch('subscription-requests/:id/approve') approveSubscriptionRequest(@CurrentUser() actor: AuthenticatedUser, @Param('id', new ParseUUIDPipe({ version: '4' })) id: string) { return this.admin.approveSubscriptionRequest(actor.sub, id); }
+  @Patch('subscription-requests/:id/reject') rejectSubscriptionRequest(@CurrentUser() actor: AuthenticatedUser, @Param('id', new ParseUUIDPipe({ version: '4' })) id: string) { return this.admin.rejectSubscriptionRequest(actor.sub, id); }
   @Patch('plans/:tier') plan(@CurrentUser() actor: AuthenticatedUser, @Param('tier', new ParseEnumPipe(SubscriptionTier)) tier: SubscriptionTier, @Body() dto: UpdateSubscriptionPlanDto) { return this.admin.updatePlan(actor.sub, tier, dto); }
   @Get('usage') usage(@Query() query: AdminRangeQueryDto) { return this.admin.getUsage(query.range); }
   @Get('integrations') integrations() { return this.admin.getIntegrations(); }
