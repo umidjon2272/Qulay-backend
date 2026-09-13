@@ -1,0 +1,17 @@
+
+> yechim-ai-backend@0.1.0 build
+> nest build
+
+[96msrc/whatsapp/whatsapp-sales-agent.service.ts[0m:[93m207[0m:[93m74[0m - [91merror[0m[90m TS2345: [0mArgument of type '{ buffer: Buffer<ArrayBufferLike>; mimeType: string; size: number; }' is not assignable to parameter of type 'VoiceUpload'.
+  Property 'mimetype' is missing in type '{ buffer: Buffer<ArrayBufferLike>; mimeType: string; size: number; }' but required in type 'VoiceUpload'.
+
+[7m207[0m         const transcript = await this.voice.transcribeSalesVoice(userId, media, duration);
+[7m   [0m [91m                                                                         ~~~~~[0m
+
+  [96msrc/ai-agent/ai-voice.service.ts[0m:[93m9[0m:[93m59[0m
+    [7m9[0m export type VoiceUpload = { buffer: Buffer; size: number; mimetype: string };
+    [7m [0m [96m                                                          ~~~~~~~~[0m
+    'mimetype' is declared here.
+
+Found 1 error(s).
+

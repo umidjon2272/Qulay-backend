@@ -204,7 +204,15 @@ export class WhatsAppSalesAgentService {
           await this.cloud.sendText(userId, message.from, 'Golos 60 soniyadan uzun. Iltimos, qisqaroq yuboring.');
           return;
         }
-        const transcript = await this.voice.transcribeSalesVoice(userId, media, duration);
+    const transcript = await this.voice.transcribeSalesVoice(
+  userId,
+  {
+    buffer: media.buffer,
+    size: media.size,
+    mimetype: media.mimeType,
+  },
+  duration,
+);``
         text = [text, transcript.text].filter(Boolean).join('\n').trim();
       }
 
