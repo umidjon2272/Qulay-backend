@@ -2,12 +2,12 @@ import { Module } from '@nestjs/common';
 import { GoogleModule } from '../google/google.module';
 import { TelegramModule } from '../telegram/telegram.module';
 import { BitoModule } from '../bito/bito.module';
-import { WhatsAppModule } from '../whatsapp/whatsapp.module';
+import { PrismaModule } from '../prisma/prisma.module';
 import { IntegrationsHealthController } from './integrations-health.controller';
 import { IntegrationsHealthService } from './integrations-health.service';
 
 @Module({
-  imports: [GoogleModule, TelegramModule, BitoModule, WhatsAppModule],
+  imports: [GoogleModule, TelegramModule, BitoModule, PrismaModule],
   controllers: [IntegrationsHealthController],
   providers: [IntegrationsHealthService],
   exports: [IntegrationsHealthService],

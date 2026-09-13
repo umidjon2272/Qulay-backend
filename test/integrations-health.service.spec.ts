@@ -3,11 +3,15 @@ import { IntegrationsHealthService } from '../src/integrations-health/integratio
 describe('IntegrationsHealthService', () => {
   const googleAuth = { status: jest.fn() } as any;
   const telegramIntegration = { status: jest.fn() } as any;
+  const bitoIntegration = { status: jest.fn() } as any;
+  const prisma = { whatsAppConnection: { findUnique: jest.fn() } } as any;
   let service: IntegrationsHealthService;
 
   beforeEach(() => {
     jest.clearAllMocks();
-    service = new IntegrationsHealthService(googleAuth, telegramIntegration, { status: jest.fn().mockResolvedValue({ connected: false, status: 'DISCONNECTED' }) } as any);
+    bitoIntegration.status.mockResolvedValue({ connected: false, status: 'DISCONNECTED' });
+    prisma.whatsAppConnection.findUnique.mockResolvedValue(null);
+    service = new IntegrationsHealthService(googleAuth, telegramIntegration, bitoIntegration, prisma);
   });
 
   it('reports CONNECTED when there is no recent error, not TEMPORARY_ISSUE or DISCONNECTED', async () => {
@@ -45,5 +49,29 @@ describe('IntegrationsHealthService', () => {
     const health = await service.getHealthForUser('user-a');
     expect(health.google.state).toBe('DISCONNECTED');
     expect(health.telegram.state).toBe('DISCONNECTED');
+  });
+
+  it('reads WhatsApp health directly from WhatsAppConnection', async () => {
+    googleAuth.status.mockResolvedValue({ connected: false, connectedAt: null, lastErrorAt: null, lastErrorCode: null });
+    telegramIntegration.status.mockResolvedValue({ connected: false, temporaryError: false, lastValidatedAt: null, lastErrorCode: null });
+    prisma.whatsAppConnection.findUnique.mockResolvedValue({
+      status: 'CONNECTED',
+      connectedAt: new Date('2026-08-01T00:00:00Z'),
+      lastValidatedAt: new Date('2026-08-02T00:00:00Z'),
+      lastErrorCode: null,
+    });
+
+    const health = await service.getHealthForUser('user-a');
+
+    expect(prisma.whatsAppConnection.findUnique).toHaveBeenCalledWith({
+      where: { userId: 'user-a' },
+      select: { status: true, connectedAt: true, lastValidatedAt: true, lastErrorCode: true },
+    });
+    expect(health.whatsapp).toMatchObject({
+      state: 'CONNECTED',
+      connected: true,
+      lastSuccessfulSyncAt: '2026-08-02T00:00:00.000Z',
+      lastErrorCode: null,
+    });
   });
 });

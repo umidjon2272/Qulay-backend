@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { GoogleAuthService } from '../google/google-auth.service';
 import { TelegramIntegrationService } from '../telegram/telegram-integration.service';
 import { BitoIntegrationService } from '../bito/bito-integration.service';
-import { WhatsAppSalesAgentService } from '../whatsapp/whatsapp-sales-agent.service';
+import { PrismaService } from '../prisma/prisma.service';
 
 export type IntegrationHealthState = 'CONNECTED' | 'TEMPORARY_ISSUE' | 'RECONNECT_REQUIRED' | 'DISCONNECTED';
 
@@ -44,7 +44,7 @@ export class IntegrationsHealthService {
     private readonly googleAuth: GoogleAuthService,
     private readonly telegramIntegration: TelegramIntegrationService,
     private readonly bitoIntegration: BitoIntegrationService,
-    private readonly whatsAppSales: WhatsAppSalesAgentService,
+    private readonly prisma: PrismaService,
   ) {}
 
   async getHealthForUser(userId: string): Promise<{ google: IntegrationHealth; telegram: IntegrationHealth; bito: IntegrationHealth; whatsapp: IntegrationHealth }> {
@@ -52,7 +52,15 @@ export class IntegrationsHealthService {
       this.googleAuth.status(userId),
       this.telegramIntegration.status(userId),
       this.bitoIntegration.status(userId),
-      this.whatsAppSales.getSettings(userId),
+      this.prisma.whatsAppConnection.findUnique({
+        where: { userId },
+        select: {
+          status: true,
+          connectedAt: true,
+          lastValidatedAt: true,
+          lastErrorCode: true,
+        },
+      }),
     ]);
 
     const checkedAt = new Date().toISOString();
@@ -70,7 +78,12 @@ export class IntegrationsHealthService {
       recentError: Boolean(telegram.temporaryError),
     });
 
-    const whatsappState = whatsapp.status === 'DEGRADED' ? 'TEMPORARY_ISSUE' : this.classify({ connected: whatsapp.connected, hasAuthFailureCode: this.isAuthFailureCode(whatsapp.lastErrorCode), recentError: whatsapp.status === 'ERROR' });
+    const whatsappConnected = whatsapp?.status === 'CONNECTED';
+    const whatsappState = whatsapp?.status === 'DEGRADED' ? 'TEMPORARY_ISSUE' : this.classify({
+      connected: whatsappConnected,
+      hasAuthFailureCode: this.isAuthFailureCode(whatsapp?.lastErrorCode),
+      recentError: whatsapp?.status === 'ERROR',
+    });
 
     const bitoState = bito.status === 'DEGRADED' ? 'TEMPORARY_ISSUE' : this.classify({
       connected: bito.connected,
@@ -95,10 +108,10 @@ export class IntegrationsHealthService {
       },
       whatsapp: {
         state: whatsappState,
-        connected: whatsapp.connected,
-        lastSuccessfulSyncAt: whatsapp.lastValidatedAt ?? whatsapp.connectedAt,
+        connected: whatsappConnected,
+        lastSuccessfulSyncAt: whatsapp?.lastValidatedAt?.toISOString() ?? whatsapp?.connectedAt?.toISOString() ?? null,
         lastCheckedAt: checkedAt,
-        lastErrorCode: whatsappState === 'DISCONNECTED' ? null : this.friendlyErrorCode(whatsapp.lastErrorCode),
+        lastErrorCode: whatsappState === 'DISCONNECTED' ? null : this.friendlyErrorCode(whatsapp?.lastErrorCode),
       },
       bito: {
         state: bitoState,
