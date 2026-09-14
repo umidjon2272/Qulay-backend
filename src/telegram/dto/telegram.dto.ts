@@ -52,7 +52,7 @@ export class TelegramChatsQueryDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  @Max(20)
+  @Max(100)
   limit = 10;
 }
 

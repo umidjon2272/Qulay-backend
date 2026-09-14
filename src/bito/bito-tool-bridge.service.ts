@@ -352,10 +352,15 @@ export class BitoToolBridgeService {
 
     const normalized = normalizeSingleInventory(records);
     const includeZero = input.includeZero === true;
-    const search = requestedSearch.toLocaleLowerCase();
+    const search = comparableInventoryText(requestedSearch);
+    const compactSearch = search.replace(/\s+/g, '');
     const items = normalized
       .filter(item => includeZero || item.quantity !== 0)
-      .filter(item => !search || item.name.toLocaleLowerCase().includes(search))
+      .filter(item => {
+        if (!search) return true;
+        const name = comparableInventoryText(item.name);
+        return name.includes(search) || name.replace(/\s+/g, '').includes(compactSearch);
+      })
       .sort((a, b) => a.name.localeCompare(b.name, 'uz'));
 
     // Summary is useful for aggregate counts/alerts but must never make the
@@ -712,6 +717,15 @@ function scalarText(value: unknown): string | undefined {
   if (typeof value === 'string' && value.trim()) return value.trim();
   if (typeof value === 'number' && Number.isFinite(value)) return String(value);
   return undefined;
+}
+
+function comparableInventoryText(value: string): string {
+  return value
+    .normalize('NFKC')
+    .toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function schemaHasProperty(schema: Record<string, unknown> | undefined, wanted: string): boolean {

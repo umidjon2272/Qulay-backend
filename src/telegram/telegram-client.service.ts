@@ -19,12 +19,17 @@ export type TelegramIncomingMessage = {
   senderUsername: string | null;
   senderDisplayName: string | null;
   senderIsBot: boolean;
+  senderIsContact: boolean;
+  hadPriorConversation: boolean;
+  recentOutgoingCount: number;
+  recentIncomingCount: number;
   text: string;
   mentioned: boolean;
   replyToOwnMessage: boolean;
   voice: TelegramIncomingVoice | null;
   receivedAt: string;
 };
+export type TelegramOutgoingMessage = { peer: TelegramPeer; messageId: number; sentAt: string };
 export type TelegramMessageListener = { stop: () => Promise<void>; health: () => Promise<boolean> };
 
 /** Normalized delivery channel derived from Telegram's real `auth.SentCodeType`/`auth.CodeType` constructor. */
@@ -60,7 +65,7 @@ export abstract class TelegramClientService {
   abstract chats(session: string, search: string | undefined, limit: number): Promise<TelegramPeer[]>;
   abstract resolvePeer(session: string, peerId: string): Promise<TelegramPeer>;
   abstract sendMessage(session: string, peerId: string, text: string): Promise<{ messageId: string; recipient: TelegramPeer }>;
-  abstract listenIncomingMessages(session: string, onMessage: (message: TelegramIncomingMessage) => Promise<void>): Promise<TelegramMessageListener>;
+  abstract listenIncomingMessages(session: string, onMessage: (message: TelegramIncomingMessage) => Promise<void>, onOutgoing?: (message: TelegramOutgoingMessage) => Promise<void>): Promise<TelegramMessageListener>;
 }
 
 @Injectable()
@@ -682,35 +687,46 @@ export class GramJsTelegramClientService extends TelegramClientService {
   }
 
 
-  async listenIncomingMessages(session: string, onMessage: (message: TelegramIncomingMessage) => Promise<void>): Promise<TelegramMessageListener> {
+  async listenIncomingMessages(
+    session: string,
+    onMessage: (message: TelegramIncomingMessage) => Promise<void>,
+    onOutgoing?: (message: TelegramOutgoingMessage) => Promise<void>,
+  ): Promise<TelegramMessageListener> {
     const client = this.client(session);
     try {
       await client.connect();
       if (!(await client.checkAuthorization())) throw new TelegramAdapterError('CONNECTION_EXPIRED');
       const { NewMessage } = await import('telegram/events');
-      const builder = new NewMessage({ incoming: true });
+      // Listen to both directions. Incoming messages power the agent; outgoing
+      // messages let the agent notice when the account owner has taken over a
+      // private conversation and should temporarily stay silent.
+      const builder = new NewMessage({});
+      const privateSignalCache = new Map<string, { expiresAt: number; hadPriorConversation: boolean; recentOutgoingCount: number; recentIncomingCount: number }>();
       const handler = async (event: any) => {
         try {
           const message = event?.message as any;
-          if (!message || message.out === true || typeof message.id !== 'number') return;
-          this.logger.log({ event: 'telegram_sales_update_received', hasText: Boolean(message.message), hasMedia: Boolean(message.media) });
+          if (!message || typeof message.id !== 'number') return;
 
-          const sender = typeof message.getSender === 'function' ? await message.getSender().catch(() => null) : null;
           let chat = typeof message.getChat === 'function' ? await message.getChat().catch(() => null) : null;
-          // GramJS can deliver a NewMessage before its dialog entity is warm in
-          // the local cache. Private chats can safely fall back to the sender;
-          // otherwise ask Telegram for the peer entity instead of silently
-          // dropping the customer's first message.
-          if (!chat && sender) chat = sender;
+          const sender = typeof message.getSender === 'function' ? await message.getSender().catch(() => null) : null;
+          if (!chat && !message.out && sender) chat = sender;
           if (!chat && message.peerId) chat = await client.getEntity(message.peerId).catch(() => null);
           if (!chat) {
-            this.logger.warn({ event: 'telegram_sales_peer_unresolved' });
+            this.logger.warn({ event: 'telegram_sales_peer_unresolved', outgoing: message.out === true });
             return;
           }
+
           const peer = this.entityToPeer(chat as Api.TypeUser | Api.TypeChat);
           const className = String((chat as any).className ?? '');
           if (className.includes('Channel') && ((chat as any).megagroup === true || (chat as any).gigagroup === true)) peer.type = 'GROUP';
+          const occurredAt = new Date((Number(message.date) || Math.floor(Date.now() / 1000)) * 1000).toISOString();
 
+          if (message.out === true) {
+            if (onOutgoing) await onOutgoing({ peer, messageId: message.id, sentAt: occurredAt });
+            return;
+          }
+
+          this.logger.log({ event: 'telegram_sales_update_received', hasText: Boolean(message.message), hasMedia: Boolean(message.media) });
           const senderValue = sender as any;
           const senderDisplayName = senderValue
             ? ([senderValue.firstName, senderValue.lastName].filter(Boolean).join(' ') || senderValue.title || null)
@@ -722,6 +738,35 @@ export class GramJsTelegramClientService extends TelegramClientService {
           if (message.isReply === true && typeof message.getReplyMessage === 'function') {
             const replied = await message.getReplyMessage().catch(() => null) as any;
             replyToOwnMessage = replied?.out === true;
+          }
+
+          let hadPriorConversation = false;
+          let recentOutgoingCount = 0;
+          let recentIncomingCount = 0;
+          if (peer.type === 'USER') {
+            // A short Telegram history sample is a useful privacy signal. Cache
+            // the signal briefly so a busy sales inbox does not perform another
+            // history RPC for every single message. We only retain counts, never
+            // prior message text.
+            const cached = privateSignalCache.get(peer.peerId);
+            if (cached && cached.expiresAt > Date.now()) {
+              hadPriorConversation = cached.hadPriorConversation;
+              recentOutgoingCount = cached.recentOutgoingCount;
+              recentIncomingCount = cached.recentIncomingCount;
+            } else {
+              const recent = await client.getMessages(chat as any, { limit: 12 }).catch(() => [] as any[]);
+              const prior = (recent as any[]).filter(item => typeof item?.id === 'number' && item.id !== message.id);
+              hadPriorConversation = prior.length > 0;
+              recentOutgoingCount = prior.filter(item => item?.out === true).length;
+              recentIncomingCount = prior.filter(item => item?.out !== true).length;
+              privateSignalCache.set(peer.peerId, {
+                expiresAt: Date.now() + 10 * 60_000,
+                hadPriorConversation,
+                recentOutgoingCount,
+                recentIncomingCount,
+              });
+              if (privateSignalCache.size > 500) privateSignalCache.delete(privateSignalCache.keys().next().value as string);
+            }
           }
 
           let voice: TelegramIncomingVoice | null = null;
@@ -746,7 +791,7 @@ export class GramJsTelegramClientService extends TelegramClientService {
             };
           }
 
-          this.logger.log({ event: 'telegram_sales_incoming_received', peerType: peer.type, hasVoice: Boolean(voice) });
+          this.logger.log({ event: 'telegram_sales_incoming_received', peerType: peer.type, hasVoice: Boolean(voice), contact: senderValue?.contact === true, priorConversation: hadPriorConversation });
           await onMessage({
             peer,
             messageId: message.id,
@@ -754,11 +799,15 @@ export class GramJsTelegramClientService extends TelegramClientService {
             senderUsername,
             senderDisplayName,
             senderIsBot: senderValue?.bot === true,
+            senderIsContact: senderValue?.contact === true,
+            hadPriorConversation,
+            recentOutgoingCount,
+            recentIncomingCount,
             text: typeof message.message === 'string' ? message.message.trim() : '',
             mentioned: message.mentioned === true,
             replyToOwnMessage,
             voice,
-            receivedAt: new Date((Number(message.date) || Math.floor(Date.now() / 1000)) * 1000).toISOString(),
+            receivedAt: occurredAt,
           });
         } catch (error) {
           this.logger.warn({ event: 'telegram_sales_incoming_handler_failed', code: classifyTelegramError(error).code });
@@ -770,9 +819,6 @@ export class GramJsTelegramClientService extends TelegramClientService {
         health: async () => {
           if (stopped) return false;
           try {
-            // A live MTProto request is more trustworthy than an in-memory
-            // listener flag. It also lets GramJS reconnect a briefly dropped
-            // socket before the sales-agent service decides to rebuild it.
             if (!(await client.checkAuthorization())) return false;
             await client.getMe();
             return true;
@@ -793,7 +839,6 @@ export class GramJsTelegramClientService extends TelegramClientService {
       throw classifyTelegramError(error);
     }
   }
-
 
   private async findPeerEntity(client: TelegramClient, session: string, peerId: string): Promise<{ entity: Api.TypeUser | Api.TypeChat; peer: TelegramPeer } | null> {
     const cached = this.getRememberedPeerEntity(session, peerId);
@@ -893,10 +938,11 @@ export class GramJsTelegramClientService extends TelegramClientService {
   }
 
   private toPeer(dialog: { entity?: unknown; isUser: boolean; isChannel: boolean; title?: string; name?: string; date?: number }): TelegramPeer {
-    const entity = dialog.entity as { username?: string; firstName?: string; lastName?: string };
+    const entity = dialog.entity as { username?: string; firstName?: string; lastName?: string; megagroup?: boolean; gigagroup?: boolean };
+    const isSupergroup = dialog.isChannel && (entity.megagroup === true || entity.gigagroup === true);
     return {
       peerId: getPeerId(dialog.entity as any, true),
-      type: dialog.isUser ? 'USER' : dialog.isChannel ? 'CHANNEL' : 'GROUP',
+      type: dialog.isUser ? 'USER' : isSupergroup ? 'GROUP' : dialog.isChannel ? 'CHANNEL' : 'GROUP',
       displayName: dialog.title ?? dialog.name ?? ([entity.firstName, entity.lastName].filter(Boolean).join(' ') || 'Telegram chat'),
       username: entity.username ? `@${entity.username}` : null,
       lastActivity: dialog.date ? new Date(dialog.date * 1000).toISOString() : null,

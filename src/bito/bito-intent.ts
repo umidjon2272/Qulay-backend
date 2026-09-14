@@ -108,12 +108,24 @@ export function bitoInventorySearchTerm(text: string): string | undefined {
     'bito', 'ombor', 'qoldiq', 'qoldi', 'zaxira', 'stock', 'inventory', 'warehouse', 'sklad', 'ostat',
     'mahsulot', 'tovar', 'product', 'goods', 'katalog', 'catalog', 'qaysi', 'nima', 'nimalar',
     'salom', 'assalomu', 'alaykum', 'aziz', 'qanday', 'iltimos', 'please', 'hello', 'hi', 'privet',
-    'qancha', 'nechta', 'necha', 'bor', 'mavjud', 'qolgan', 'qolmagan', 'tugagan', 'korsat',
-    'chiqar', 'ayt', 'top', 'qidir', 'izla', 'menga', 'hamma', 'barcha', 'toliq', 'jami', 'dona',
-    'kg', 'litr', 'litre', 'ta', 'available', 'show', 'list', 'find', 'how', 'many', 'есть', 'сколько',
+    'sizda', 'sizlarda', 'siz', 'bizga', 'menga', 'kerak', 'olmoqch', 'xohlay', 'hohlay',
+    'narx', 'price', 'цена', 'qancha', 'nechta', 'necha', 'bor', 'mavjud', 'qolgan', 'qolmagan', 'tugagan', 'korsat',
+    'chiqar', 'ayt', 'top', 'qidir', 'izla', 'hamma', 'barcha', 'toliq', 'jami', 'dona',
+    'kg', 'litr', 'litre', 'ml', 'gramm', 'ta', 'available', 'show', 'list', 'find', 'how', 'many', 'есть', 'сколько',
     'покаж', 'найд', 'товар', 'остат', 'склад',
   ];
-  const residual = valueTokens.filter(token => token.length > 1 && !/^\d+(?:[.,]\d+)?$/u.test(token) && token !== 'tasini' && !noiseStems.some(stem => token === stem || token.startsWith(stem)));
+  const quantityUnits = new Set(['ta', 'dona', 'kg', 'g', 'gramm', 'litr', 'litre', 'ml', 'шт']);
+  const residual = valueTokens.filter((token, index) => {
+    if (token.length <= 1 || token === 'tasini') return false;
+    if (noiseStems.some(stem => token === stem || token.startsWith(stem))) return false;
+    if (/^\d+(?:[.,]\d+)?$/u.test(token)) {
+      const next = valueTokens[index + 1]?.replace(/'/g, '') ?? '';
+      // Preserve model/SKU numbers ("iPhone 13 Pro") but drop purchase
+      // quantities ("20 ta", "2 kg", "1.5 litr").
+      return !quantityUnits.has(next);
+    }
+    return true;
+  });
   if (!residual.length || residual.length > 6) return undefined;
   const term = residual.join(' ').trim();
   return term.length >= 2 ? term : undefined;

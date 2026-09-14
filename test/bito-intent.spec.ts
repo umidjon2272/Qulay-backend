@@ -54,6 +54,10 @@ describe('Bito intent boundaries', () => {
     expect(bitoInventorySearchTerm('Cola qancha qoldi?')).toBe('cola');
     expect(bitoInventorySearchTerm('Omborda nimalar bor?')).toBeUndefined();
     expect(bitoInventorySearchTerm('Salom aziz qanday mahsulot bor?')).toBeUndefined();
+    expect(bitoInventorySearchTerm('Sizlarda iPhone 13 Pro bormi?')).toBe('iphone 13 pro');
+    expect(bitoInventorySearchTerm('Coca Cola 20 ta kerak')).toBe('coca cola');
+    expect(bitoInventorySearchTerm('Coca Cola narxi qancha? 20 ta kerak')).toBe('coca cola');
+    expect(bitoInventorySearchTerm('Cola 1.5 litr kerak')).toBe('cola');
     expect(bitoInventorySearchTerm('46 tasini chiqar')).toBeUndefined();
   });
 

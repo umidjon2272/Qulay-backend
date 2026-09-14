@@ -417,6 +417,7 @@ model TelegramConnection {
   salesAgentEnabled      Boolean                  @default(false)
   salesPrivateChats      Boolean                  @default(true)
   salesGroups            Boolean                  @default(false)
+  salesAllowedGroupIds   String[]                 @default([])
   salesVoiceEnabled      Boolean                  @default(true)
   salesVoiceMaxSeconds   Int                      @default(60)
   createdAt              DateTime                 @default(now())
@@ -436,6 +437,8 @@ model TelegramSalesSession {
   lastInboundMessageId Int?
   lastInboundAt        DateTime?
   lastOutboundAt       DateTime?
+  salesContextUntil    DateTime?
+  ownerPausedUntil     DateTime?
   createdAt            DateTime     @default(now())
   updatedAt            DateTime     @updatedAt
   user                 User         @relation(fields: [userId], references: [id], onDelete: Cascade)

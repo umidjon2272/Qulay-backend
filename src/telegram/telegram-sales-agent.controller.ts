@@ -1,5 +1,5 @@
+import { ArrayMaxSize, IsArray, IsBoolean, IsOptional, IsString, Matches } from 'class-validator';
 import { Body, Controller, Get, Patch, UseGuards } from '@nestjs/common';
-import { IsBoolean, IsOptional } from 'class-validator';
 import { AuthenticatedUser } from '../auth/types/jwt-payload.type';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
@@ -11,6 +11,7 @@ export class UpdateTelegramSalesAgentDto {
   @IsOptional() @IsBoolean() privateChats?: boolean;
   @IsOptional() @IsBoolean() groups?: boolean;
   @IsOptional() @IsBoolean() voiceEnabled?: boolean;
+  @IsOptional() @IsArray() @ArrayMaxSize(100) @IsString({ each: true }) @Matches(/^-?\d{1,30}$/, { each: true }) allowedGroupIds?: string[];
 }
 
 @Controller('integrations/telegram/sales-agent')
