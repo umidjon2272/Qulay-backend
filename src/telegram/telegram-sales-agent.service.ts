@@ -44,14 +44,16 @@ const TECHNICAL_NAME = /(?:bito|mcp|qulay\s*backend|api\s*key|oauth|token)/giu;
 const LISTENER_HEALTH_INTERVAL_MS = 60_000;
 const SALES_CONTEXT_WINDOW_MS = 2 * 60 * 60 * 1000;
 const OWNER_TAKEOVER_PAUSE_MS = 15 * 60 * 1000;
-const SELF_REPLY_SUPPRESS_MS = 8_000;
+const AGENT_OUTGOING_TRACK_MS = 60_000;
+const AGENT_SEND_IN_FLIGHT_MS = 15_000;
 
 @Injectable()
 export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(TelegramSalesAgentService.name);
   private readonly listeners = new Map<string, ActiveListener>();
   private readonly processing = new Set<string>();
-  private readonly selfReplySuppress = new Map<string, number>();
+  private readonly agentOutgoingMessageIds = new Map<string, number>();
+  private readonly agentSendInFlight = new Map<string, number>();
   private readonly ownerPauseUntil = new Map<string, number>();
   private timer: NodeJS.Timeout | null = null;
   private reconciling = false;
@@ -210,17 +212,24 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
 
   private async handleOutgoing(userId: string, outgoing: TelegramOutgoingMessage): Promise<void> {
     if (outgoing.peer.type !== 'USER') return;
-    const key = this.peerKey(userId, outgoing.peer.peerId);
+    const peerKey = this.peerKey(userId, outgoing.peer.peerId);
+    const messageKey = this.outgoingMessageKey(userId, outgoing.peer.peerId, outgoing.messageId);
     const now = Date.now();
-    for (const [entryKey, until] of this.selfReplySuppress) if (until <= now) this.selfReplySuppress.delete(entryKey);
+    for (const [entryKey, until] of this.agentOutgoingMessageIds) if (until <= now) this.agentOutgoingMessageIds.delete(entryKey);
+    for (const [entryKey, until] of this.agentSendInFlight) if (until <= now) this.agentSendInFlight.delete(entryKey);
     for (const [entryKey, until] of this.ownerPauseUntil) if (until <= now) this.ownerPauseUntil.delete(entryKey);
-    const suppressedUntil = this.selfReplySuppress.get(key) ?? 0;
-    if (suppressedUntil > now) {
-      this.selfReplySuppress.delete(key);
+
+    // AI replies also arrive through Telegram as outgoing updates. Distinguish
+    // them from a real owner takeover by exact message id whenever possible,
+    // with a short in-flight guard for the race where the outgoing update is
+    // delivered before sendMessage() returns the created message id.
+    if ((this.agentOutgoingMessageIds.get(messageKey) ?? 0) > now) {
+      this.agentOutgoingMessageIds.delete(messageKey);
       return;
     }
-    this.selfReplySuppress.delete(key);
-    this.ownerPauseUntil.set(key, now + OWNER_TAKEOVER_PAUSE_MS);
+    if ((this.agentSendInFlight.get(peerKey) ?? 0) > now) return;
+
+    this.ownerPauseUntil.set(peerKey, now + OWNER_TAKEOVER_PAUSE_MS);
     await this.prisma.telegramSalesSession.updateMany({
       where: { userId, peerId: outgoing.peer.peerId },
       data: { ownerPausedUntil: new Date(now + OWNER_TAKEOVER_PAUSE_MS), lastOutboundAt: new Date(outgoing.sentAt) },
@@ -506,18 +515,25 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
   private async safeReply(userId: string, peerId: string, text: string): Promise<void> {
     const clean = text.replace(/\s{3,}/g, '\n\n').trim().slice(0, 3900);
     if (!clean) return;
-    const key = this.peerKey(userId, peerId);
-    this.selfReplySuppress.set(key, Date.now() + SELF_REPLY_SUPPRESS_MS);
+    const peerKey = this.peerKey(userId, peerId);
+    this.agentSendInFlight.set(peerKey, Date.now() + AGENT_SEND_IN_FLIGHT_MS);
     try {
-      await this.telegram.sendMessage(userId, peerId, clean);
-    } catch (error) {
-      this.selfReplySuppress.delete(key);
-      throw error;
+      const result = await this.telegram.sendMessage(userId, peerId, clean);
+      const messageId = Number(result.messageId);
+      if (Number.isFinite(messageId)) {
+        this.agentOutgoingMessageIds.set(this.outgoingMessageKey(userId, peerId, messageId), Date.now() + AGENT_OUTGOING_TRACK_MS);
+      }
+    } finally {
+      this.agentSendInFlight.delete(peerKey);
     }
   }
 
   private peerKey(userId: string, peerId: string): string {
     return `${userId}:${peerId}`;
+  }
+
+  private outgoingMessageKey(userId: string, peerId: string, messageId: number): string {
+    return `${userId}:${peerId}:${messageId}`;
   }
 
   private customerSafeAnswer(value: string): string {

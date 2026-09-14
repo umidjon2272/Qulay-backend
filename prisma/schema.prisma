@@ -260,6 +260,7 @@ model User {
   financeAccounts        FinanceAccount[]
   telegramConnection     TelegramConnection?
   telegramSalesSessions  TelegramSalesSession[]
+  salesPlaybookRules      SalesPlaybookRule[]
   whatsAppConnection     WhatsAppConnection?
   whatsAppSalesSessions  WhatsAppSalesSession[]
   whatsAppInboundReceipts WhatsAppInboundReceipt[]
@@ -446,6 +447,25 @@ model TelegramSalesSession {
 
   @@unique([userId, peerId])
   @@index([userId, updatedAt])
+}
+
+
+model SalesPlaybookRule {
+  id               String   @id @default(uuid()) @db.Uuid
+  userId           String   @db.Uuid
+  title            String   @db.VarChar(120)
+  instruction      String   @db.Text
+  category         String   @default("GENERAL") @db.VarChar(50)
+  triggerExamples  String[] @default([])
+  responseExamples String[] @default([])
+  priority         Int      @default(50)
+  active           Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, title])
+  @@index([userId, active, priority])
 }
 
 model WhatsAppConnection {

@@ -33,6 +33,7 @@ import { BriefingService } from '../briefing/briefing.service';
 import { FileQueryDto } from '../files/dto/file-query.dto';
 import { BitoIntegrationService } from '../bito/bito-integration.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
+import { PrismaService } from '../prisma/prisma.service';
 
 import {
   CompareFinancePeriodsToolInput, ContactHistoryToolInput, CreateContactToolInput,
@@ -46,6 +47,7 @@ ListFilesToolInput, SearchFilesToolInput, GetFileMetadataToolInput, GetFileConte
   GetGoogleCalendarEventsToolInput, CreateGoogleCalendarEventToolInput,
   UpdateGoogleCalendarEventToolInput, DeleteGoogleCalendarEventToolInput, SearchGoogleDriveFilesToolInput,
   BudgetStatusToolInput, CashflowForecastToolInput, DailyBriefingToolInput,
+  SaveSalesPlaybookRuleToolInput, ListSalesPlaybookRulesToolInput, DeleteSalesPlaybookRuleToolInput,
 } from './dto/tool-input.dto';
 import { TelegramIntegrationService } from '../telegram/telegram-integration.service';
 import { GoogleCalendarService } from '../google/google-calendar.service';
@@ -117,6 +119,7 @@ export class AIToolRegistryService {
     private readonly briefingService: BriefingService,
     private readonly activityLog: ActivityLogService,
     private readonly subscriptionsService: SubscriptionsService,
+    private readonly prisma: PrismaService,
     @Optional() private readonly googleCalendarService?: GoogleCalendarService,
     @Optional() private readonly googleDriveService?: GoogleDriveService,
     @Optional() private readonly filesService?: FilesService,
@@ -210,7 +213,7 @@ export class AIToolRegistryService {
       inputSchema: ['get_tasks', 'get_reminders', 'get_meetings', 'get_notes'].includes(config.name)
         ? { ...config.inputSchema, properties: { ...config.inputSchema.properties, page: { type: 'integer', description: 'Page number, starting at 1. Fetch further pages when meta.total exceeds returned items.' } } }
         : config.inputSchema,
-      requiresConfirmation: config.sideEffect === 'WRITE' && !['save_memory', 'update_memory'].includes(config.name),
+      requiresConfirmation: config.sideEffect === 'WRITE' && !['save_memory', 'update_memory', 'save_sales_playbook_rule'].includes(config.name),
       sideEffect: config.sideEffect,
       permission: 'USER_SCOPED',
       validate: (input) => validateInput(input, config.validate),
@@ -423,6 +426,63 @@ export class AIToolRegistryService {
       execute: (context, input) => this.briefingService.buildMorningBriefing(context.userId, input.date),
     }));
 
+    this.register(this.base<SaveSalesPlaybookRuleToolInput, unknown>({
+      name: 'save_sales_playbook_rule',
+      description: 'Teach the Telegram/WhatsApp sales agent a persistent business-specific sales rule, script, objection-handling instruction, store fact, delivery/payment policy, or example. Use when the authenticated owner explicitly says how the sales agent should sell or respond. Do not store secrets.',
+      category: AIToolCategory.SYSTEM,
+      sideEffect: 'WRITE',
+      validate: SaveSalesPlaybookRuleToolInput,
+      inputSchema: schema({
+        title: { type: 'string' }, instruction: { type: 'string' }, category: { type: 'string' },
+        triggerExamples: { type: 'array' }, responseExamples: { type: 'array' }, priority: { type: 'integer' }, active: { type: 'boolean' },
+      }, ['title', 'instruction']),
+      preview: (_context, input) => input,
+      execute: (context, input) => this.prisma.salesPlaybookRule.upsert({
+        where: { userId_title: { userId: context.userId, title: input.title } },
+        create: {
+          userId: context.userId, title: input.title, instruction: input.instruction,
+          category: input.category || 'GENERAL', triggerExamples: input.triggerExamples ?? [],
+          responseExamples: input.responseExamples ?? [], priority: input.priority ?? 50, active: input.active ?? true,
+        },
+        update: {
+          instruction: input.instruction, category: input.category || 'GENERAL',
+          triggerExamples: input.triggerExamples ?? [], responseExamples: input.responseExamples ?? [],
+          priority: input.priority ?? 50, active: input.active ?? true,
+        },
+        select: { id: true, title: true, instruction: true, category: true, triggerExamples: true, responseExamples: true, priority: true, active: true, updatedAt: true },
+      }),
+    }));
+
+    this.register(this.base<ListSalesPlaybookRulesToolInput, unknown>({
+      name: 'list_sales_playbook_rules',
+      description: "List the authenticated owner's saved sales-agent playbook rules and business sales instructions.",
+      category: AIToolCategory.SYSTEM,
+      sideEffect: 'READ',
+      validate: ListSalesPlaybookRulesToolInput,
+      inputSchema: schema({ activeOnly: { type: 'boolean' } }),
+      execute: (context, input) => this.prisma.salesPlaybookRule.findMany({
+        where: { userId: context.userId, ...(input.activeOnly === false ? {} : { active: true }) },
+        orderBy: [{ priority: 'desc' }, { updatedAt: 'desc' }],
+        take: 100,
+        select: { id: true, title: true, instruction: true, category: true, triggerExamples: true, responseExamples: true, priority: true, active: true, updatedAt: true },
+      }),
+    }));
+
+    this.register(this.base<DeleteSalesPlaybookRuleToolInput, unknown>({
+      name: 'delete_sales_playbook_rule',
+      description: 'Delete one saved sales playbook rule by its real ruleId. List rules first if the id is unknown.',
+      category: AIToolCategory.SYSTEM,
+      sideEffect: 'WRITE',
+      validate: DeleteSalesPlaybookRuleToolInput,
+      inputSchema: schema({ ruleId: { type: 'string' } }, ['ruleId']),
+      authorize: async (context, input) => {
+        const row = await this.prisma.salesPlaybookRule.findFirst({ where: { id: input.ruleId, userId: context.userId }, select: { id: true } });
+        if (!row) throw new NotFoundException('Sales playbook rule not found');
+      },
+      preview: (context, input) => this.prisma.salesPlaybookRule.findFirst({ where: { id: input.ruleId, userId: context.userId }, select: { id: true, title: true, instruction: true } }),
+      execute: (context, input) => this.prisma.salesPlaybookRule.delete({ where: { id: input.ruleId }, select: { id: true, title: true } }),
+    }));
+
     this.register(this.base<CreateTaskToolInput, unknown>({
       name: 'create_task', description: 'Create a task for the authenticated user.', category: AIToolCategory.TASK,
       sideEffect: 'WRITE', validate: CreateTaskToolInput, inputSchema: schema({ title: { type: 'string' }, description: { type: 'string' }, dueAt: { type: 'string' }, priority: { type: 'string', enum: Object.values(TaskPriority) } }, ['title']),
@@ -586,6 +646,7 @@ export class AIToolRegistryService {
       create_task: 'TASK', create_reminder: 'REMINDER', create_meeting: 'MEETING', create_note: 'NOTE',
       create_contact: 'CONTACT', update_contact: 'CONTACT', delete_contact: 'CONTACT',
       save_memory: 'MEMORY', update_memory: 'MEMORY', delete_memory: 'MEMORY', create_finance_transaction: 'FINANCE_TRANSACTION',
+      save_sales_playbook_rule: 'SALES_PLAYBOOK', delete_sales_playbook_rule: 'SALES_PLAYBOOK',
       send_telegram_message: 'TELEGRAM_MESSAGE',
       create_google_calendar_event: 'GOOGLE_CALENDAR_EVENT', update_google_calendar_event: 'GOOGLE_CALENDAR_EVENT', delete_google_calendar_event: 'GOOGLE_CALENDAR_EVENT',
     };

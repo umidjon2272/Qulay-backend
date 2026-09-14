@@ -1,6 +1,6 @@
 import { Transform, Type } from 'class-transformer';
 import {
-  ArrayMaxSize, IsArray, IsDecimal, IsEmail, IsEnum, IsISO8601, IsInt, IsOptional, IsString, IsUUID,
+  ArrayMaxSize, IsArray, IsBoolean, IsDecimal, IsEmail, IsEnum, IsISO8601, IsInt, IsOptional, IsString, IsUUID,
   Matches, Max, MaxLength, Min, MinLength,
 } from 'class-validator';
 import {
@@ -251,4 +251,23 @@ export class CreateFinanceTransactionToolInput {
   @IsOptional() @IsUUID('4') contactId?: string;
   @IsOptional() @IsISO8601({ strict: true, strictSeparator: true }) @Matches(dateTimeWithTimezone) transactionDate?: string;
   @IsOptional() @IsString() @MaxLength(5000) description?: string;
+}
+
+
+export class SaveSalesPlaybookRuleToolInput {
+  @Transform(trim) @IsString() @MinLength(2) @MaxLength(120) title!: string;
+  @Transform(trim) @IsString() @MinLength(3) @MaxLength(4000) instruction!: string;
+  @IsOptional() @Transform(trim) @IsString() @MaxLength(50) category?: string;
+  @IsOptional() @IsArray() @ArrayMaxSize(20) @IsString({ each: true }) triggerExamples?: string[];
+  @IsOptional() @IsArray() @ArrayMaxSize(20) @IsString({ each: true }) responseExamples?: string[];
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) priority?: number;
+  @IsOptional() @IsBoolean() active?: boolean;
+}
+
+export class ListSalesPlaybookRulesToolInput {
+  @IsOptional() @IsBoolean() activeOnly?: boolean;
+}
+
+export class DeleteSalesPlaybookRuleToolInput {
+  @IsUUID('4') ruleId!: string;
 }

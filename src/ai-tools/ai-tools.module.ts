@@ -18,9 +18,10 @@ import { BitoModule } from '../bito/bito.module';
 import { AIToolExecutionService } from './ai-tool-execution.service';
 import { AIToolsController } from './ai-tools.controller';
 import { AIToolRegistryService } from './ai-tool-registry.service';
+import { PrismaModule } from '../prisma/prisma.module';
 
 @Module({
-  imports: [ActivityLogModule, ContactsModule, FinanceModule, MemoryModule, MeetingsModule, NotesModule, RemindersModule, TasksModule, TodayModule, TelegramModule, GoogleModule, FilesModule, BriefingModule, BitoModule, SubscriptionsModule, UsageModule],
+  imports: [PrismaModule, ActivityLogModule, ContactsModule, FinanceModule, MemoryModule, MeetingsModule, NotesModule, RemindersModule, TasksModule, TodayModule, TelegramModule, GoogleModule, FilesModule, BriefingModule, BitoModule, SubscriptionsModule, UsageModule],
   controllers: [AIToolsController],
   providers: [AIToolRegistryService, AIToolExecutionService],
   exports: [AIToolRegistryService, AIToolExecutionService],
