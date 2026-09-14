@@ -229,7 +229,7 @@ export class WhatsAppSalesAgentService {
         const phoneNumberId = value?.metadata?.phone_number_id;
         if (!phoneNumberId) continue;
         const connection = await this.prisma.whatsAppConnection.findUnique({ where: { phoneNumberId } });
-        if (!connection || ![WhatsAppConnectionStatus.CONNECTED, WhatsAppConnectionStatus.DEGRADED].includes(connection.status) || !connection.salesAgentEnabled) continue;
+        if (!connection || !(connection.status === WhatsAppConnectionStatus.CONNECTED || connection.status === WhatsAppConnectionStatus.DEGRADED) || !connection.salesAgentEnabled) continue;
         const contactNames = new Map((value?.contacts ?? []).filter(c => c.wa_id).map(c => [c.wa_id!, c.profile?.name ?? null]));
         for (const message of value?.messages ?? []) {
           if (!message.id || !message.from) continue;
@@ -252,7 +252,7 @@ export class WhatsAppSalesAgentService {
       const accepted = await this.reserveMessage(userId, message.id);
       if (!accepted) return;
       const connection = await this.prisma.whatsAppConnection.findUnique({ where: { userId } });
-      if (!connection?.salesAgentEnabled || ![WhatsAppConnectionStatus.CONNECTED, WhatsAppConnectionStatus.DEGRADED].includes(connection.status)) return;
+      if (!connection?.salesAgentEnabled || !(connection.status === WhatsAppConnectionStatus.CONNECTED || connection.status === WhatsAppConnectionStatus.DEGRADED)) return;
 
       const session = await this.ensureSession(userId, message.from, displayName);
       let text = this.messageText(message);
