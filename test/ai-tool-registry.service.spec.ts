@@ -26,11 +26,12 @@ describe('AI tool registry and execution', () => {
   const financeService = { listCategoriesForUser: jest.fn().mockResolvedValue([]) };
   const financeToolsService = { getPeriodSummary: jest.fn(), getTodayFinance: jest.fn(), compareFinancePeriods: jest.fn(), createFinanceTransactionForUser: jest.fn() };
   const todayService = { getForUser: jest.fn().mockResolvedValue({ date: '2026-08-25', timezone: 'UTC', tasks: [], reminders: [], meetings: [], overdueTasks: [], nextMeeting: null }) };
-  const telegramIntegrationService = { search: jest.fn(), prepareTelegramMessage: jest.fn(), sendMessage: jest.fn() };
+  const telegramIntegrationService = { search: jest.fn(), prepareTelegramMessage: jest.fn(), sendMessage: jest.fn(), status: jest.fn().mockResolvedValue({ connected: true, status: 'CONNECTED' }) };
   const briefingService = { buildMorningBriefing: jest.fn() };
   const googleCalendarService = { list: jest.fn(), create: jest.fn(), update: jest.fn(), delete: jest.fn() };
   const googleDriveService = { list: jest.fn(), metadata: jest.fn() };
   const activityLog = { record: jest.fn().mockResolvedValue(undefined) };
+  const subscriptionsService = { getForUser: jest.fn().mockResolvedValue({ effectiveTier: 'SALES_AI', canUseAi: true, usage: { aiCredits: { remaining: 100 } } }) };
   let registry: AIToolRegistryService;
   let execution: AIToolExecutionService;
 
@@ -40,7 +41,7 @@ describe('AI tool registry and execution', () => {
       tasksService as any, remindersService as any, meetingsService as any, notesService as any,
       contactsService as any, contactHistoryService as any, memoryService as any, financeService as any,
       financeToolsService as any, todayService as any, telegramIntegrationService as any, briefingService as any,
-      activityLog as any, googleCalendarService as any, googleDriveService as any,
+      activityLog as any, subscriptionsService as any, googleCalendarService as any, googleDriveService as any,
     );
     execution = new AIToolExecutionService(
       registry,
@@ -52,7 +53,7 @@ describe('AI tool registry and execution', () => {
 
   it('lists all first-party tools with confirmation metadata', () => {
     const tools = registry.listMetadata();
-    expect(tools).toHaveLength(59);
+    expect(tools).toHaveLength(61);
     expect(tools.find((tool) => tool.name === 'list_files')).toMatchObject({
       sideEffect: 'READ',
       requiresConfirmation: false,
@@ -60,6 +61,14 @@ describe('AI tool registry and execution', () => {
     expect(tools.find((tool) => tool.name === 'get_file_content')).toMatchObject({ sideEffect: 'READ', requiresConfirmation: false });
     expect(tools.find((tool) => tool.name === 'get_tasks')).toMatchObject({ sideEffect: 'READ', requiresConfirmation: false });
     expect(tools.find((tool) => tool.name === 'create_task')).toMatchObject({ sideEffect: 'WRITE', requiresConfirmation: true });
+  });
+
+  it('exposes real Telegram connection and subscription status as read-only tools', async () => {
+    telegramIntegrationService.status.mockResolvedValue({ connected: true, status: 'CONNECTED' });
+    await expect(execution.execute('user-a', { tool: 'telegram_connection_status', input: {}, confirmed: false })).resolves.toMatchObject({ status: 'success', data: { connected: true } });
+    await expect(execution.execute('user-a', { tool: 'get_subscription_status', input: {}, confirmed: false })).resolves.toMatchObject({ status: 'success', data: { effectiveTier: 'SALES_AI' } });
+    expect(registry.get('telegram_connection_status')).toMatchObject({ sideEffect: 'READ', requiresConfirmation: false });
+    expect(registry.get('get_subscription_status')).toMatchObject({ sideEffect: 'READ', requiresConfirmation: false });
   });
 
   it('blocks an unknown tool', () => {

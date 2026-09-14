@@ -103,6 +103,20 @@ describe('Bito chat orchestration (mock provider/ERP)', () => {
   });
 
 
+
+  it('keeps a Qulay workspace task local when Bito appears only inside the task title', async () => {
+    provider.complete.mockResolvedValueOnce({
+      message: { role: 'assistant', content: null, tool_calls: [{ id: 't', type: 'function', function: { name: 'create_task', arguments: JSON.stringify({ title: 'Bito hisobotini tekshirish', dueDate: '2026-09-15T10:00:00.000Z' }) } }] },
+      model: 'fixture', usage: {},
+    });
+    execution.execute.mockResolvedValueOnce({ status: 'confirmation_required', tool: 'create_task', input: { title: 'Bito hisobotini tekshirish' }, preview: { title: 'Bito hisobotini tekshirish' } });
+    const result = await service.chat('u', { conversationId: 'c', message: 'Ertaga soat 15:00 ga "Bito hisobotini tekshirish" vazifasini yarat.' });
+    expect(bridge.listRelevantModelTools).not.toHaveBeenCalled();
+    const [, tools] = provider.complete.mock.calls[0];
+    expect(tools.map((tool: any) => tool.function.name)).toContain('create_task');
+    expect(result.pendingConfirmation).toBeTruthy();
+  });
+
   it('never falls back to local Qulay mutations when a Bito write capability is absent', async () => {
     bridge.listRelevantModelTools.mockResolvedValueOnce([]);
     provider.complete.mockResolvedValueOnce({ message: { role: 'assistant', content: 'Bito bu amalni bu ulanishda taqdim etmaydi.' }, model: 'fixture', usage: {} });

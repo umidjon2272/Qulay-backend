@@ -1,5 +1,5 @@
 import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Prisma, WhatsAppConnectionStatus } from '@prisma/client';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { AiAgentService } from '../ai-agent/ai-agent.service';
@@ -8,6 +8,7 @@ import { WhatsAppCloudService } from './whatsapp-cloud.service';
 import { WhatsAppCryptoService } from './whatsapp-crypto.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { isWhatsAppSalesRelevant, oggOpusDurationSeconds, shouldActivateWhatsAppSalesContext } from './whatsapp-sales-policy';
+import { APP_ERROR_CODES } from '../common/errors/app-error-codes';
 
 export type WhatsAppSalesAgentSettings = {
   configured: boolean;
@@ -83,7 +84,7 @@ export class WhatsAppSalesAgentService {
     return {
       configured: this.cloud.configured(),
       embeddedSignupReady: this.cloud.embeddedSignupConfigured(),
-      connected: connection.status === 'CONNECTED',
+      connected: connection.status === WhatsAppConnectionStatus.CONNECTED || connection.status === WhatsAppConnectionStatus.DEGRADED,
       status: connection.status,
       displayPhoneNumber: connection.displayPhoneNumber,
       verifiedName: connection.verifiedName,
@@ -101,22 +102,56 @@ export class WhatsAppSalesAgentService {
     };
   }
 
-  async connect(userId: string, input: { phoneNumberId: string; wabaId?: string; accessToken: string }): Promise<WhatsAppSalesAgentSettings> {
-    if (!this.cloud.configured()) throw new ServiceUnavailableException('WhatsApp server sozlamalari hali tayyor emas');
+  async connect(userId: string, input: { phoneNumberId: string; wabaId: string; accessToken: string }): Promise<WhatsAppSalesAgentSettings> {
+    if (!this.cloud.configured()) throw new ServiceUnavailableException({
+      code: APP_ERROR_CODES.WHATSAPP_SERVER_NOT_CONFIGURED,
+      message: 'WhatsApp server sozlamalari hali tayyor emas',
+    });
     const token = input.accessToken.trim();
     if (token.length < 20) throw new BadRequestException('WhatsApp access token noto‘g‘ri');
-    return this.connectWithToken(userId, token, input.phoneNumberId, input.wabaId);
+    try {
+      return await this.connectWithToken(userId, token, input.phoneNumberId, input.wabaId);
+    } catch (error) {
+      this.logger.warn({ event: 'whatsapp_manual_connect_failed', userId: this.safeId(userId), code: this.errorCode(error) });
+      throw error;
+    }
   }
 
   async connectEmbedded(userId: string, input: { code: string; phoneNumberId: string; wabaId: string }): Promise<WhatsAppSalesAgentSettings> {
-    const token = await this.cloud.exchangeEmbeddedSignupCode(input.code);
-    return this.connectWithToken(userId, token, input.phoneNumberId, input.wabaId);
+    try {
+      const token = await this.cloud.exchangeEmbeddedSignupCode(input.code);
+      return await this.connectWithToken(userId, token, input.phoneNumberId, input.wabaId);
+    } catch (error) {
+      this.logger.warn({ event: 'whatsapp_embedded_connect_failed', userId: this.safeId(userId), code: this.errorCode(error) });
+      throw error;
+    }
   }
 
-  private async connectWithToken(userId: string, token: string, phoneNumberId: string, wabaId?: string): Promise<WhatsAppSalesAgentSettings> {
+  private async connectWithToken(userId: string, token: string, phoneNumberId: string, wabaId: string): Promise<WhatsAppSalesAgentSettings> {
     const profile = await this.cloud.verifyPhoneNumber(token, phoneNumberId);
-    const cleanWabaId = wabaId?.trim() || null;
-    const webhookSubscribed = cleanWabaId ? await this.cloud.subscribeWaba(token, cleanWabaId) : false;
+    const cleanWabaId = wabaId.trim();
+    if (!cleanWabaId) throw new BadRequestException({
+      code: APP_ERROR_CODES.WHATSAPP_PHONE_OR_WABA_INVALID,
+      message: 'WhatsApp Business Account ID kerak',
+    });
+
+    let webhookSubscribed = false;
+    let status: WhatsAppConnectionStatus = WhatsAppConnectionStatus.CONNECTED;
+    let lastErrorCode: string | null = null;
+    try {
+      webhookSubscribed = await this.cloud.subscribeWaba(token, cleanWabaId);
+    } catch (error) {
+      // A valid Phone Number ID + token is still useful even when automatic
+      // WABA webhook subscription is blocked by Meta permissions. Persist the
+      // connection as DEGRADED so the user can fix the webhook without having
+      // to re-enter the token, while invalid IDs still fail immediately.
+      if (error instanceof BadRequestException) throw error;
+      status = WhatsAppConnectionStatus.DEGRADED;
+      lastErrorCode = this.errorCode(error);
+      this.logger.warn({ event: 'whatsapp_webhook_subscribe_degraded', userId: this.safeId(userId), code: lastErrorCode });
+    }
+
+    const now = new Date();
     await this.prisma.whatsAppConnection.upsert({
       where: { userId },
       update: {
@@ -126,14 +161,27 @@ export class WhatsAppSalesAgentService {
         verifiedName: profile.verifiedName,
         qualityRating: profile.qualityRating,
         encryptedAccessToken: this.crypto.encrypt(token),
-        status: 'CONNECTED', webhookSubscribed,
-        connectedAt: new Date(), lastValidatedAt: new Date(), lastErrorAt: null, lastErrorCode: null,
+        status,
+        webhookSubscribed,
+        connectedAt: now,
+        lastValidatedAt: now,
+        lastErrorAt: lastErrorCode ? now : null,
+        lastErrorCode,
       },
       create: {
-        userId, phoneNumberId: profile.phoneNumberId, wabaId: cleanWabaId,
-        displayPhoneNumber: profile.displayPhoneNumber, verifiedName: profile.verifiedName, qualityRating: profile.qualityRating,
-        encryptedAccessToken: this.crypto.encrypt(token), status: 'CONNECTED', webhookSubscribed,
-        connectedAt: new Date(), lastValidatedAt: new Date(),
+        userId,
+        phoneNumberId: profile.phoneNumberId,
+        wabaId: cleanWabaId,
+        displayPhoneNumber: profile.displayPhoneNumber,
+        verifiedName: profile.verifiedName,
+        qualityRating: profile.qualityRating,
+        encryptedAccessToken: this.crypto.encrypt(token),
+        status,
+        webhookSubscribed,
+        connectedAt: now,
+        lastValidatedAt: now,
+        lastErrorAt: lastErrorCode ? now : null,
+        lastErrorCode,
       },
     });
     return this.getSettings(userId);
@@ -181,7 +229,7 @@ export class WhatsAppSalesAgentService {
         const phoneNumberId = value?.metadata?.phone_number_id;
         if (!phoneNumberId) continue;
         const connection = await this.prisma.whatsAppConnection.findUnique({ where: { phoneNumberId } });
-        if (!connection || connection.status !== 'CONNECTED' || !connection.salesAgentEnabled) continue;
+        if (!connection || ![WhatsAppConnectionStatus.CONNECTED, WhatsAppConnectionStatus.DEGRADED].includes(connection.status) || !connection.salesAgentEnabled) continue;
         const contactNames = new Map((value?.contacts ?? []).filter(c => c.wa_id).map(c => [c.wa_id!, c.profile?.name ?? null]));
         for (const message of value?.messages ?? []) {
           if (!message.id || !message.from) continue;
@@ -204,7 +252,7 @@ export class WhatsAppSalesAgentService {
       const accepted = await this.reserveMessage(userId, message.id);
       if (!accepted) return;
       const connection = await this.prisma.whatsAppConnection.findUnique({ where: { userId } });
-      if (!connection?.salesAgentEnabled || connection.status !== 'CONNECTED') return;
+      if (!connection?.salesAgentEnabled || ![WhatsAppConnectionStatus.CONNECTED, WhatsAppConnectionStatus.DEGRADED].includes(connection.status)) return;
 
       const session = await this.ensureSession(userId, message.from, displayName);
       let text = this.messageText(message);
@@ -255,7 +303,10 @@ export class WhatsAppSalesAgentService {
       await this.cloud.sendText(userId, message.from, answer);
       await this.prisma.whatsAppSalesSession.update({ where: { id: session.id }, data: { lastInboundAt: new Date(), lastOutboundAt: new Date(), customerName: displayName ?? session.customerName } });
     } catch (error) {
-      if (error instanceof ForbiddenException) return;
+      if (error instanceof ForbiddenException) {
+        this.logger.warn({ event: 'whatsapp_sales_message_blocked', userId: this.safeId(userId), type: message?.type, code: this.errorCode(error) });
+        return;
+      }
       this.logger.warn({ event: 'whatsapp_sales_message_failed', userId: this.safeId(userId), type: message?.type, code: this.errorCode(error) });
       await this.cloud.sendText(userId, message?.from ?? '', 'Hozir javobni tayyorlay olmadim. Iltimos, birozdan keyin qayta yozing.').catch(() => undefined);
     } finally {
@@ -307,8 +358,13 @@ export class WhatsAppSalesAgentService {
 
   private safeId(value: string): string { return createHash('sha256').update(value).digest('hex').slice(0, 10); }
   private errorCode(error: unknown): string {
-    if (error && typeof error === 'object' && 'message' in error && typeof (error as { message?: unknown }).message === 'string') {
-      return (error as { message: string }).message.match(/[A-Z][A-Z0-9_]{3,}/)?.[0] ?? 'FAILED';
+    if (error && typeof error === 'object') {
+      const candidate = error as { getResponse?: () => unknown; message?: unknown };
+      const response = typeof candidate.getResponse === 'function' ? candidate.getResponse() : null;
+      if (response && typeof response === 'object' && 'code' in response && typeof (response as { code?: unknown }).code === 'string') {
+        return (response as { code: string }).code;
+      }
+      if (typeof candidate.message === 'string') return candidate.message.match(/[A-Z][A-Z0-9_]{3,}/)?.[0] ?? 'FAILED';
     }
     return 'FAILED';
   }

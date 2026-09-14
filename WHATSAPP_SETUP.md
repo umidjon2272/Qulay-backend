@@ -13,14 +13,14 @@ WHATSAPP_TOKEN_ENCRYPTION_KEY=<64 hex chars>
 WHATSAPP_GRAPH_API_VERSION=v24.0
 ```
 
-For the recommended one-click **Meta Embedded Signup** flow, also set:
+For the future one-click **Meta Embedded Signup** flow (after Meta business/app verification), also set:
 
 ```env
 WHATSAPP_APP_ID=<Meta App ID>
 WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID=<Embedded Signup configuration ID>
 ```
 
-`WHATSAPP_APP_ID` and `WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID` must be configured together. The manual Cloud API connection remains available under **Qo‘lda ulash (Advanced)** as a fallback.
+Manual Cloud API connection does **not** require either value. Embedded Signup is shown as ready only when both are configured. A partially entered App ID/config ID must not block backend startup or manual connection.
 
 Generate the encryption key:
 
@@ -51,23 +51,21 @@ POST webhook requests are verified with Meta's `X-Hub-Signature-256` HMAC using 
 
 ## 3. QULAY Integrations screen
 
-The normal user flow is now:
+### Current flow: manual Cloud API connection
+
+Until Meta business/app verification for Embedded Signup is complete, QULAY presents a simple **WhatsAppni qanday ulash?** guide and a visible manual form:
 
 1. Open **Sozlamalar → Integratsiyalar → WhatsApp**.
-2. Click **Meta orqali WhatsAppni ulash**.
-3. Sign in to Meta/Facebook.
-4. Select the business and WhatsApp phone number.
-5. Approve access. QULAY receives the temporary authorization code, exchanges it server-side, verifies the selected phone number, subscribes the WABA webhook, encrypts the access token and stores the connection.
+2. Open the guide if needed; it points to Meta Developers → WhatsApp API setup.
+3. Copy **Phone Number ID** and **WhatsApp Business Account ID (WABA ID)**.
+4. Generate/copy an **Access Token** with the required WhatsApp permissions.
+5. Paste the three values into QULAY and click **WhatsAppni ulash**.
 
-The user does **not** need to find Phone Number ID, WABA ID or Access Token manually in the normal flow.
+The access token is verified against Meta Graph API, encrypted with AES-256-GCM before storage, and never returned to the frontend after connection. A temporary Meta test token can expire; reconnect with a valid token when needed.
 
-If Embedded Signup has not been configured yet, **Qo‘lda ulash (Advanced)** still accepts:
+### Future flow: Meta Embedded Signup
 
-- Phone Number ID
-- WhatsApp Business Account ID (WABA ID) — recommended
-- Access Token with the required WhatsApp permissions
-
-The access token is encrypted with AES-256-GCM before it is stored. It is never returned to the frontend after connection.
+When both `WHATSAPP_APP_ID` and `WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID` are configured and Meta verification is complete, QULAY automatically exposes **Meta orqali WhatsAppni ulash**. The user signs in to Meta, selects the business/number, and QULAY exchanges the code server-side. If Embedded Signup is not ready, the non-working button is hidden rather than shown as a dead action.
 
 ## 4. Subscription requirement
 

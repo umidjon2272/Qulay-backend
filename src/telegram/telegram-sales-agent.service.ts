@@ -17,6 +17,8 @@ export type TelegramSalesAgentSettings = {
   maxVoiceSeconds: 60;
   replyMode: 'TEXT';
   listenerActive: boolean;
+  listenerHealthy: boolean;
+  lastListenerCheckAt: string | null;
 };
 
 export type UpdateTelegramSalesAgentSettings = Partial<Pick<TelegramSalesAgentSettings, 'enabled' | 'privateChats' | 'groups' | 'voiceEnabled'>>;
@@ -24,10 +26,13 @@ export type UpdateTelegramSalesAgentSettings = Partial<Pick<TelegramSalesAgentSe
 type ActiveListener = {
   sessionFingerprint: string;
   listener: TelegramMessageListener;
+  healthy: boolean;
+  lastCheckAt: Date;
 };
 
 const SALES_RELEVANT_TEXT = /(?:narx|nech\s*pul|qancha|bormi|mavjud|qoldiq|ombor|mahsulot|tovar|dona|kg|litr|model|rang|variant|chegirma|aksiya|promo|buyurtma|zakaz|olaman|olmoqch|kerak|yetkaz|delivery|достав|цена|сколько|есть\s+ли|в\s+налич|товар|продукт|заказ|скидк)/iu;
 const TECHNICAL_NAME = /(?:bito|mcp|qulay\s*backend|api\s*key|oauth|token)/giu;
+const LISTENER_HEALTH_INTERVAL_MS = 60_000;
 
 @Injectable()
 export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy {
@@ -87,6 +92,8 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
       maxVoiceSeconds: 60,
       replyMode: 'TEXT',
       listenerActive: connection.status === TelegramConnectionStatus.CONNECTED && this.listeners.has(userId),
+      listenerHealthy: connection.status === TelegramConnectionStatus.CONNECTED && this.listeners.get(userId)?.healthy === true,
+      lastListenerCheckAt: this.listeners.get(userId)?.lastCheckAt.toISOString() ?? null,
     };
   }
 
@@ -146,16 +153,29 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
         if (!row.encryptedSession) continue;
         const fingerprint = createHash('sha256').update(row.encryptedSession).digest('hex').slice(0, 20);
         const active = this.listeners.get(row.userId);
-        if (active?.sessionFingerprint === fingerprint) continue;
-        if (active) {
+        if (active?.sessionFingerprint === fingerprint) {
+          if (Date.now() - active.lastCheckAt.getTime() < LISTENER_HEALTH_INTERVAL_MS) continue;
+          const healthy = await active.listener.health().catch(() => false);
+          active.healthy = healthy;
+          active.lastCheckAt = new Date();
+          if (healthy) continue;
+          this.logger.warn({ event: 'telegram_sales_listener_unhealthy', userId: this.safeUserId(row.userId) });
+          this.listeners.delete(row.userId);
+          await active.listener.stop().catch(() => undefined);
+        } else if (active) {
           this.listeners.delete(row.userId);
           await active.listener.stop().catch(() => undefined);
         }
         try {
           const session = this.crypto.decrypt(row.encryptedSession);
           const listener = await this.telegramClient.listenIncomingMessages(session, message => this.handleIncoming(row.userId, message));
-          this.listeners.set(row.userId, { sessionFingerprint: fingerprint, listener });
-          this.logger.log({ event: 'telegram_sales_listener_started', userId: this.safeUserId(row.userId) });
+          const healthy = await listener.health().catch(() => false);
+          if (!healthy) {
+            await listener.stop().catch(() => undefined);
+            throw new Error('TELEGRAM_LISTENER_HEALTH_FAILED');
+          }
+          this.listeners.set(row.userId, { sessionFingerprint: fingerprint, listener, healthy: true, lastCheckAt: new Date() });
+          this.logger.log({ event: active ? 'telegram_sales_listener_restarted' : 'telegram_sales_listener_started', userId: this.safeUserId(row.userId) });
         } catch (error) {
           this.logger.warn({ event: 'telegram_sales_listener_start_failed', userId: this.safeUserId(row.userId), code: this.errorCode(error) });
         }
@@ -166,6 +186,9 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
   }
 
   private async handleIncoming(userId: string, incoming: TelegramIncomingMessage): Promise<void> {
+    const active = this.listeners.get(userId);
+    if (active) { active.healthy = true; active.lastCheckAt = new Date(); }
+    this.logger.log({ event: 'telegram_sales_message_received', userId: this.safeUserId(userId), peerType: incoming.peer.type, hasVoice: Boolean(incoming.voice) });
     if (incoming.senderIsBot || incoming.peer.type === 'CHANNEL') return;
     const key = `${userId}:${incoming.peer.peerId}:${incoming.messageId}`;
     if (this.processing.has(key)) return;
@@ -251,7 +274,11 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
       await this.safeReply(userId, incoming.peer.peerId, answer);
       await this.markProcessed(salesSession.id, incoming.messageId, true);
     } catch (error) {
-      if (error instanceof ForbiddenException) return;
+      if (error instanceof ForbiddenException) {
+        this.logger.warn({ event: 'telegram_sales_message_blocked', userId: this.safeUserId(userId), code: this.errorCode(error) });
+        await this.safeReply(userId, incoming.peer.peerId, 'Avtomatik sotuv yordamchisi hozir vaqtincha mavjud emas. Iltimos, birozdan keyin qayta yozing.').catch(() => undefined);
+        return;
+      }
       this.logger.warn({
         event: 'telegram_sales_message_failed',
         userId: this.safeUserId(userId),

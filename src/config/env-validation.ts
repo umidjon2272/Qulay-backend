@@ -109,8 +109,9 @@ export const envValidationSchema = Joi.object({
   const whatsappResult = validateOptionalIntegrationGroup(value, whatsappKeys, 'whatsapp', helpers);
   if (whatsappResult !== value) return whatsappResult;
 
-  const whatsappEmbeddedKeys = ['WHATSAPP_APP_ID', 'WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID'];
-  if (whatsappEmbeddedKeys.some(key => value[key] !== undefined) && whatsappEmbeddedKeys.some(key => value[key] === undefined)) return helpers.error('whatsapp.embedded.partial');
+  // Embedded Signup is optional and can be configured incrementally. Manual
+  // Cloud API connection must keep working even if only one Embedded Signup
+  // identifier has been entered in Render. Runtime readiness requires both.
 
   if (value.BITO_OAUTH_CLIENT_SECRET && !value.BITO_OAUTH_CLIENT_ID) return helpers.error('bito.oauth.client');
   if (value.JWT_ACCESS_SECRET === value.JWT_REFRESH_SECRET) return helpers.error('jwt.secrets.same');
@@ -125,7 +126,6 @@ export const envValidationSchema = Joi.object({
   'integration.telegram.partial': 'Telegram integration requires all of: TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_SESSION_ENCRYPTION_KEY. Missing: {{#missing}}',
   'integration.google.partial': 'Google integration requires all of: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI, GOOGLE_TOKEN_ENCRYPTION_KEY. Missing: {{#missing}}',
   'integration.whatsapp.partial': 'WhatsApp integration requires all of: WHATSAPP_APP_SECRET, WHATSAPP_WEBHOOK_VERIFY_TOKEN, WHATSAPP_TOKEN_ENCRYPTION_KEY. Missing: {{#missing}}',
-  'whatsapp.embedded.partial': 'WhatsApp Embedded Signup requires WHATSAPP_APP_ID and WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID together',
   'bito.oauth.client': 'BITO_OAUTH_CLIENT_SECRET requires BITO_OAUTH_CLIENT_ID',
   'jwt.secrets.same': 'JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must be different',
   'telegram.diagnostic.phone': 'TEST_TELEGRAM_PHONE is required when TELEGRAM_LOGIN_DIAGNOSTIC_ENABLED=true',

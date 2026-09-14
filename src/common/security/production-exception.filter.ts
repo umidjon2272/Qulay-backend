@@ -33,10 +33,17 @@ export class ProductionExceptionFilter implements ExceptionFilter {
 
     if (status >= 500) {
       this.monitoring?.captureException(exception, { path: request.url, method: request.method, status });
+      const exceptionPayload = exception instanceof HttpException ? exception.getResponse() : null;
+      const safeCode = typeof exceptionPayload === 'object' && exceptionPayload !== null && 'code' in exceptionPayload
+        && typeof (exceptionPayload as { code?: unknown }).code === 'string'
+        && (exceptionPayload as { code: string }).code.startsWith('WHATSAPP_')
+        ? (exceptionPayload as { code: string }).code
+        : undefined;
       response.status(status).json({
         statusCode: status,
         message: 'Internal server error',
         path: request.url,
+        ...(safeCode ? { code: safeCode } : {}),
       });
       return;
     }

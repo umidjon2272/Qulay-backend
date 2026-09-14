@@ -22,7 +22,7 @@ export class AIToolExecutionService {
     await this.subscriptions.assertToolAllowed(userId);
     if (this.bitoTools.isBitoAlias(request.tool)) {
       await this.subscriptions.assertFeatureAllowed(userId, 'BITO');
-      const result = await this.bitoTools.execute(userId, request.tool, request.input, Boolean(request.confirmed), requestId);
+      const result = await this.bitoTools.execute(userId, request.tool, request.input, Boolean(request.confirmed), requestId, contextOptions.timezone ?? 'Asia/Tashkent');
       if (result.status === 'success') void this.usage.logToolUsage({ userId, model: 'tool-registry' }).catch(() => undefined);
       return result;
     }

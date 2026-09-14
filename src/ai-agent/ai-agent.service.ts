@@ -129,7 +129,14 @@ export class AiAgentService {
     const inventoryRequested = this.isBitoInventoryQuestion(dto.message) || inventoryFollowUp || externalInventory;
     const bitoFollowUp = recentBitoContext && this.isBitoFollowUp(dto.message);
     const externalSalesBito = externalSales && !/^(?:salom+|assalomu\s+alaykum|hello+|hi+|privet|привет)[!.?\s]*$/iu.test(dto.message.trim());
-    const bitoRequested = this.shouldUseBito(dto.message) || bitoFollowUp || externalSalesBito;
+    // A workspace organizer action may mention Bito only inside the task title,
+    // e.g. “Bito hisobotini tekshirish vazifasini yarat”. That must stay a
+    // Qulay task/reminder/meeting instead of source-scoping the whole request to
+    // the Bito MCP registry and accidentally hiding create_task.
+    const workspaceOrganizerIntent = !externalSales
+      && /(?:vazifa|vazf|eslatma|uchrashuv|qayd)/iu.test(dto.message)
+      && /(?:yara|qo[‘’']?sh|qush|belgila|eslat|rejal|create|add|schedule|созд|добав|постав)/iu.test(dto.message);
+    const bitoRequested = !workspaceOrganizerIntent && (this.shouldUseBito(dto.message) || bitoFollowUp || externalSalesBito);
     const bitoConnectionOnly = bitoConnectionIntent(dto.message);
     const externalSalesSelectionText = externalSales
       ? dto.message.replace(/(?:buyurtma|zakaz|order|yarat|qosh|qo‘sh|qo'sh|create|add|send|yubor|jo‘nat|jonat|sot|sell|купить|заказ|созд|отправ)/giu, ' ').replace(/\s+/g, ' ').trim()
@@ -532,6 +539,7 @@ Follow-up: ${externalSalesSelectionText || dto.message}`
     return `Siz Qulay AI ichidagi ${channel} sotuv agentisiz. Siz biznes egasi nomidan tashqi mijoz bilan gaplashyapsiz, platforma egasi bilan emas.
 Javob tili odatda ${language}; mijoz boshqa tilda yozsa o‘sha tilga tabiiy moslashing. Mijoz: ${customer}.
 Maqsad: mahsulot bo‘yicha savolga tez javob berish, mavjudlik va narxni real ulangan biznes manbasidan tekshirish, mos variant tavsiya qilish va sotuvni muloyim yakunlash.
+Siz SOTUVCHISIZ, mijoz emas. Mijoz “nimalar bor?”, “qanday mahsulotlar bor?” desa undan mahsulot ro‘yxatini so‘ramang: real katalog/omborni tekshirib, mavjud mahsulotlardan foydali qisqa tanlov ko‘rsating. Mijoz aniq mahsulot aytsa aynan o‘sha mahsulotning narxi/qoldig‘ini tekshiring. Oddiy salomga qisqa va tabiiy javob bering; o‘zingizni AI deb tanishtirish shart emas.
 Hech qachon biznes egasining shaxsiy xotirasi, vazifalari, kalendari, fayllari, kontaktlari yoki ichki moliyasini ishlatmang yoki oshkor qilmang. Xodimlar, qarzlar, foyda, supplierlar, ichki hisobotlar va texnik integratsiya tafsilotlari mijoz uchun maxfiy.
 Mahsulot, katalog, ombor mavjudligi, mijozga ko‘rsatiladigan narx, chegirma/aksiya va yetkazib berish kabi customer-safe READ ma’lumotlarigina ishlatilishi mumkin. Raqam, narx yoki qoldiqni uydirmang.
 Mijoz buyurtma bermoqchi bo‘lsa, kerakli minimal ma’lumotni suhbatda yig‘ing, lekin bu tashqi chatdan hech qanday write/actionni avtomatik bajarmang. Sotuvchi/operator tasdig‘i kerakligini qisqa ayting.
@@ -568,7 +576,7 @@ TAHLIL:
 Real daromad, xarajat va natijalar haqida so‘ralsa avval tegishli tool bilan ma’lumot oling. Davr va valyutani aniq ajrating, kerak bo‘lsa oldingi davr bilan solishtiring. Daromad minus qayd etilgan xarajatlar — qaydlar bo‘yicha natija; tannarx va boshqa sarflar to‘liq bo‘lmasa buni sof foyda deb taqdim etmang. Sabab va taxminni ajrating; tavsiya aniq, bajarish mumkin bo‘lsin. Mavjud bo‘lmagan modul ma’lumotlarini uydirmang.
 
 AMALLAR VA BITTA TASDIQ:
-Bo‘limlar bitta ish maydoni: vazifa/eslatma/uchrashuv/qayd/kontakt/moliya/fayl va ulangan Telegram/Google toollaridan foydalaning. Tahrirlash, yakunlash, qayta ochish yoki o‘chirishdan oldin list/search/get bilan aniq obyekt IDsi va joriy holatini oling. "Shuni/o‘sha odamga" kontekstdan olinadi; ikki mos obyekt bo‘lsa aniqlashtiring. Ro‘yxatdagi meta.total sahifadagi items.length bilan bir xil bo‘lmasligi mumkin; keyingi sahifalar borligini yashirmang. Platforma admini, tarif va xavfsizlik sozlamalarini o‘zgartiradigan tool yo‘q bo‘lsa buni bajardim demang.
+Bo‘limlar bitta ish maydoni: vazifa/eslatma/uchrashuv/qayd/kontakt/moliya/fayl va ulangan Telegram/Google toollaridan foydalaning. Tahrirlash, yakunlash, qayta ochish yoki o‘chirishdan oldin list/search/get bilan aniq obyekt IDsi va joriy holatini oling. "Shuni/o‘sha odamga" kontekstdan olinadi; ikki mos obyekt bo‘lsa aniqlashtiring. Ro‘yxatdagi meta.total sahifadagi items.length bilan bir xil bo‘lmasligi mumkin; keyingi sahifalar borligini yashirmang. Tarif/obuna/kredit holati so‘ralsa get_subscription_status bilan real holatni tekshiring. Telegram ulanish holati so‘ralsa telegram_connection_status bilan tekshiring. Platforma admini yoki xavfsizlik sozlamalarini o‘zgartiradigan tool yo‘q bo‘lsa buni bajardim demang.
 Muhim ish uchun toolni darhol chaqirib AMALNI TAYYORLANG. Avval matnda “tasdiqlaysizmi?” deb so‘ramang. Backend tasdiqlash kartasi va tugmalarini o‘zi chiqaradi. Tasdiq kerak bo‘lsa hech narsa hali bajarilmagan. User tasdiqlaganda saqlangan payload bajariladi; qayta tasdiq so‘ralmaydi.
 So‘rovni tushunish → kerakli ma’lumotni qidirish → tekshirish → write toolni tayyorlash. Moliya, xabar yuborish, vazifa, uchrashuv va o‘chirishda shu yo‘l. Telegramda search_telegram_chats bilan real qabul qiluvchini toping; keyin send_telegram_message. Qabul qiluvchi noaniq bo‘lsa taxmin qilmang.
 Bir nechta mustaqil amallarni bir turda tayyorlash mumkin. Tool javobidagi IDga bog‘liq keyingi qadam uchun avval natijani kuting. Bir xil amalga qayta-qayta tool chaqirmang. Tool xatosida validation maydonlarini tuzatib qayta urinishingiz mumkin; muvaffaqiyatli write takrorlanmasin. Tool bajarilmaguncha “bajardim” demang.
@@ -621,6 +629,7 @@ Tabiiy, tushunarli, keraklicha batafsil yozing. Oddiy savolda qisqa, tahlilda da
     if (has(/\b(fayl|file|pdf|docx|doc|xlsx|excel|csv|json|papka|folder|файл|папк)/iu)) addBy((name) => /file|drive/.test(name));
     if (has(/\b(telegram|tg|telgram|xabar|yoz|yubor|jo[‘’']?nat|message|контакт|contact|сообщ)/iu)) addBy((name) => /telegram|contact/.test(name));
     if (has(/\b(google|drive|гугл)/iu)) addBy((name) => /google|drive|calendar/.test(name));
+    if (has(/\b(tarif|obuna|subscription|plan|kredit|credit|limit|muddat|qachongacha|expires?|истеч|тариф|подпис)/iu)) addBy((name) => name === 'get_subscription_status');
     if (has(/\b(bugun|today|сегодня|reja|plan|brief)/iu)) addBy((name) => /today|task|reminder|meeting|briefing/.test(name));
     if (has(/\b(ertaga|tomorrow|завтра|soat|vaqt)/iu)) addBy((name) => /task|reminder|meeting|calendar/.test(name));
     if (has(/\b(esla|xotira|memory|unut|remember|запом|помни|забуд)/iu)) addBy((name) => /memory/.test(name));

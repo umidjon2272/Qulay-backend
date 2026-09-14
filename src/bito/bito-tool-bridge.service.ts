@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
+import { dateKeyInTimezone } from '../common/date.utils';
 import { ActivityLogService, ACTIVITY_ACTIONS } from '../activity-log/activity-log.service';
 import { assertToolObject } from '../ai-tools/types/ai-tool.types';
 import { BitoIntegrationService } from './bito-integration.service';
@@ -110,9 +111,9 @@ export class BitoToolBridgeService {
     };
   }
 
-  async execute(userId: string, alias: string, input: unknown, confirmed: boolean, requestId: string) {
+  async execute(userId: string, alias: string, input: unknown, confirmed: boolean, requestId: string, timezone = 'Asia/Tashkent') {
     try {
-      return await this.executeResolved(userId, alias, input, confirmed, requestId);
+      return await this.executeResolved(userId, alias, input, confirmed, requestId, timezone);
     } catch (error) {
       const code = error instanceof Error ? error.message.match(/BITO_[A-Z0-9_]+/)?.[0] : undefined;
       if (code === 'BITO_NOT_CONNECTED' || code === 'BITO_AUTH_FAILED' || code === 'BITO_TOKEN_REFRESH_FAILED') {
@@ -123,7 +124,7 @@ export class BitoToolBridgeService {
     }
   }
 
-  private async executeResolved(userId: string, alias: string, input: unknown, confirmed: boolean, requestId: string) {
+  private async executeResolved(userId: string, alias: string, input: unknown, confirmed: boolean, requestId: string, timezone: string) {
     assertToolObject(input);
     const toolInput = input as Record<string, unknown>;
 
@@ -149,9 +150,12 @@ export class BitoToolBridgeService {
       };
     }
 
+    const resolvedInput = sideEffect === 'READ'
+      ? withRequiredTemporalDefaults(tool.inputSchema, toolInput, timezone)
+      : toolInput;
     const raw = sideEffect === 'READ'
-      ? await this.readToolFully(userId, tool, toolInput)
-      : await this.bito.callToolForUser(userId, tool.name, toolInput);
+      ? await this.readToolFully(userId, tool, resolvedInput)
+      : await this.bito.callToolForUser(userId, tool.name, resolvedInput);
     const data = sanitize(raw);
 
     if (sideEffect === 'WRITE') {
@@ -375,6 +379,8 @@ export class BitoToolBridgeService {
     // safe raw rows let the model still answer from real provider data while
     // diagnostics reveal only shape. IDs/secrets are stripped from raw rows.
     const rawRows = unmapped > 0 ? records.filter(record => !normalizeSingleInventory([record]).length).slice(0, 500).map(compactBusinessRecord) : undefined;
+    const uniqueProductNames = new Set(normalized.map(item => item.name.trim().toLocaleLowerCase()).filter(Boolean));
+    const totalStockQuantity = normalized.reduce((sum, item) => sum + (Number.isFinite(item.quantity) ? item.quantity : 0), 0);
     return {
       provider: 'Bito ERP',
       source: 'BITO',
@@ -382,12 +388,18 @@ export class BitoToolBridgeService {
       complete: true,
       sourceOfTruth: true,
       normalizationComplete: unmapped === 0,
+      // Keep entity counts and stock-unit totals separate so the model cannot
+      // answer “nechta mahsulot” with the summed quantity by mistake.
+      productCount: records.length,
+      stockPositionCount: records.length,
+      uniqueProductNameCount: uniqueProductNames.size,
+      totalStockQuantity,
       totalPositions: records.length,
       matchedCount: items.length,
       items,
       ...(summary !== undefined ? { summary } : {}),
       ...(rawRows ? { rawRows, unmappedCount: unmapped, rawRowsTruncated: unmapped > rawRows.length } : {}),
-      note: 'Bito MCP current-stock report is the source of truth. Internal identifiers are intentionally not exposed.',
+      note: 'productCount/stockPositionCount = Bito stock rows/variants; uniqueProductNameCount = deduplicated display names; totalStockQuantity = summed units. For “nechta mahsulot” report productCount, never totalStockQuantity. Internal identifiers are intentionally not exposed.',
     };
   }
 
@@ -628,6 +640,26 @@ function numberOf(value: unknown): number | undefined {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) return Number(value);
   return undefined;
+}
+
+function withRequiredTemporalDefaults(schema: Record<string, unknown> | undefined, input: Record<string, unknown>, timezone: string): Record<string, unknown> {
+  const rawRequired = schema?.required;
+  const required = Array.isArray(rawRequired) ? rawRequired.filter((item): item is string => typeof item === 'string') : [];
+  if (!required.length) return input;
+  const today = dateKeyInTimezone(new Date(), timezone || 'Asia/Tashkent');
+  const next = { ...input };
+  for (const key of required) {
+    if (next[key] !== undefined && next[key] !== null && next[key] !== '') continue;
+    const normalized = normalizeKey(key);
+    // Bito report schemas use several date aliases. For required report dates,
+    // today is a safer deterministic default than sending an invalid empty
+    // request. Explicit model-supplied ranges are never overwritten.
+    if (/^(?:date|day|datekey|from|to|datefrom|dateto|fromdate|todate|startdate|enddate|begindate|finishdate|datestart|dateend|start|end)$/.test(normalized)
+      || /(?:datefrom|dateto|startdate|enddate|fromdate|todate)$/.test(normalized)) {
+      next[key] = today;
+    }
+  }
+  return next;
 }
 
 function preferredReadInput(schema: Record<string, unknown> | undefined, input: Record<string, unknown>): Record<string, unknown> {

@@ -15,7 +15,7 @@ function inferBitoRedirectUri(): string | undefined {
 
 export default () => ({
   nodeEnv: process.env.NODE_ENV ?? 'development',
-  trustProxy: process.env.TRUST_PROXY === 'true',
+  trustProxy: process.env.TRUST_PROXY === 'true' || process.env.RENDER === 'true' || Boolean(process.env.RENDER_SERVICE_ID),
   requestBodyLimit: process.env.REQUEST_BODY_LIMIT ?? '1mb',
   port: Number.parseInt(process.env.PORT ?? '3000', 10),
   deploymentVersion: (process.env.RENDER_GIT_COMMIT ?? process.env.DEPLOYMENT_VERSION ?? process.env.npm_package_version ?? 'unknown').slice(0, 12),

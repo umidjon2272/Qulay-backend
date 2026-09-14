@@ -21,7 +21,8 @@ describe('TelegramSalesAgentService', () => {
     })),
   } as any;
   const crypto = { decrypt: jest.fn((value: string) => value) } as any;
-  const telegramClient = { listenIncomingMessages: jest.fn().mockResolvedValue({ stop: listenerStop }) } as any;
+  const listenerHealth = jest.fn().mockResolvedValue(true);
+  const telegramClient = { listenIncomingMessages: jest.fn().mockResolvedValue({ stop: listenerStop, health: listenerHealth }) } as any;
   const telegram = { sendMessage: jest.fn().mockResolvedValue({}) } as any;
   const ai = { chat: jest.fn().mockResolvedValue({ message: 'Ha, mavjud.', pendingConfirmation: null }) } as any;
   const voice = { transcribeSalesVoice: jest.fn().mockResolvedValue({ text: 'Coladan 20 ta bormi?' }) } as any;

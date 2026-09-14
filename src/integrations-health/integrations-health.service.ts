@@ -22,6 +22,8 @@ const ERROR_CODE_LABELS: Record<string, string> = {
   WHATSAPP_GRAPH_190: 'WhatsApp ruxsati yaroqsiz',
   WHATSAPP_GRAPH_HTTP_401: 'WhatsApp ruxsatini yangilash kerak',
   WHATSAPP_GRAPH_HTTP_403: 'WhatsApp ruxsati yetarli emas',
+  WHATSAPP_PERMISSION_REQUIRED: 'WhatsApp ruxsati yetarli emas',
+  WHATSAPP_WEBHOOK_SUBSCRIBE_FAILED: 'WhatsApp webhook obunasini tekshirish kerak',
 };
 
 export type IntegrationHealth = {
@@ -79,7 +81,7 @@ export class IntegrationsHealthService {
     });
 
     const whatsappStatus = whatsapp?.status ?? 'DISCONNECTED';
-    const whatsappConnected = whatsappStatus === 'CONNECTED';
+    const whatsappConnected = whatsappStatus === 'CONNECTED' || whatsappStatus === 'DEGRADED';
     const whatsappState = whatsappStatus === 'DEGRADED'
       ? 'TEMPORARY_ISSUE'
       : this.classify({

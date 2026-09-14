@@ -62,6 +62,9 @@ describe('BitoToolBridgeService', () => {
       const service = new BitoToolBridgeService(bito as never, activity(), diagnosticConfig);
       const result = await service.getFullInventorySnapshot('u', { includeZero: true });
       expect(result.totalPositions).toBe(201);
+      expect(result.stockPositionCount).toBe(201);
+      expect(result.productCount).toBe(201);
+      expect(result.totalStockQuantity).toBe(2400);
       expect(result.items).toHaveLength(201);
       expect(result.items[0]).toMatchObject({ name: 'Private product 0', quantity: 0, unit: 'dona', cost: 100 });
       expect(bito.callToolForUser.mock.calls.map(call => call[2])).toEqual([{ page: 1, limit: 200 }, { page: 2, limit: 200 }]);
@@ -86,6 +89,9 @@ describe('BitoToolBridgeService', () => {
     const service = new BitoToolBridgeService(bito as never, activity(), config);
     const result = await service.getFullInventorySnapshot('u');
     expect(result.totalPositions).toBe(2);
+    expect(result.stockPositionCount).toBe(2);
+    expect(result.productCount).toBe(2);
+    expect(result.totalStockQuantity).toBe(10);
     expect(result.items).toHaveLength(2);
     // page=1 + limit=200 yields only two rows, so root `total` must be treated
     // as a business aggregate rather than 9.5M records to paginate through.
@@ -170,6 +176,29 @@ describe('BitoToolBridgeService', () => {
     expect(modelTool.requiresConfirmation).toBe(false);
     const result = await service.execute('u', modelTool.name, {}, false, 'r');
     expect(result).toMatchObject({ status: 'success', data: { complete: true, recordCount: 3, pagesFetched: 2 } });
+  });
+
+
+  it('fills missing required report dates with the user-local current date for READ tools', async () => {
+    const datedSalesTool: BitoMcpTool = {
+      name: 'bito_report_pos_sale_summary',
+      description: 'POS sales summary for a required date range',
+      inputSchema: {
+        type: 'object',
+        properties: { dateFrom: { type: 'string' }, dateTo: { type: 'string' } },
+        required: ['dateFrom', 'dateTo'],
+      },
+    };
+    const bito = {
+      listToolsForUser: jest.fn().mockResolvedValue([datedSalesTool]),
+      callToolForUser: jest.fn().mockResolvedValue({ total: 123 }),
+    };
+    const service = new BitoToolBridgeService(bito as never, activity(), config);
+    const [tool] = await service.listRelevantModelTools('u', 'bugungi savdo qancha');
+    await service.execute('u', tool.name, {}, false, 'r', 'Asia/Tashkent');
+    const sent = bito.callToolForUser.mock.calls[0][2] as Record<string, string>;
+    expect(sent.dateFrom).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(sent.dateTo).toBe(sent.dateFrom);
   });
 
   it('never calls a Bito write before confirmation', async () => {

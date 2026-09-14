@@ -10,7 +10,7 @@ import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 
 class ConnectWhatsAppDto {
   @IsString() @Matches(/^\d{5,30}$/) phoneNumberId!: string;
-  @IsOptional() @IsString() @Matches(/^\d{5,30}$/) wabaId?: string;
+  @IsString() @Matches(/^\d{5,30}$/) wabaId!: string;
   @IsString() @MinLength(20) accessToken!: string;
 }
 

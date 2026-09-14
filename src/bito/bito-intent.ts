@@ -107,6 +107,7 @@ export function bitoInventorySearchTerm(text: string): string | undefined {
   const noiseStems = [
     'bito', 'ombor', 'qoldiq', 'qoldi', 'zaxira', 'stock', 'inventory', 'warehouse', 'sklad', 'ostat',
     'mahsulot', 'tovar', 'product', 'goods', 'katalog', 'catalog', 'qaysi', 'nima', 'nimalar',
+    'salom', 'assalomu', 'alaykum', 'aziz', 'qanday', 'iltimos', 'please', 'hello', 'hi', 'privet',
     'qancha', 'nechta', 'necha', 'bor', 'mavjud', 'qolgan', 'qolmagan', 'tugagan', 'korsat',
     'chiqar', 'ayt', 'top', 'qidir', 'izla', 'menga', 'hamma', 'barcha', 'toliq', 'jami', 'dona',
     'kg', 'litr', 'litre', 'ta', 'available', 'show', 'list', 'find', 'how', 'many', 'есть', 'сколько',

@@ -25,7 +25,7 @@ export type TelegramIncomingMessage = {
   voice: TelegramIncomingVoice | null;
   receivedAt: string;
 };
-export type TelegramMessageListener = { stop: () => Promise<void> };
+export type TelegramMessageListener = { stop: () => Promise<void>; health: () => Promise<boolean> };
 
 /** Normalized delivery channel derived from Telegram's real `auth.SentCodeType`/`auth.CodeType` constructor. */
 export type TelegramDeliveryType = 'telegram_app' | 'sms' | 'call' | 'email' | 'fragment' | 'firebase_sms' | 'email_setup' | 'unknown';
@@ -693,13 +693,24 @@ export class GramJsTelegramClientService extends TelegramClientService {
         try {
           const message = event?.message as any;
           if (!message || message.out === true || typeof message.id !== 'number') return;
-          const chat = typeof message.getChat === 'function' ? await message.getChat() : null;
-          if (!chat) return;
+          this.logger.log({ event: 'telegram_sales_update_received', hasText: Boolean(message.message), hasMedia: Boolean(message.media) });
+
+          const sender = typeof message.getSender === 'function' ? await message.getSender().catch(() => null) : null;
+          let chat = typeof message.getChat === 'function' ? await message.getChat().catch(() => null) : null;
+          // GramJS can deliver a NewMessage before its dialog entity is warm in
+          // the local cache. Private chats can safely fall back to the sender;
+          // otherwise ask Telegram for the peer entity instead of silently
+          // dropping the customer's first message.
+          if (!chat && sender) chat = sender;
+          if (!chat && message.peerId) chat = await client.getEntity(message.peerId).catch(() => null);
+          if (!chat) {
+            this.logger.warn({ event: 'telegram_sales_peer_unresolved' });
+            return;
+          }
           const peer = this.entityToPeer(chat as Api.TypeUser | Api.TypeChat);
           const className = String((chat as any).className ?? '');
           if (className.includes('Channel') && ((chat as any).megagroup === true || (chat as any).gigagroup === true)) peer.type = 'GROUP';
 
-          const sender = typeof message.getSender === 'function' ? await message.getSender().catch(() => null) : null;
           const senderValue = sender as any;
           const senderDisplayName = senderValue
             ? ([senderValue.firstName, senderValue.lastName].filter(Boolean).join(' ') || senderValue.title || null)
@@ -735,6 +746,7 @@ export class GramJsTelegramClientService extends TelegramClientService {
             };
           }
 
+          this.logger.log({ event: 'telegram_sales_incoming_received', peerType: peer.type, hasVoice: Boolean(voice) });
           await onMessage({
             peer,
             messageId: message.id,
@@ -755,6 +767,19 @@ export class GramJsTelegramClientService extends TelegramClientService {
       client.addEventHandler(handler as any, builder as any);
       let stopped = false;
       return {
+        health: async () => {
+          if (stopped) return false;
+          try {
+            // A live MTProto request is more trustworthy than an in-memory
+            // listener flag. It also lets GramJS reconnect a briefly dropped
+            // socket before the sales-agent service decides to rebuild it.
+            if (!(await client.checkAuthorization())) return false;
+            await client.getMe();
+            return true;
+          } catch {
+            return false;
+          }
+        },
         stop: async () => {
           if (stopped) return;
           stopped = true;

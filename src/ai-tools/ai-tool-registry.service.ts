@@ -32,6 +32,7 @@ import { TodayService } from '../today/today.service';
 import { BriefingService } from '../briefing/briefing.service';
 import { FileQueryDto } from '../files/dto/file-query.dto';
 import { BitoIntegrationService } from '../bito/bito-integration.service';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 
 import {
   CompareFinancePeriodsToolInput, ContactHistoryToolInput, CreateContactToolInput,
@@ -115,6 +116,7 @@ export class AIToolRegistryService {
     private readonly telegramIntegrationService: TelegramIntegrationService,
     private readonly briefingService: BriefingService,
     private readonly activityLog: ActivityLogService,
+    private readonly subscriptionsService: SubscriptionsService,
     @Optional() private readonly googleCalendarService?: GoogleCalendarService,
     @Optional() private readonly googleDriveService?: GoogleDriveService,
     @Optional() private readonly filesService?: FilesService,
@@ -228,6 +230,20 @@ export class AIToolRegistryService {
         execute: (context) => this.bitoIntegrationService!.status(context.userId),
       }));
     }
+    this.register(this.base<EmptyToolInput, unknown>({
+      name: 'telegram_connection_status',
+      description: 'Check the authenticated user Telegram connection status directly. Use this for questions such as Telegram ulanganmi/status.',
+      category: AIToolCategory.SYSTEM,
+      sideEffect: 'READ', validate: EmptyToolInput, inputSchema: schema({}),
+      execute: (context) => this.telegramIntegrationService.status(context.userId),
+    }));
+    this.register(this.base<EmptyToolInput, unknown>({
+      name: 'get_subscription_status',
+      description: 'Get the authenticated user current Qulay AI tariff, active period, remaining AI credits and current limits. Use this when the user asks about tariff, obuna, kredit or expiry.',
+      category: AIToolCategory.SYSTEM,
+      sideEffect: 'READ', validate: EmptyToolInput, inputSchema: schema({}),
+      execute: (context) => this.subscriptionsService.getForUser(context.userId),
+    }));
     this.register(this.base<TodayPlanInput, unknown>({
       name: 'get_today_plan', description: 'Get the user-scoped plan for today.', category: AIToolCategory.TODAY,
       sideEffect: 'READ', validate: TodayPlanInput, inputSchema: schema({ date: { type: 'string', description: 'Optional YYYY-MM-DD date' } }),
