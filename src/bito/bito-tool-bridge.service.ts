@@ -352,15 +352,9 @@ export class BitoToolBridgeService {
 
     const normalized = normalizeSingleInventory(records);
     const includeZero = input.includeZero === true;
-    const search = comparableInventoryText(requestedSearch);
-    const compactSearch = search.replace(/\s+/g, '');
     const items = normalized
       .filter(item => includeZero || item.quantity !== 0)
-      .filter(item => {
-        if (!search) return true;
-        const name = comparableInventoryText(item.name);
-        return name.includes(search) || name.replace(/\s+/g, '').includes(compactSearch);
-      })
+      .filter(item => !requestedSearch || inventorySearchMatches(item.name, requestedSearch))
       .sort((a, b) => a.name.localeCompare(b.name, 'uz'));
 
     // Summary is useful for aggregate counts/alerts but must never make the
@@ -723,9 +717,72 @@ function comparableInventoryText(value: string): string {
   return value
     .normalize('NFKC')
     .toLocaleLowerCase()
+    // Canonicalize volume tokens before punctuation is stripped so 1.5L never
+    // becomes a loose family match for 1L.
+    .replace(/\b(\d+)[.,](\d+)\s*(?:l|ltr|litr|litre)\b/giu, '$1d$2l')
+    .replace(/\b(\d+)\s*(?:l|ltr|litr|litre)\b/giu, '$1l')
     .replace(/[^\p{L}\p{N}]+/gu, ' ')
     .replace(/\s+/g, ' ')
-    .trim();
+    .trim()
+    // Customer-facing search must tolerate common Uzbek/Russian transliteration
+    // and typo variants without changing the canonical product name returned
+    // from Bito. These aliases are used only for comparison.
+    .replace(/\b(?:a+yfon|ayfon|iphon|iphone)\b/giu, 'iphone')
+    .replace(/\bpor\b/giu, 'pro')
+    .replace(/\bkoka\b/giu, 'coca')
+    .replace(/\bkola\b/giu, 'cola');
+}
+
+function inventorySearchMatches(itemName: string, requestedSearch: string): boolean {
+  const search = comparableInventoryText(requestedSearch);
+  if (!search) return true;
+  const name = comparableInventoryText(itemName);
+  const compactSearch = search.replace(/\s+/g, '');
+  if (name.includes(search) || name.replace(/\s+/g, '').includes(compactSearch)) return true;
+
+  const queryTokens = [...new Set(search.split(' ').filter(token => token.length >= 2))];
+  const nameTokens = [...new Set(name.split(' ').filter(token => token.length >= 2))];
+  if (!queryTokens.length || !nameTokens.length) return false;
+
+  const specific = queryTokens.filter(token => /\d/u.test(token));
+  if (specific.length && !specific.every(token => /^\d+$/u.test(token)
+    ? nameTokens.includes(token)
+    : nameTokens.some(candidate => inventoryTokenMatch(token, candidate)))) return false;
+
+  const words = queryTokens.filter(token => !/^\d+(?:[.,]\d+)?$/u.test(token));
+  const matchedWords = words.filter(query => nameTokens.some(candidate => inventoryTokenMatch(query, candidate)));
+  if (!matchedWords.length) return false;
+
+  // A strong family token such as "iphone" should find "Iphone 13 por" even
+  // when the customer's sentence contains extra noisy/typo words. Specific
+  // model numbers, when present, are still mandatory above.
+  if (matchedWords.some(token => token.length >= 5)) return true;
+  return matchedWords.length / Math.max(1, words.length) >= 0.6;
+}
+
+function inventoryTokenMatch(left: string, right: string): boolean {
+  if (left === right || left.startsWith(right) || right.startsWith(left)) return true;
+  const maxDistance = Math.max(left.length, right.length) >= 6 ? 2 : 1;
+  return levenshteinDistance(left, right) <= maxDistance;
+}
+
+function levenshteinDistance(left: string, right: string): number {
+  if (left === right) return 0;
+  if (!left.length) return right.length;
+  if (!right.length) return left.length;
+  const previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= left.length; i += 1) {
+    const current = [i];
+    for (let j = 1; j <= right.length; j += 1) {
+      current[j] = Math.min(
+        current[j - 1] + 1,
+        previous[j] + 1,
+        previous[j - 1] + (left[i - 1] === right[j - 1] ? 0 : 1),
+      );
+    }
+    for (let j = 0; j < current.length; j += 1) previous[j] = current[j];
+  }
+  return previous[right.length];
 }
 
 function schemaHasProperty(schema: Record<string, unknown> | undefined, wanted: string): boolean {

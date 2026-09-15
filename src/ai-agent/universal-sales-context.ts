@@ -89,6 +89,10 @@ export function normalizeSalesTextForUnderstanding(input: string): string {
     [/\b(?:samovivoz|samovyvoz|самовывоз)\b/giu, ' pickup '],
     [/\b(?:maslaxat|maslahat|tavsiya)\b/giu, ' maslahat '],
     [/\b(?:adres|адрес)\b/giu, ' manzil '],
+    [/\b(?:a+yfon|ayfon|iphon)\b/giu, ' iphone '],
+    [/\bpor\b/giu, ' pro '],
+    [/\bkoka\b/giu, ' coca '],
+    [/\bkola\b/giu, ' cola '],
   ];
   for (const [pattern, replacement] of replacements) text = text.replace(pattern, replacement);
   return text.replace(/\s+/g, ' ').trim();

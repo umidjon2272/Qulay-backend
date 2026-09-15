@@ -109,7 +109,7 @@ export function bitoInventorySearchTerm(text: string): string | undefined {
     'mahsulot', 'tovar', 'product', 'goods', 'katalog', 'catalog', 'qaysi', 'nima', 'nimalar',
     'salom', 'assalomu', 'alaykum', 'aziz', 'qanday', 'iltimos', 'please', 'hello', 'hi', 'privet',
     'sizda', 'sizlarda', 'siz', 'bizga', 'menga', 'kerak', 'olmoqch', 'xohlay', 'hohlay',
-    'narx', 'price', 'цена', 'qancha', 'nechta', 'necha', 'bor', 'mavjud', 'qolgan', 'qolmagan', 'tugagan', 'korsat',
+    'narx', 'price', 'цена', 'qancha', 'nechta', 'necha', 'bor', 'bormi', 'bormikan', 'mavjud', 'qolgan', 'qolmagan', 'tugagan', 'korsat',
     'chiqar', 'ayt', 'top', 'qidir', 'izla', 'hamma', 'barcha', 'toliq', 'jami', 'dona',
     'kg', 'litr', 'litre', 'ml', 'gramm', 'ta', 'available', 'show', 'list', 'find', 'how', 'many', 'есть', 'сколько',
     'покаж', 'найд', 'товар', 'остат', 'склад',
