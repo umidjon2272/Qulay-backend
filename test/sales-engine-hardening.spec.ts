@@ -6,6 +6,7 @@ import {
   reconcileUniversalSalesStateFromInventory,
   salesCatalogLookupQuery,
   salesCatalogLookupQueryForUnderstanding,
+  salesCatalogLookupScopeForUnderstanding,
   updateUniversalSalesState,
 } from '../src/ai-agent/universal-sales-context';
 import { extractBusinessSalesProfilePatch } from '../src/ai-agent/business-sales-profile';
@@ -221,6 +222,122 @@ describe('universal sales engine hardening', () => {
       deliveryEnabled: true,
     });
     expect(extractBusinessSalesProfilePatch("Do'kon manzilimiz qayerda edi?")).toEqual({});
+    expect(extractBusinessSalesProfilePatch("Mijoz dastavka desa manzil va telefon so'ra")).toEqual({});
+    expect(extractBusinessSalesProfilePatch("Mijoz olib ketaman desa do'kon manzilimizni ayt")).toEqual({});
+  });
+
+
+  it('stores only customer-public payment instructions and rejects secret payment credentials', () => {
+    const click = extractBusinessSalesProfilePatch('Mijoz Click qilsa karta raqamimiz 8600 1234 5678 9012 ni yubor');
+    expect(click.paymentMethods).toEqual(expect.arrayContaining(['CARD', 'CLICK']));
+    expect(click.clickPaymentNote).toContain('8600 1234 5678 9012');
+    expect(click.cardPaymentNote).toContain('8600 1234 5678 9012');
+    expect(click.publicPhone).toBeUndefined();
+
+    const secret = extractBusinessSalesProfilePatch('Click uchun karta 8600 1234 5678 9012, CVV 123, PIN 7788');
+    expect(secret.clickPaymentNote).toBeUndefined();
+    expect(secret.cardPaymentNote).toBeUndefined();
+  });
+
+  it('understands phone storage and keeps it inside the current product selection', () => {
+    let state = updateUniversalSalesState(undefined, 'ayfon 14 pro bormi?');
+    state = updateUniversalSalesState(state, '128 gb qizil rangidan bormi?');
+    expect(state.product).toBe('iphone');
+    expect(state.model).toBe('14 pro');
+    expect(state.storage).toBe('128GB');
+    expect(state.color).toBe('qizil');
+    expect(salesCatalogLookupQuery(state, '128 gb qizil rangidan bormi?')).toContain('128GB');
+    expect(salesCatalogLookupQuery(state, '128 gb qizil rangidan bormi?')).toContain('qizil');
+  });
+
+  it('broadens lookup after an unavailable exact variant without silently accepting a sibling variant', () => {
+    let state = updateUniversalSalesState(undefined, 'Coca Cola bormi?');
+    state = updateUniversalSalesState(state, '1.5 ltr bormi?');
+    state = reconcileUniversalSalesStateFromInventory(state, {
+      availabilityStatus: 'OUT_OF_STOCK',
+      outOfStockItems: [{ name: 'Coca Cola 1.5L', quantity: 0 }],
+      familyAlternatives: [{ name: 'Coca Cola 1L', quantity: 12, price: 9_000 }],
+    });
+    expect(state.factStatus?.variant?.status).toBe('UNAVAILABLE');
+
+    const followUp = {
+      intent: 'QUANTITY' as const, topicSwitch: false, followUp: true, needsCatalogLookup: true,
+      catalogScope: 'SELECTION' as const, clearUnavailableSelection: false, quantity: 5,
+      businessFactRequest: 'NONE' as const, answerGoal: '5 ta olish niyatiga javob',
+    };
+    expect(salesCatalogLookupScopeForUnderstanding(state, followUp)).toBe('FAMILY');
+    expect(salesCatalogLookupQueryForUnderstanding(state, followUp, '5 ta olaman')).toBe('coca cola');
+
+    const familySnapshot = reconcileUniversalSalesStateFromInventory(state, {
+      availabilityStatus: 'IN_STOCK',
+      items: [{ name: 'Coca Cola 1L', quantity: 12, price: 9_000 }],
+    }, 'FAMILY');
+    expect(familySnapshot.variant).toBe('1.5L');
+    expect(familySnapshot.factStatus?.variant?.status).toBe('UNAVAILABLE');
+    expect(familySnapshot.unitPrice).toBeUndefined();
+  });
+
+  it('matches exact phone storage/color and offers same-family alternatives when that selection is missing', async () => {
+    const inventoryTool: BitoMcpTool = {
+      name: BITO_INVENTORY_PRIMARY_TOOL,
+      description: 'Paginated product stock list with current quantity and public price',
+      inputSchema: {
+        type: 'object',
+        properties: { page: { type: 'integer' }, limit: { type: 'integer', maximum: 200 }, search: { type: 'string' } },
+      },
+    };
+    const rows = [
+      { product: { name: 'Iphone 14 Pro 128GB Black', unit: { name: 'dona' } }, quantity: 2, price: 7_000_000 },
+      { product: { name: 'Iphone 14 Pro 256GB Red', unit: { name: 'dona' } }, quantity: 1, price: 7_800_000 },
+      { product: { name: 'Samsung A55 128GB Black', unit: { name: 'dona' } }, quantity: 5, price: 5_000_000 },
+    ];
+    const bito = {
+      listToolsForUser: jest.fn().mockResolvedValue([inventoryTool]),
+      callToolForUser: jest.fn(async (_user: string, _tool: string, input: Record<string, unknown>) => {
+        if (input.search) return { items: [], meta: { total: 0, page: 1 } };
+        return { items: rows, meta: { total: rows.length, page: 1 } };
+      }),
+    };
+    const activity = { record: jest.fn().mockResolvedValue({}) };
+    const service = new BitoToolBridgeService(bito as never, activity as never, new ConfigService({ bito: { debugShapes: false } }));
+
+    const exact = await service.getFullInventorySnapshot('user-1', { search: 'iphone 14 por 128 gb qora' });
+    expect(exact.availabilityStatus).toBe('IN_STOCK');
+    expect(exact.items).toEqual([expect.objectContaining({ name: 'Iphone 14 Pro 128GB Black', price: 7_000_000 })]);
+
+    const missing = await service.getFullInventorySnapshot('user-1', { search: 'iphone 14 pro 512gb qizil' });
+    expect(missing.availabilityStatus).toBe('NOT_FOUND');
+    expect(missing.familyAlternatives).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'Iphone 14 Pro 256GB Red' }),
+      expect.objectContaining({ name: 'Iphone 14 Pro 128GB Black' }),
+    ]));
+  });
+
+  it('preserves inbound reservation order even when the first DB receipt is slower', async () => {
+    const calls: string[] = [];
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
+    const prisma = {
+      salesInboundReceipt: {
+        create: jest.fn(async ({ data }: { data: { messageId: string } }) => {
+          calls.push(`start:${data.messageId}`);
+          if (data.messageId === '1') await firstGate;
+          calls.push(`end:${data.messageId}`);
+          return {};
+        }),
+      },
+    } as never;
+
+    const firstPromise = reserveSalesInboundTurn(prisma, 'TELEGRAM', 'ordered-user', 'ordered-peer', '1');
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const secondPromise = reserveSalesInboundTurn(prisma, 'TELEGRAM', 'ordered-user', 'ordered-peer', '2');
+    await new Promise(resolve => setTimeout(resolve, 5));
+    expect(calls).toEqual(['start:1']);
+    releaseFirst();
+    const [first, second] = await Promise.all([firstPromise, secondPromise]);
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+    expect(calls).toEqual(['start:1', 'end:1', 'start:2', 'end:2']);
   });
 
   it('serializes one customer chat without cancelling a reply that is already being prepared', async () => {

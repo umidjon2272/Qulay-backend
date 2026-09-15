@@ -316,7 +316,10 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
 
       const sessionPeerId = this.salesSessionPeerId(incoming);
       let salesSession = await this.prisma.telegramSalesSession.findUnique({ where: { userId_peerId: { userId, peerId: sessionPeerId } } });
-      if (salesSession && salesSession.lastInboundMessageId !== null && incoming.messageId <= salesSession.lastInboundMessageId) return;
+      // DB SalesInboundReceipt is the idempotency source of truth. Do not drop
+      // a unique Telegram message merely because callbacks/DB writes completed
+      // out of order; that was the root cause of apparently random silent
+      // replies in fast customer conversations.
       if (incoming.peer.type === 'USER' && salesSession?.ownerPausedUntil && salesSession.ownerPausedUntil.getTime() > Date.now()) return;
 
       const addressed = incoming.mentioned || incoming.replyToOwnMessage;
@@ -575,12 +578,25 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
   }
 
   private async markProcessed(sessionId: string, messageId: number, outbound: boolean, contextUntil?: Date): Promise<void> {
+    const now = new Date();
+    // Preserve the highest observed Telegram message id for diagnostics only.
+    // Idempotency itself is enforced by SalesInboundReceipt, so an older unique
+    // event is still processed rather than silently discarded.
+    await this.prisma.telegramSalesSession.updateMany({
+      where: {
+        id: sessionId,
+        OR: [
+          { lastInboundMessageId: null },
+          { lastInboundMessageId: { lt: messageId } },
+        ],
+      },
+      data: { lastInboundMessageId: messageId },
+    });
     await this.prisma.telegramSalesSession.update({
       where: { id: sessionId },
       data: {
-        lastInboundMessageId: messageId,
-        lastInboundAt: new Date(),
-        ...(outbound ? { lastOutboundAt: new Date() } : {}),
+        lastInboundAt: now,
+        ...(outbound ? { lastOutboundAt: now } : {}),
         ...(contextUntil ? { salesContextUntil: contextUntil } : {}),
       },
     });

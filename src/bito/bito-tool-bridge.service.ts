@@ -766,6 +766,8 @@ function comparableInventoryText(value: string): string {
     // so 1.5L never becomes a loose match for 1L.
     .replace(/\b(\d+)[.,](\d+)\s*(?:l|ltr|litr|litre|litrlik)\b/giu, '$1d$2l')
     .replace(/\b(\d+)\s*(?:l|ltr|litr|litre|litrlik)\b/giu, '$1l')
+    // Canonicalize phone/device storage so `128 gb` and `128GB` match.
+    .replace(/\b(\d{1,4})\s*(gb|tb)\b/giu, '$1$2')
     .replace(/[^\p{L}\p{N}]+/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -779,6 +781,12 @@ function canonicalInventoryToken(token: string): string {
   if (/^(?:por|proo|pro)$/u.test(token)) return 'pro';
   if (/^(?:koka|coca)$/u.test(token)) return 'coca';
   if (/^(?:kola|cola)$/u.test(token)) return 'cola';
+  if (/^(?:qizil|red|krasn\p{L}*|красн\p{L}*)$/iu.test(token)) return 'red';
+  if (/^(?:qora|black|chern\p{L}*|черн\p{L}*)$/iu.test(token)) return 'black';
+  if (/^(?:oq|white|bel\p{L}*|бел\p{L}*)$/iu.test(token)) return 'white';
+  if (/^(?:kok|ko['‘’]?k|blue|sin\p{L}*|син\p{L}*)$/iu.test(token)) return 'blue';
+  if (/^(?:yashil|green|zelen\p{L}*|зелен\p{L}*)$/iu.test(token)) return 'green';
+  if (/^(?:kulrang|grey|gray|ser\p{L}*|сер\p{L}*)$/iu.test(token)) return 'gray';
   return token;
 }
 

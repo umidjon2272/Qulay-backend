@@ -25,7 +25,7 @@ export type UniversalSalesIntent =
   | 'GENERAL';
 
 export type SalesFactStatus = 'PROPOSED' | 'VERIFIED' | 'UNAVAILABLE';
-export type SalesFactKey = 'product' | 'productFamily' | 'variant' | 'model' | 'size' | 'color';
+export type SalesFactKey = 'product' | 'productFamily' | 'variant' | 'model' | 'storage' | 'size' | 'color';
 export type SalesFact = {
   value: string;
   status: SalesFactStatus;
@@ -59,7 +59,7 @@ export type SalesTurnPlan = {
 };
 
 export type SalesCatalogScope = 'NONE' | 'FAMILY' | 'PRODUCT' | 'SELECTION';
-export type SalesBusinessFactRequest = 'NONE' | 'STORE_ADDRESS' | 'BUSINESS_HOURS' | 'PUBLIC_PHONE' | 'DELIVERY_POLICY' | 'PAYMENT_METHODS';
+export type SalesBusinessFactRequest = 'NONE' | 'STORE_ADDRESS' | 'BUSINESS_HOURS' | 'PUBLIC_PHONE' | 'DELIVERY_POLICY' | 'PAYMENT_METHODS' | 'PAYMENT_DETAILS';
 
 /**
  * Semantic interpretation produced by the sales conversation brain. This is
@@ -76,6 +76,7 @@ export type SalesTurnUnderstanding = {
   product?: string;
   productFamily?: string;
   model?: string;
+  storage?: string;
   variant?: string;
   color?: string;
   size?: string;
@@ -96,6 +97,7 @@ export type UniversalSalesState = {
   productFamily?: string;
   variant?: string;
   model?: string;
+  storage?: string;
   quantity?: number;
   unitPrice?: number;
   totalPrice?: number;
@@ -186,7 +188,7 @@ export function coerceUniversalSalesState(value: unknown): UniversalSalesState {
     const raw = source[key as string];
     if (typeof raw === 'string' && raw.trim()) (state as Record<string, unknown>)[key as string] = raw.trim().slice(0, max);
   };
-  for (const key of ['product', 'productFamily', 'variant', 'model', 'color', 'size', 'budget', 'address', 'phone', 'timing', 'updatedAt'] as const) {
+  for (const key of ['product', 'productFamily', 'variant', 'model', 'storage', 'color', 'size', 'budget', 'address', 'phone', 'timing', 'updatedAt'] as const) {
     stringField(key, key === 'address' ? 500 : 300);
   }
   if (typeof source.quantity === 'number' && Number.isFinite(source.quantity) && source.quantity > 0) state.quantity = Math.min(source.quantity, 1_000_000);
@@ -203,7 +205,7 @@ export function coerceUniversalSalesState(value: unknown): UniversalSalesState {
 
   if (source.factStatus && typeof source.factStatus === 'object' && !Array.isArray(source.factStatus)) {
     const factStatus: Partial<Record<SalesFactKey, SalesFact>> = {};
-    for (const key of ['product', 'productFamily', 'variant', 'model', 'size', 'color'] as const) {
+    for (const key of ['product', 'productFamily', 'variant', 'model', 'storage', 'size', 'color'] as const) {
       const raw = (source.factStatus as Record<string, unknown>)[key];
       if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
       const row = raw as Record<string, unknown>;
@@ -244,6 +246,7 @@ export function updateUniversalSalesState(previous: UniversalSalesState | undefi
   const quantity = extractQuantity(normalized);
   const volume = extractVolume(normalized);
   const color = detectColor(normalized);
+  const storage = extractStorage(normalized);
   const size = extractSize(normalized);
   const compactModel = extractCompactModel(rawText);
   const budget = extractBudget(normalized);
@@ -253,7 +256,7 @@ export function updateUniversalSalesState(previous: UniversalSalesState | undefi
   const hadProduct = Boolean(state.product);
   const previousProduct = state.product;
   const productCandidate = bitoInventorySearchTerm(normalized)?.trim();
-  const followUpSignals = Boolean(volume || color || size || compactModel || quantity !== undefined || delivery || pickup || payment || priceObjection || cheaper || advice || phone || address);
+  const followUpSignals = Boolean(volume || color || storage || size || compactModel || quantity !== undefined || delivery || pickup || payment || priceObjection || cheaper || advice || phone || address);
 
   if (productCandidate && isUsefulProductCandidate(productCandidate, normalized)) {
     const clean = cleanProductCandidate(productCandidate);
@@ -261,14 +264,14 @@ export function updateUniversalSalesState(previous: UniversalSalesState | undefi
     const activeFamily = state.productFamily || inferProductFamily(state.product ?? '');
     const sameFamily = Boolean(activeFamily && parsed.family && canonicalComparable(activeFamily) === canonicalComparable(parsed.family));
     const modelOnlyFollowUp = hadProduct && isModelOnlyCandidate(clean);
-    const attributeFollowUp = hadProduct && Boolean(volume || color || size);
+    const attributeFollowUp = hadProduct && Boolean(volume || color || storage || size);
     const sameFamilyModelFollowUp = hadProduct && sameFamily && Boolean(parsed.model);
     const followUpCandidate = modelOnlyFollowUp || attributeFollowUp || sameFamilyModelFollowUp;
 
     const explicitNewFamily = hadProduct && parsed.family && activeFamily
       && canonicalComparable(parsed.family) !== canonicalComparable(activeFamily);
     const catalogSelectionSignal = availability || price || order
-      || /\b(?:kerak|model|variant|hajm|rang|litr|ltr|kg|dona|ta)\b/iu.test(normalized)
+      || /\b(?:kerak|model|variant|hajm|rang|xotira|pamyat|gb|tb|litr|ltr|kg|dona|ta)\b/iu.test(normalized)
       || /\d/u.test(clean);
     const shouldReplaceProduct = !hadProduct
       || Boolean(explicitNewFamily && !attributeFollowUp && catalogSelectionSignal);
@@ -308,7 +311,7 @@ export function updateUniversalSalesState(previous: UniversalSalesState | undefi
     state.variant = volume;
     setFact(state, 'variant', volume, 'PROPOSED', 'CUSTOMER');
   }
-  if (compactModel && hadProduct && !volume && !color && !size && !containsProductPhrase(compactModel, state.product)) {
+  if (compactModel && hadProduct && !volume && !color && !storage && !size && !containsProductPhrase(compactModel, state.product)) {
     const normalizedModel = normalizeSalesTextForUnderstanding(compactModel);
     if (state.model && canonicalComparable(state.model) !== canonicalComparable(normalizedModel)) {
       clearModelDependentFacts(state);
@@ -318,6 +321,11 @@ export function updateUniversalSalesState(previous: UniversalSalesState | undefi
     state.model = normalizedModel;
     setFact(state, 'variant', normalizedModel, 'PROPOSED', 'CUSTOMER');
     setFact(state, 'model', normalizedModel, 'PROPOSED', 'CUSTOMER');
+  }
+  if (storage) {
+    if (state.storage && canonicalComparable(state.storage) !== canonicalComparable(storage)) clearPriceFacts(state);
+    state.storage = storage;
+    setFact(state, 'storage', storage, 'PROPOSED', 'CUSTOMER');
   }
   if (color) {
     if (state.color && canonicalComparable(state.color) !== canonicalComparable(color)) clearPriceFacts(state);
@@ -357,7 +365,7 @@ export function updateUniversalSalesState(previous: UniversalSalesState | undefi
                     : price ? 'PRICE'
                       : availability ? 'AVAILABILITY'
                         : quantity !== undefined ? 'QUANTITY'
-                          : (volume || color || size || compactModel) ? 'VARIANT'
+                          : (volume || color || storage || size || compactModel) ? 'VARIANT'
                             : order ? 'ORDER'
                               : 'GENERAL';
   state.updatedAt = new Date().toISOString();
@@ -383,6 +391,7 @@ export function applySalesTurnUnderstanding(
   const nextProduct = cleanOptional(understanding.product);
   const nextFamily = cleanOptional(understanding.productFamily);
   const nextModel = cleanOptional(understanding.model);
+  const nextStorage = cleanOptional(understanding.storage);
   const nextVariant = cleanOptional(understanding.variant);
   const nextColor = cleanOptional(understanding.color);
   const nextSize = cleanOptional(understanding.size);
@@ -414,13 +423,18 @@ export function applySalesTurnUnderstanding(
     if (state.productFamily) setFact(state, 'productFamily', state.productFamily, 'PROPOSED', 'CUSTOMER');
   }
 
-  const previousSelection = [state.model, state.variant, state.color, state.size].filter(Boolean).join('|');
+  const previousSelection = [state.model, state.storage, state.variant, state.color, state.size].filter(Boolean).join('|');
   if (nextModel) {
     const changed = !state.model || canonicalComparable(state.model) !== canonicalComparable(nextModel);
     state.model = nextModel;
     if (!nextVariant) state.variant = nextModel;
     if (changed || !state.factStatus?.model) setFact(state, 'model', nextModel, 'PROPOSED', 'CUSTOMER');
     if (!nextVariant && (changed || !state.factStatus?.variant)) setFact(state, 'variant', nextModel, 'PROPOSED', 'CUSTOMER');
+  }
+  if (nextStorage) {
+    const changed = !state.storage || canonicalComparable(state.storage) !== canonicalComparable(nextStorage);
+    state.storage = nextStorage;
+    if (changed || !state.factStatus?.storage) setFact(state, 'storage', nextStorage, 'PROPOSED', 'CUSTOMER');
   }
   if (nextVariant) {
     const changed = !state.variant || canonicalComparable(state.variant) !== canonicalComparable(nextVariant);
@@ -445,6 +459,10 @@ export function applySalesTurnUnderstanding(
     state.variant = fallback.variant;
     setFact(state, 'variant', fallback.variant, 'PROPOSED', 'CUSTOMER');
   }
+  if (!nextStorage && fallback.storage && fallback.storage !== before.storage) {
+    state.storage = fallback.storage;
+    setFact(state, 'storage', fallback.storage, 'PROPOSED', 'CUSTOMER');
+  }
   if (!nextColor && fallback.color && fallback.color !== before.color) {
     state.color = fallback.color;
     setFact(state, 'color', fallback.color, 'PROPOSED', 'CUSTOMER');
@@ -454,7 +472,7 @@ export function applySalesTurnUnderstanding(
     setFact(state, 'size', fallback.size, 'PROPOSED', 'CUSTOMER');
   }
 
-  const currentSelection = [state.model, state.variant, state.color, state.size].filter(Boolean).join('|');
+  const currentSelection = [state.model, state.storage, state.variant, state.color, state.size].filter(Boolean).join('|');
   if (previousSelection !== currentSelection) clearPriceFacts(state);
 
   const quantity = finitePositive(understanding.quantity) ?? (
@@ -487,13 +505,40 @@ export function applySalesTurnUnderstanding(
   return state;
 }
 
+export function salesCatalogLookupScopeForUnderstanding(
+  state: UniversalSalesState | undefined,
+  understanding: SalesTurnUnderstanding | undefined,
+): SalesCatalogScope {
+  const value = coerceUniversalSalesState(state);
+  let scope = understanding?.catalogScope ?? 'SELECTION';
+  if (scope === 'NONE') return 'NONE';
+
+  // If the customer previously selected an unavailable subvariant and now says
+  // “5 ta olaman / ko‘rsat / boshqasidan”, do not keep querying the rejected
+  // exact variant forever. Broaden only the LOOKUP to the family so the model
+  // can offer real alternatives. The unavailable selection stays in state
+  // until the customer explicitly accepts a replacement, so we never silently
+  // substitute 1L for 1.5L or black for red.
+  const introducedNewSelection = Boolean(
+    understanding?.model || understanding?.storage || understanding?.variant || understanding?.color || understanding?.size,
+  );
+  const hasUnavailableSpecific = (['color', 'storage', 'size', 'variant', 'model'] as const).some(
+    key => value.factStatus?.[key]?.status === 'UNAVAILABLE',
+  );
+  if (hasUnavailableSpecific && !introducedNewSelection
+    && ['QUANTITY', 'ORDER', 'CATALOG_OPTIONS', 'ACKNOWLEDGEMENT'].includes(understanding?.intent ?? '')) {
+    scope = 'FAMILY';
+  }
+  return scope;
+}
+
 export function salesCatalogLookupQueryForUnderstanding(
   state: UniversalSalesState | undefined,
   understanding: SalesTurnUnderstanding | undefined,
   currentText: string,
 ): string | undefined {
   const value = coerceUniversalSalesState(state);
-  const scope = understanding?.catalogScope ?? 'SELECTION';
+  const scope = salesCatalogLookupScopeForUnderstanding(value, understanding);
   if (scope === 'NONE') return undefined;
   if (scope === 'FAMILY') {
     return (value.productFamily || value.product || bitoInventorySearchTerm(normalizeSalesTextForUnderstanding(currentText)) || undefined)?.trim();
@@ -524,7 +569,7 @@ export function salesCatalogLookupQuery(state: UniversalSalesState | undefined, 
   if (!value.product) return direct;
 
   const parts: string[] = [value.product];
-  for (const extra of [value.model, value.variant, value.color, value.size]) {
+  for (const extra of [value.model, value.storage, value.variant, value.color, value.size]) {
     if (!extra) continue;
     const base = canonicalComparable(parts.join(' '));
     const candidate = canonicalComparable(extra);
@@ -536,6 +581,7 @@ export function salesCatalogLookupQuery(state: UniversalSalesState | undefined, 
 export function reconcileUniversalSalesStateFromInventory(
   current: UniversalSalesState | undefined,
   inventoryPayload: unknown,
+  scope: SalesCatalogScope = 'SELECTION',
 ): UniversalSalesState {
   const state = coerceUniversalSalesState(current);
   const snapshot = findInventorySnapshot(inventoryPayload);
@@ -545,7 +591,12 @@ export function reconcileUniversalSalesStateFromInventory(
   const checkedAt = new Date().toISOString();
 
   if (status === 'IN_STOCK') {
-    for (const key of ['product', 'productFamily', 'variant', 'model', 'size', 'color'] as const) {
+    const verifiedKeys: SalesFactKey[] = scope === 'FAMILY'
+      ? ['productFamily', 'product']
+      : scope === 'PRODUCT'
+        ? ['productFamily', 'product', 'model']
+        : ['product', 'productFamily', 'variant', 'model', 'storage', 'size', 'color'];
+    for (const key of verifiedKeys) {
       const value = state[key];
       if (typeof value === 'string' && value.trim()) setFact(state, key, value, 'VERIFIED', 'BITO', checkedAt);
     }
@@ -553,6 +604,13 @@ export function reconcileUniversalSalesStateFromInventory(
     const publicPrices = [...new Set(items
       .map(item => item.price)
       .filter((value): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0))];
+
+    // A family browse (“iPhone bormi?”, alternatives after an unavailable
+    // 1.5L) is not an accepted concrete selection. Never attach an arbitrary
+    // family price to the active order or mark an unavailable subvariant as
+    // verified merely because some sibling variant exists.
+    if (scope === 'FAMILY') return state;
+
     // Never choose an arbitrary price when a query still resolves to several
     // real variants (for example storage/color variants of the same phone).
     // A deterministic unit price is safe only for one row or one common price.
@@ -568,7 +626,7 @@ export function reconcileUniversalSalesStateFromInventory(
     return state;
   }
 
-  const specific = (['color', 'size', 'variant', 'model'] as const).find(key => {
+  const specific = (['color', 'storage', 'size', 'variant', 'model'] as const).find(key => {
     const value = state[key];
     return typeof value === 'string' && value.trim().length > 0;
   });
@@ -656,6 +714,7 @@ export function salesStatePrompt(state: UniversalSalesState | undefined): string
   if (value.productFamily) known.push(`mahsulot_oilasi=${value.productFamily}`);
   if (value.variant) known.push(`variant=${value.variant}`);
   if (value.model) known.push(`model=${value.model}`);
+  if (value.storage) known.push(`xotira=${value.storage}`);
   if (value.color) known.push(`rang=${value.color}`);
   if (value.size) known.push(`o'lcham=${value.size}`);
   if (value.quantity) known.push(`miqdor=${value.quantity}`);
@@ -686,6 +745,7 @@ export function salesLookupQuery(state: UniversalSalesState | undefined, current
     value.product ? `product ${value.product}` : '',
     value.productFamily ? `family ${value.productFamily}` : '',
     value.model ? `model ${value.model}` : '',
+    value.storage ? `storage ${value.storage}` : '',
     value.variant ? `variant ${value.variant}` : '',
     value.color ? `color ${value.color}` : '',
     value.size ? `size ${value.size}` : '',
@@ -737,11 +797,11 @@ export function customerSafeSalesAnswer(answer: string, state: UniversalSalesSta
 export function likelyNeedsProductLookup(state: UniversalSalesState | undefined, currentText: string): boolean {
   const value = coerceUniversalSalesState(state);
   const normalized = normalizeSalesTextForUnderstanding(currentText);
-  const explicitProductNeed = /\b(?:bormi|bor|mavjud|narx|price|qoldiq|stock|variant|model|rang|hajm|litr|ltr|arzonroq|qimmat|maslahat|recommend|chegirma|qancha|nech\s+pul|olaman|bering|qanaqa|qanday|qaysi|цена|налич|остат|дешев|дорог)\b/iu.test(normalized)
+  const explicitProductNeed = /\b(?:bormi|bor|mavjud|narx|price|qoldiq|stock|variant|model|rang|xotira|pamyat|gb|tb|hajm|litr|ltr|arzonroq|qimmat|maslahat|recommend|chegirma|qancha|nech\s+pul|olaman|bering|qanaqa|qanday|qaysi|цена|налич|остат|дешев|дорог)\b/iu.test(normalized)
     || /\b\d+(?:[.,]\d+)?\s*(?:ta|dona|kg|g|litr|ltr|ml|шт)\b/iu.test(normalized);
   if (explicitProductNeed) return true;
   if (!value.product) return false;
-  return /\b(?:qora|oq|qizil|ko['‘’]?k|yashil|xl|xxl|xs|delivery|yetkaz)\b/iu.test(normalized);
+  return /\b(?:qora|oq|qizil|ko['‘’]?k|yashil|xotira|pamyat|gb|tb|xl|xxl|xs|delivery|yetkaz)\b/iu.test(normalized);
 }
 
 function setFact(
@@ -766,13 +826,13 @@ function finitePositive(value: number | undefined): number | undefined {
 }
 
 function clearProductSelectionContext(state: UniversalSalesState): void {
-  for (const key of ['product', 'productFamily', 'variant', 'model', 'color', 'size'] as const) delete state[key];
+  for (const key of ['product', 'productFamily', 'variant', 'model', 'storage', 'color', 'size'] as const) delete state[key];
   delete state.quantity;
   delete state.budget;
   clearPriceFacts(state);
   if (state.factStatus) {
     const next = { ...state.factStatus };
-    for (const key of ['product', 'productFamily', 'variant', 'model', 'color', 'size'] as const) delete next[key];
+    for (const key of ['product', 'productFamily', 'variant', 'model', 'storage', 'color', 'size'] as const) delete next[key];
     state.factStatus = next;
   }
 }
@@ -780,7 +840,7 @@ function clearProductSelectionContext(state: UniversalSalesState): void {
 function clearUnavailableSelectionFacts(state: UniversalSalesState): void {
   if (!state.factStatus) return;
   const next = { ...state.factStatus };
-  for (const key of ['color', 'size', 'variant', 'model'] as const) {
+  for (const key of ['color', 'storage', 'size', 'variant', 'model'] as const) {
     const fact = next[key];
     if (!fact || fact.status !== 'UNAVAILABLE') continue;
     if (state[key] && canonicalComparable(String(state[key])) === canonicalComparable(fact.value)) delete state[key];
@@ -800,25 +860,25 @@ function roundMoney(value: number): number {
 }
 
 function clearDependentCatalogFacts(state: UniversalSalesState): void {
-  for (const key of ['variant', 'model', 'color', 'size'] as const) delete state[key];
+  for (const key of ['variant', 'model', 'storage', 'color', 'size'] as const) delete state[key];
   if (state.factStatus) {
     const next = { ...state.factStatus };
-    for (const key of ['variant', 'model', 'color', 'size'] as const) delete next[key];
+    for (const key of ['variant', 'model', 'storage', 'color', 'size'] as const) delete next[key];
     state.factStatus = next;
   }
 }
 
 function clearModelDependentFacts(state: UniversalSalesState): void {
-  for (const key of ['color', 'size'] as const) delete state[key];
+  for (const key of ['storage', 'color', 'size'] as const) delete state[key];
   if (state.factStatus) {
     const next = { ...state.factStatus };
-    for (const key of ['color', 'size'] as const) delete next[key];
+    for (const key of ['storage', 'color', 'size'] as const) delete next[key];
     state.factStatus = next;
   }
 }
 
 function getMostSpecificCatalogFact(state: UniversalSalesState): SalesFact | undefined {
-  for (const key of ['color', 'size', 'variant', 'model', 'product'] as const) {
+  for (const key of ['color', 'storage', 'size', 'variant', 'model', 'product'] as const) {
     const fact = state.factStatus?.[key];
     if (fact) return fact;
   }
@@ -909,6 +969,12 @@ function extractVolume(text: string): string | undefined {
   if (!match) return undefined;
   const amount = match[1].replace(',', '.');
   return /ml/i.test(match[2]) ? `${amount} ml` : `${amount}L`;
+}
+
+function extractStorage(text: string): string | undefined {
+  const match = text.match(/\b(\d{1,4})\s*(gb|tb)\b/iu);
+  if (!match) return undefined;
+  return `${Number(match[1])}${match[2].toUpperCase()}`;
 }
 
 function extractSize(text: string): string | undefined {

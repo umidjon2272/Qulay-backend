@@ -10,6 +10,7 @@ export type SalesTurnHandle = {
 };
 
 const queues = new Map<string, Promise<void>>();
+const reservationQueues = new Map<string, Promise<void>>();
 const generations = new Map<string, { value: number; touchedAt: number }>();
 const fallbackReceipts = new Map<string, number>();
 const textFragments = new Map<string, { items: string[]; touchedAt: number }>();
@@ -45,26 +46,49 @@ export async function reserveSalesInboundTurn(
   peerId: string,
   messageId: string,
 ): Promise<SalesTurnHandle | null> {
-  const receiptKey = `${channel}:${userId}:${peerId}:${messageId}`;
-  try {
-    await prisma.salesInboundReceipt.create({
-      data: { channel, userId, peerId: peerId.slice(0, 200), messageId: messageId.slice(0, 200) },
-    });
-  } catch (error) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') return null;
-    if (!isSchemaLagError(error)) throw error;
-    if (fallbackReceipts.has(receiptKey)) return null;
-    fallbackReceipts.set(receiptKey, Date.now());
-  }
-
   cleanupEphemeral();
   const key = `${channel}:${userId}:${peerId}`;
-  const generation = (generations.get(key)?.value ?? 0) + 1;
-  generations.set(key, { value: generation, touchedAt: Date.now() });
-  // We deliberately do not abort older turns. A human can send the next
-  // message while the seller is thinking; both replies still need to arrive in
-  // order. Staleness is handled by sequential execution and DB receipts.
-  return { key, generation, signal: new AbortController().signal };
+  const receiptKey = `${key}:${messageId}`;
+
+  // Listener/webhook callbacks can arrive almost simultaneously. Previously
+  // each callback awaited its DB receipt independently, so a later Telegram
+  // message could finish the INSERT first, enter the processing queue first,
+  // advance lastInboundMessageId and make the earlier (valid) message look
+  // stale. Serialize receipt reservation per customer chat before assigning a
+  // generation. This preserves ingress order while DB uniqueness still gives
+  // cross-process idempotency.
+  const previousReservation = reservationQueues.get(key) ?? Promise.resolve();
+  let releaseReservation: (() => void) | undefined;
+  const reservationTail = new Promise<void>(resolve => { releaseReservation = resolve; });
+  reservationQueues.set(key, previousReservation.catch(() => undefined).then(() => reservationTail));
+  await previousReservation.catch(() => undefined);
+
+  try {
+    try {
+      await prisma.salesInboundReceipt.create({
+        data: { channel, userId, peerId: peerId.slice(0, 200), messageId: messageId.slice(0, 200) },
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') return null;
+      if (!isSchemaLagError(error)) throw error;
+      if (fallbackReceipts.has(receiptKey)) return null;
+      fallbackReceipts.set(receiptKey, Date.now());
+    }
+
+    const generation = (generations.get(key)?.value ?? 0) + 1;
+    generations.set(key, { value: generation, touchedAt: Date.now() });
+    // We deliberately do not abort older complete turns. A human can send the
+    // next message while the seller is thinking; both replies still need to
+    // arrive in order. Generations are used only to hand incomplete fragments
+    // to the newest turn.
+    return { key, generation, signal: new AbortController().signal };
+  } finally {
+    releaseReservation?.();
+    const queued = reservationQueues.get(key);
+    if (queued) void queued.finally(() => {
+      if (reservationQueues.get(key) === queued) reservationQueues.delete(key);
+    });
+  }
 }
 
 /**

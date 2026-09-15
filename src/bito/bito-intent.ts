@@ -127,7 +127,7 @@ export function bitoInventorySearchTerm(text: string): string | undefined {
     'sizda', 'sizlarda', 'siz', 'bizga', 'menga', 'kerak', 'kere', 'olmoqch', 'olaman', 'olsam', 'olsak', 'olsa', 'xohlay', 'hohlay',
     'narx', 'price', 'цена', 'qancha', 'nechta', 'necha', 'bor', 'mavjud', 'qolgan', 'qolmagan', 'tugagan', 'korsat',
     'chiqar', 'ayt', 'top', 'qidir', 'izla', 'tekshir', 'korchi', 'kurch', 'qani', 'ekan', 'hamma', 'barcha', 'toliq', 'jami', 'dona',
-    'kg', 'litr', 'litre', 'ltr', 'ml', 'gramm', 'ta', 'available', 'show', 'list', 'find', 'how', 'many', 'есть', 'сколько',
+    'kg', 'litr', 'litre', 'ltr', 'ml', 'gramm', 'ta', 'xotira', 'pamyat', 'memory', 'storage', 'rang', 'rangi', 'rangidan', 'available', 'show', 'list', 'find', 'how', 'many', 'есть', 'сколько',
     'покаж', 'найд', 'товар', 'остат', 'склад',
   ];
   const quantityUnits = new Set(['ta', 'tasini', 'dona', 'kg', 'g', 'gramm', 'litr', 'litre', 'ltr', 'ml', 'шт']);

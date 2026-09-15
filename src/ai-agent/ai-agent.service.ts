@@ -23,6 +23,7 @@ import {
   normalizeSalesTextForUnderstanding,
   reconcileUniversalSalesStateFromInventory,
   salesCatalogLookupQueryForUnderstanding,
+  salesCatalogLookupScopeForUnderstanding,
   salesLookupQuery,
   salesStatePrompt,
   salesTurnUnderstandingPrompt,
@@ -108,14 +109,16 @@ export class AiAgentService {
       this.prisma.user.findUnique({ where: { id: userId }, select: { firstName: true, lastName: true, timezone: true, language: true, memoryEnabled: true } }),
     ]);
     if (!user) throw new NotFoundException('Foydalanuvchi topilmadi');
+    let learnedBusinessProfileFields: string[] = [];
     if (!externalSales) {
       const profilePatch = extractBusinessSalesProfilePatch(dto.message);
       if (Object.keys(profilePatch).length) {
-        await this.prisma.businessSalesProfile.upsert({
+        const saved = await this.prisma.businessSalesProfile.upsert({
           where: { userId },
           create: { userId, ...profilePatch },
           update: profilePatch,
-        }).catch(() => undefined);
+        }).then(() => true).catch(() => false);
+        if (saved) learnedBusinessProfileFields = Object.keys(profilePatch);
       }
     }
     const conversation = await this.resolveConversation(userId, dto.conversationId, dto.message, preferences?.saveHistory !== false);
@@ -176,6 +179,7 @@ export class AiAgentService {
         salesUnderstanding = await this.understandExternalSalesTurn(
           userId, dto.message, persistentSalesState, context?.newSalesEpoch ? [] : history, signal,
         );
+        salesUnderstanding = this.guardExternalSalesUnderstanding(persistentSalesState, dto.message, salesUnderstanding);
       } catch {
         salesUnderstanding = this.fallbackExternalSalesUnderstanding(persistentSalesState, dto.message);
       }
@@ -264,7 +268,10 @@ export class AiAgentService {
     const continuingSalesConversation = externalSales && context?.newSalesEpoch !== true && history.some(item => item.role === MessageRole.ASSISTANT);
     const baseSystemPrompt = externalSales
       ? this.externalSalesSystemPrompt(user, context, salesPlaybookRules, businessSalesProfile, salesUnderstanding, continuingSalesConversation)
-      : this.systemPrompt(user, user.memoryEnabled ? memories : [], pending);
+      : this.systemPrompt(user, user.memoryEnabled ? memories : [], pending)
+        + (learnedBusinessProfileFields.length
+          ? `\n\nBUSINESS SALES PROFILE UPDATE: The backend has successfully saved these customer-facing business fields from the user's current message: ${learnedBusinessProfileFields.join(', ')}. Acknowledge this briefly and naturally when relevant. This is separate from personal memory and Sales Playbook.`
+          : '');
     // When the semantic brain detects a real product-family switch, old dialog
     // was useful for UNDERSTANDING the switch but should not be fed back into
     // the response model as active purchase facts. Keep only the current user
@@ -318,7 +325,7 @@ export class AiAgentService {
     // Inventory questions are deterministic and latency-sensitive. Resolve the
     // normalized Bito inventory snapshot before the model answers so the user
     // never sees a read-confirmation card or partial product-id-only page.
-    if (bitoRequested && !bitoModelTools.length && bitoLoadError) {
+    if (bitoRequested && !inventoryRequested && !bitoModelTools.length && bitoLoadError) {
       const answer = externalSales
         ? (user.language === 'ru' ? 'Сейчас точные данные по этому товару временно недоступны. Могу предложить ближайшие варианты.' : 'Bu mahsulot bo‘yicha hozir ishonchli javob bera olmayman. Xohlasangiz, boshqa mavjud variantlarni ko‘rsataman.')
         : this.safeToolFailure(BITO_INVENTORY_TOOL_NAME, bitoLoadError, user.language).message;
@@ -335,6 +342,9 @@ export class AiAgentService {
       // Customer follow-ups resolve against the persistent product family
       // before the Bito call. This prevents “1.5 litr”, “qorasi” or “5 ta”
       // from silently jumping back to an older/default variant.
+      const salesLookupScope = externalSales
+        ? salesCatalogLookupScopeForUnderstanding(persistentSalesState, salesUnderstanding)
+        : undefined;
       const search = externalSales
         ? salesCatalogLookupQueryForUnderstanding(persistentSalesState, salesUnderstanding, normalizedSalesText)
         : bitoInventorySearchTerm(dto.message);
@@ -350,7 +360,7 @@ export class AiAgentService {
         );
         if (result.status !== 'success') throw new Error('Bito inventory read unexpectedly required confirmation');
         if (externalSales && persistentSalesState) {
-          const reconciled = reconcileUniversalSalesStateFromInventory(persistentSalesState, result.data);
+          const reconciled = reconcileUniversalSalesStateFromInventory(persistentSalesState, result.data, salesLookupScope ?? 'SELECTION');
           Object.assign(persistentSalesState, reconciled);
           // The base prompt was created before the real catalog read. Refresh
           // it with the verified selection/price truth so the response model
@@ -672,6 +682,7 @@ export class AiAgentService {
             product: { type: 'string' },
             productFamily: { type: 'string' },
             model: { type: 'string' },
+            storage: { type: 'string', description: 'Phone/device storage such as 64GB, 128GB, 256GB or 1TB when explicitly selected.' },
             variant: { type: 'string' },
             color: { type: 'string' },
             size: { type: 'string' },
@@ -682,7 +693,7 @@ export class AiAgentService {
             phone: { type: 'string' },
             paymentMethod: { type: 'string', enum: ['CASH', 'CARD', 'CLICK', 'PAYME', 'TRANSFER', 'OTHER'] },
             timing: { type: 'string' },
-            businessFactRequest: { type: 'string', enum: ['NONE', 'STORE_ADDRESS', 'BUSINESS_HOURS', 'PUBLIC_PHONE', 'DELIVERY_POLICY', 'PAYMENT_METHODS'] },
+            businessFactRequest: { type: 'string', enum: ['NONE', 'STORE_ADDRESS', 'BUSINESS_HOURS', 'PUBLIC_PHONE', 'DELIVERY_POLICY', 'PAYMENT_METHODS', 'PAYMENT_DETAILS'] },
             answerGoal: { type: 'string' },
           },
           required: ['intent', 'topicSwitch', 'followUp', 'needsCatalogLookup', 'catalogScope', 'clearUnavailableSelection', 'businessFactRequest', 'answerGoal'],
@@ -690,7 +701,13 @@ export class AiAgentService {
       },
     };
 
-    const prompt = `You are the semantic brain of a professional sales agent. Read the WHOLE conversation, the previous structured state and the current customer message. Call understand_sales_turn exactly once.\n\nRULES:\n- Understand Uzbek/Russian/English slang, typos and short references by meaning, like a human seller.\n- Do NOT answer the customer and do NOT invent catalog, price or stock facts. Those come from Bito later.\n- Output product/model/variant/color/size only when the CURRENT message explicitly introduces, changes or clearly resolves that selection from context. Do not repeat old fields just because they are in state.\n- topicSwitch=true only when the customer clearly changes to a different product/product family. A topic switch must not carry the old quantity/model/color/price into the new product.\n- “yana qaysilari bor?”, “boshqalari-chi?”, “mayli ko‘rsating” are contextual follow-ups, not new topics. For available variants use intent=CATALOG_OPTIONS and catalogScope=FAMILY or PRODUCT as appropriate.\n- “13 pro bormi?” after iPhone means the current iPhone family + model 13 Pro. “1.5 ltr bormi?” after Coca-Cola means the current Coca-Cola + 1.5L variant.\n- “2 ta olsam qancha?” means quantity=2 and PRICE for the current selected product; do not change product.\n- “qizil rangidan bormi?” means current product/model + color=qizil and AVAILABILITY.\n- “Alo sotuvchi”, “eshityapsizmi?” are ACKNOWLEDGEMENT with no catalog lookup and no state mutation.\n- If the customer clearly switches to a personal/non-sales topic (“bugun chiqasanmi?”, football/news chatter, friend banter unrelated to buying), use intent=NON_SALES, no catalog lookup. The sales agent must stay silent on that turn.\n- “rahmat”, “keyin yozaman”, “o‘ylab ko‘raman” are SOFT_EXIT when they naturally close/pause the sale; they are not NON_SALES.\n- “manzil qayerda?”, “qayerdansizlar?” are STORE_INFO with businessFactRequest=STORE_ADDRESS; not a product lookup.\n- If the customer accepts an offered alternative after an unavailable color/model/variant (“mayli ko‘rsating”, “boshqasini ko‘rsating”), set clearUnavailableSelection=true so lookup broadens instead of re-querying the rejected unavailable attribute.\n- needsCatalogLookup=true whenever the answer requires real product, variant, price, stock, recommendation, comparison or cheaper-alternative data.\n- catalogScope=FAMILY for “qanaqa iPhonelar bor / yana qaysilari”, SELECTION for exact model/color/size/volume, PRODUCT for a concrete product without a subvariant, NONE when no catalog data is needed.\n- One current message may answer a prior question; infer that naturally from history.\n\nPREVIOUS STATE (customer conversation memory, not ERP truth):\n${JSON.stringify(coerceUniversalSalesState(previousState)).slice(0, 8000)}\n\nRECENT CONVERSATION:\n${chronological || '(no prior turns)'}\n\nCURRENT CUSTOMER MESSAGE:\n${message.slice(0, 2000)}`;
+    const prompt = `You are the semantic brain of a professional sales agent. Read the WHOLE conversation, the previous structured state and the current customer message. Call understand_sales_turn exactly once.\n\nRULES:\n- Understand Uzbek/Russian/English slang, typos and short references by meaning, like a human seller.\n- Do NOT answer the customer and do NOT invent catalog, price or stock facts. Those come from Bito later.\n- Output product/model/storage/variant/color/size only when the CURRENT message explicitly introduces, changes or clearly resolves that selection from context. Do not repeat old fields just because they are in state.
+- Treat phone storage naturally: “64”, “64 gb”, “128gb”, “256 xotira/pamyat” can resolve to storage only when the conversation is clearly about a phone/device variant. Never interpret purchase quantity as storage.\n- topicSwitch=true only when the customer clearly changes to a different product/product family. A topic switch must not carry the old quantity/model/color/price into the new product.\n- “yana qaysilari bor?”, “boshqalari-chi?”, “mayli ko‘rsating” are contextual follow-ups, not new topics. For available variants use intent=CATALOG_OPTIONS and catalogScope=FAMILY or PRODUCT as appropriate.\n- “13 pro bormi?” after iPhone means the current iPhone family + model 13 Pro. “1.5 ltr bormi?” after Coca-Cola means the current Coca-Cola + 1.5L variant.\n- “2 ta olsam qancha?” means quantity=2 and PRICE for the current selected product; do not change product.\n- “qizil rangidan bormi?” means current product/model + color=qizil and AVAILABILITY.
+- “128 gb bormi?” after a phone model means storage=128GB and AVAILABILITY.
+- If the customer names a model but no storage/color and the real catalog can have those variants, verify the model first; the response seller may then ask ONE useful differentiator (usually storage, then color) rather than inventing a variant.\n- “Alo sotuvchi”, “eshityapsizmi?” are ACKNOWLEDGEMENT with no catalog lookup and no state mutation.\n- If the customer clearly switches to a personal/non-sales topic (“bugun chiqasanmi?”, football/news chatter, friend banter unrelated to buying), use intent=NON_SALES, no catalog lookup. The sales agent must stay silent on that turn.\n- “rahmat”, “keyin yozaman”, “o‘ylab ko‘raman” are SOFT_EXIT when they naturally close/pause the sale; they are not NON_SALES.\n- “manzil qayerda?”, “qayerdansizlar?” are STORE_INFO with businessFactRequest=STORE_ADDRESS; not a product lookup.
+- “olib ketaman, manzilni ayting” is PICKUP with fulfillment=PICKUP and businessFactRequest=STORE_ADDRESS.
+- “dastavka qilasizlarmi?” is DELIVERY with businessFactRequest=DELIVERY_POLICY.
+- “Click qilaman”, “Payme qilaman”, “karta qilaman” are PAYMENT; set paymentMethod and businessFactRequest=PAYMENT_DETAILS so saved public payment instructions can be returned.\n- If the customer accepts an offered alternative after an unavailable color/model/variant (“mayli ko‘rsating”, “boshqasini ko‘rsating”), set clearUnavailableSelection=true so lookup broadens instead of re-querying the rejected unavailable attribute.\n- needsCatalogLookup=true whenever the answer requires real product, variant, price, stock, recommendation, comparison or cheaper-alternative data.\n- catalogScope=FAMILY for “qanaqa iPhonelar bor / yana qaysilari”, SELECTION for exact model/color/size/volume, PRODUCT for a concrete product without a subvariant, NONE when no catalog data is needed.\n- One current message may answer a prior question; infer that naturally from history.\n\nPREVIOUS STATE (customer conversation memory, not ERP truth):\n${JSON.stringify(coerceUniversalSalesState(previousState)).slice(0, 8000)}\n\nRECENT CONVERSATION:\n${chronological || '(no prior turns)'}\n\nCURRENT CUSTOMER MESSAGE:\n${message.slice(0, 2000)}`;
 
     const result = await this.provider.complete(
       [{ role: 'system', content: prompt }, { role: 'user', content: message }],
@@ -717,7 +734,7 @@ export class AiAgentService {
     const source = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
     const intents = new Set(['AVAILABILITY', 'PRICE', 'EXACT_STOCK', 'PRICE_OBJECTION', 'CHEAPER_ALTERNATIVE', 'ADVICE', 'VARIANT', 'QUANTITY', 'DELIVERY', 'PICKUP', 'ADDRESS', 'PHONE', 'PAYMENT', 'ORDER', 'CATALOG_OPTIONS', 'COMPARISON', 'STORE_INFO', 'ACKNOWLEDGEMENT', 'SOFT_EXIT', 'GREETING', 'NON_SALES', 'GENERAL']);
     const scopes = new Set(['NONE', 'FAMILY', 'PRODUCT', 'SELECTION']);
-    const businessFacts = new Set(['NONE', 'STORE_ADDRESS', 'BUSINESS_HOURS', 'PUBLIC_PHONE', 'DELIVERY_POLICY', 'PAYMENT_METHODS']);
+    const businessFacts = new Set(['NONE', 'STORE_ADDRESS', 'BUSINESS_HOURS', 'PUBLIC_PHONE', 'DELIVERY_POLICY', 'PAYMENT_METHODS', 'PAYMENT_DETAILS']);
     const clean = (key: string, max = 500) => typeof source[key] === 'string' && source[key].trim() ? source[key].trim().slice(0, max) : undefined;
     const quantity = typeof source.quantity === 'number' && Number.isFinite(source.quantity) && source.quantity > 0 ? Math.min(source.quantity, 1_000_000) : undefined;
     const fulfillment = source.fulfillment === 'DELIVERY' || source.fulfillment === 'PICKUP' ? source.fulfillment : undefined;
@@ -748,6 +765,7 @@ export class AiAgentService {
       ...(product ? { product } : {}),
       ...(productFamily ? { productFamily } : {}),
       ...(clean('model', 160) ? { model: clean('model', 160) } : {}),
+      ...(clean('storage', 80) ? { storage: clean('storage', 80) } : {}),
       ...(clean('variant', 160) ? { variant: clean('variant', 160) } : {}),
       ...(clean('color', 80) ? { color: clean('color', 80) } : {}),
       ...(clean('size', 80) ? { size: clean('size', 80) } : {}),
@@ -763,6 +781,72 @@ export class AiAgentService {
     };
   }
 
+  private guardExternalSalesUnderstanding(
+    previousState: UniversalSalesState,
+    message: string,
+    semantic: SalesTurnUnderstanding,
+  ): SalesTurnUnderstanding {
+    const previous = coerceUniversalSalesState(previousState);
+    const normalized = normalizeSalesTextForUnderstanding(message);
+    const hasSalesContext = Boolean(
+      previous.product || previous.productFamily || previous.model || previous.variant || previous.storage || previous.color
+      || previous.quantity || previous.fulfillment || previous.address || previous.phone || previous.paymentMethod,
+    );
+
+    // Broad family availability is a sales-conversation question, not a request
+    // to auto-select whichever concrete row Bito happens to return first. This
+    // keeps “ayfon bormi?” natural (“Ha, iPhone bor. Qaysi model kerak?”) while
+    // exact model/storage/color questions still resolve against real inventory.
+    const directProduct = bitoInventorySearchTerm(normalized)?.trim();
+    const broadFamilyAvailability = semantic.intent === 'AVAILABILITY'
+      && semantic.needsCatalogLookup
+      && Boolean(directProduct)
+      && !/\d/u.test(directProduct ?? '')
+      && !semantic.model && !semantic.storage && !semantic.variant && !semantic.color && !semantic.size;
+    if (broadFamilyAvailability) {
+      semantic = {
+        ...semantic,
+        catalogScope: 'FAMILY',
+        answerGoal: 'Mahsulot oilasi mavjudligini tabiiy tasdiqlash; aniq model/variantni o‘zboshimchalik bilan tanlamaslik.',
+      };
+    }
+
+    if (!hasSalesContext) return semantic;
+
+    // The model is the primary NLU brain, but obvious sales continuations must
+    // never be turned into NON_SALES/GENERAL and silently dropped. This is a
+    // narrow continuity guard, not a hard scripted sales flow.
+    const obviousSalesContinuation = Boolean(
+      /^(?:alo\s+sotuvchi|alo|sotuvchi|eshityapsizmi|eshitasizmi)[!.?\s]*$/iu.test(normalized)
+      || /(?:yana\s+(?:qaysi\p{L}*|qanaqa|qanday)|boshqa\p{L}*|ko['‘’]?rsat|kursat)/iu.test(normalized)
+      || /\b(?:narx|qancha|nech\s+pul|qimmat|arzonroq|bormi|mavjud|model|variant|rang|qizil|qora|oq|xotira|pamyat|gb|tb|litr|ltr|dona|ta|olaman|olsam|bering)\b/iu.test(normalized)
+      || /\b(?:delivery|dastavka|dostavka|yetkaz|pickup|olib\s+ket|manzil|qayerda|click|payme|karta|naqd|transfer|o['‘’]?tkazma)\b/iu.test(normalized)
+      || /^\s*\d+(?:[.,]\d+)?\s*(?:ta|dona|gb|tb|l|ltr|litr|ml)?(?:\s+.*)?$/iu.test(normalized),
+    );
+    if (!obviousSalesContinuation) return semantic;
+
+    const fallback = this.fallbackExternalSalesUnderstanding(previous, message);
+    const semanticWeak = semantic.intent === 'NON_SALES' || semantic.intent === 'GENERAL' || semantic.intent === 'GREETING';
+    if (semanticWeak && fallback.intent !== 'GENERAL' && fallback.intent !== 'NON_SALES') return fallback;
+
+    // Even when the intent is usable, protect critical business-fact routing
+    // and obvious lookup requirements if the semantic call omitted them.
+    return {
+      ...semantic,
+      followUp: semantic.topicSwitch ? false : true,
+      needsCatalogLookup: semantic.needsCatalogLookup || fallback.needsCatalogLookup,
+      catalogScope: semantic.needsCatalogLookup || fallback.needsCatalogLookup
+        ? (semantic.catalogScope !== 'NONE' ? semantic.catalogScope : fallback.catalogScope)
+        : 'NONE',
+      businessFactRequest: semantic.businessFactRequest !== 'NONE' ? semantic.businessFactRequest : fallback.businessFactRequest,
+      ...(semantic.paymentMethod ? {} : fallback.paymentMethod ? { paymentMethod: fallback.paymentMethod } : {}),
+      ...(semantic.fulfillment ? {} : fallback.fulfillment ? { fulfillment: fallback.fulfillment } : {}),
+      ...(semantic.quantity !== undefined ? {} : fallback.quantity !== undefined ? { quantity: fallback.quantity } : {}),
+      ...(semantic.storage ? {} : fallback.storage ? { storage: fallback.storage } : {}),
+      ...(semantic.color ? {} : fallback.color ? { color: fallback.color } : {}),
+    };
+  }
+
   private fallbackExternalSalesUnderstanding(previousState: UniversalSalesState, message: string): SalesTurnUnderstanding {
     const previous = coerceUniversalSalesState(previousState);
     const next = updateUniversalSalesState(previous, message);
@@ -770,6 +854,7 @@ export class AiAgentService {
     const product = productChanged ? next.product : undefined;
     const productFamily = productChanged ? next.productFamily : undefined;
     const modelChanged = next.model !== previous.model ? next.model : undefined;
+    const storageChanged = next.storage !== previous.storage ? next.storage : undefined;
     const variantChanged = next.variant !== previous.variant ? next.variant : undefined;
     const colorChanged = next.color !== previous.color ? next.color : undefined;
     const sizeChanged = next.size !== previous.size ? next.size : undefined;
@@ -783,8 +868,24 @@ export class AiAgentService {
       && Boolean(previous.product || next.product);
     const acceptingAlternative = /^(?:mayli|xo['‘’]?p|hop|ha)?\s*(?:ko['‘’]?rsat(?:ing|chi)?|kursat(?:in|ing|chi)?|boshqasini\s+ko['‘’]?rsat(?:ing|chi)?)[!.?\s]*$/iu.test(normalized);
     const storeInfo = /\b(?:manzil|qayerda|qayerdansiz|ish\s+vaqt|telefon\s+raqam)\b/iu.test(normalized);
+    const storeAddressRequest = /\b(?:manzil|qayerda|qayerdansiz)\b/iu.test(normalized);
+    const businessHoursRequest = /\b(?:ish\s+vaqt|nechchigacha|soat\s+nechi)\b/iu.test(normalized);
+    const publicPhoneRequest = /\b(?:telefon\s+raqam|nomer|raqamingiz)\b/iu.test(normalized);
+    const paymentDetails = /\b(?:click|payme|karta|card|transfer|o['‘’]?tkazma)\b/iu.test(normalized) && /\b(?:qil|qilaman|tolay|to['‘’]?lov|rekvizit|raqam)\b/iu.test(normalized);
+    const deliveryPolicy = next.lastIntent === 'DELIVERY' || /\b(?:delivery|dastavka|dostavka|yetkaz)\p{L}*/iu.test(normalized);
     const resolvedIntent: SalesTurnUnderstanding['intent'] = obviousNonSales ? 'NON_SALES' : acknowledgement ? 'ACKNOWLEDGEMENT' : storeInfo ? 'STORE_INFO' : catalogOptions ? 'CATALOG_OPTIONS' : baseIntent;
-    const lookupNeeded = !obviousNonSales && !acknowledgement && !storeInfo && (catalogOptions || likelyNeedsProductLookup(next, message));
+    const lookupNeeded = !obviousNonSales && !acknowledgement && !storeInfo && !deliveryPolicy && !paymentDetails && (catalogOptions || likelyNeedsProductLookup(next, message));
+    const businessFactRequest: SalesTurnUnderstanding['businessFactRequest'] = storeAddressRequest
+      ? 'STORE_ADDRESS'
+      : businessHoursRequest
+        ? 'BUSINESS_HOURS'
+        : publicPhoneRequest
+          ? 'PUBLIC_PHONE'
+          : deliveryPolicy
+            ? 'DELIVERY_POLICY'
+            : paymentDetails
+              ? 'PAYMENT_DETAILS'
+              : 'NONE';
     return {
       intent: resolvedIntent,
       topicSwitch: productChanged && Boolean(previous.product),
@@ -795,6 +896,7 @@ export class AiAgentService {
       ...(product ? { product } : {}),
       ...(productFamily ? { productFamily } : {}),
       ...(modelChanged ? { model: modelChanged } : {}),
+      ...(storageChanged ? { storage: storageChanged } : {}),
       ...(variantChanged ? { variant: variantChanged } : {}),
       ...(colorChanged ? { color: colorChanged } : {}),
       ...(sizeChanged ? { size: sizeChanged } : {}),
@@ -805,7 +907,7 @@ export class AiAgentService {
       ...(next.phone !== previous.phone && next.phone ? { phone: next.phone } : {}),
       ...(next.paymentMethod !== previous.paymentMethod && next.paymentMethod ? { paymentMethod: next.paymentMethod } : {}),
       ...(next.timing !== previous.timing && next.timing ? { timing: next.timing } : {}),
-      businessFactRequest: storeInfo ? 'STORE_ADDRESS' : 'NONE',
+      businessFactRequest,
       answerGoal: obviousNonSales
         ? 'Bu sotuvga aloqasiz shaxsiy mavzu; sales agent javob bermaydi.'
         : acknowledgement
@@ -906,14 +1008,20 @@ TABIIY SOTUV QOIDALARI:
 - Mijoz “qaysi hajm/model/rang bor?”, “yana qaysilari bor?”, “boshqalarini ko‘rsat” desa real topilgan variantlarni ayting. “Qaysi biri kerakligini ayting, keyin tekshiraman” demang, agar tool orqali avval o‘zingiz tekshira olsangiz.
 - “Manzil qayerda?”, “ish vaqti nechchigacha?”, “qaysi to‘lovlar bor?” kabi savollarda BIZNES SALES PROFILI source-of-truth; mahsulot qidiruvini keraksiz chaqirmang.
 - Mijoz “1.5 litr”, “qora rangchi?”, “5 ta”, “1 dona kerak”, “eng arzonini”, “yetkazib berasizmi?” kabi qisqa follow-up yozsa, OLDINGI SUHBAT KONTEKSTINI saqlang. Mahsulotni boshidan qayta so‘ramang.
-- Mijoz miqdorni aytsa, shu tanlangan variantga bog‘lang. Narx ma’lum bo‘lsa jami summani hisoblang; narxni uydirmang.
+- Mijoz miqdorni aytsa, shu tanlangan AVAILABLE variantga bog‘lang. Narx ma’lum bo‘lsa jami summani hisoblang; narxni uydirmang. Agar tanlangan variant avval UNAVAILABLE bo‘lib chiqqan bo‘lsa, “5 ta olaman”ni o‘sha yo‘q variantga buyurtma deb qabul qilmang; real family alternativani ko‘rsatib “5 ta shundan qilaymi?” deb so‘rang.
 - Mijoz “qimmat emasmi?”, “arzonrog‘i bormi?”, “maslahat berasizmi?” desa sotuvchidek yordam bering: avval real alternativalarni/miqdorni/byudjetni tekshiring; o‘zboshimchalik bilan chegirma va’da qilmang. Playbookdagi chegirma qoidalariga amal qiling.
 - Mijoz olib ketishini aytsa, playbookda manzil/ish vaqti bo‘lsa ayting va tabiiy keyingi savolni bering (masalan qachon kelishini). Manzil bo‘lmasa uydirmang.
-- Mijoz yetkazib berishni tanlasa, playbookdagi delivery qoidasiga ko‘ra kerakli minimum ma’lumotni bosqichma-bosqich yig‘ing: manzil, telefon, to‘lov turi va boshqa zarur maydonlar. Bir xabarda 4–5 savol yog‘dirmang.
+- Mijoz yetkazib berishni tanlasa, BIZNES SALES PROFILE’dagi real delivery qoidasini ayting va kerakli minimum ma’lumotni bosqichma-bosqich yig‘ing: manzil, telefon, to‘lov turi. Bir xabarda 4–5 savol yog‘dirmang.
+- Mijoz “olib ketaman, manzilni ayting” desa saqlangan do‘kon manzilini darhol ayting; mavjud bo‘lmasa uydirmang.
+- Mijoz Click/Payme/karta/transferni tanlasa va Business Sales Profile’da aynan shu usul uchun CUSTOMER-PUBLIC payment instruction saqlangan bo‘lsa, o‘sha rekvizitni aynan yuboring. PIN/CVV/OTP/token kabi maxfiy narsalarni hech qachon so‘ramang yoki ko‘rsatmang.
 - Mijoz “olaman/bering” desa variant aniq bo‘lsa qayta model/hajmni so‘ramang. Qolgan bitta eng muhim qadamni so‘rang: miqdor → pickup/delivery → manzil/telefon → to‘lov → yakuniy summary.
 - Mijoz so‘ramagan texnik ERP tafsilotlari, ID, provider nomlari, ichki qoldiq ombor kesimi yoki xom tool ma’lumotini ko‘rsatmang.
 - Mahsulot/variant qoldig‘i tugagan bo‘lsa adabiy va sotuvchiga xos gapiring: masalan “Afsuski, bu variant hozir tugagan. Xohlasangiz, mana bu mavjud variantni ko‘rib chiqishingiz mumkin.” “Tekshirdim”, “tizimda ko‘rinmadi”, “tool topmadi”, “operator tekshiradi” kabi texnik jumlalarni mijozga yozmang.
-- Katalog family so‘rovida (masalan “iPhone bormi?”) real mos variantlar topilsa “yo‘q” demang; 2–4 ta eng mos mavjud variantni qisqa ayting yoki qaysi model qiziqtirishini tabiiy so‘rang. Typo/alias (“ayfon”, “13 por”, “koka kola”) ma’nosini real katalog bilan tekshirib yeching.
+- BROAD FAMILY AVAILABILITY: mijoz faqat “iPhone/ayfon bormi?” kabi umumiy family mavjudligini so‘rasa, bitta tasodifiy model va narxni darrov sotmang. Real family ichida kamida bitta mavjud variant bo‘lsa tabiiy javob: “Ha, iPhone bor 🙂 Qaysi model kerak edi?” kabi bo‘lsin. Faqat mijoz “qanaqa modellari bor / yana qaysilari?” desa real topilgan modellarni 2–4 tagacha sanang.
+- EXACT MODEL: mijoz “14 Pro bormi?” desa aynan 14 Pro’ni tekshiring. Yo‘q bo‘lsa “14 Pro hozir qolmagan” deb aniq ayting va faqat REAL familyAlternatives ichidan 1–3 yaqin variantni taklif qiling. “Ishonchli ayta olmayman” demang, agar tool authoritative NOT_FOUND/OUT_OF_STOCK qaytargan bo‘lsa.
+- MODEL SUBVARIANT: model real topilib, katalogda xotira/rang kabi bir nechta subvariant bo‘lsa va mijoz hali tanlamagan bo‘lsa bitta ajratuvchi savol bering: masalan “Qancha xotira kerak — 128GBmi, 256GBmi?” yoki keyin rang. Katalogda yo‘q xotira/rangni uydirmang.
+- EXACT COLOR/STORAGE: mijoz “qizil rangidan bormi?” yoki “128GB bormi?” desa aynan shu selection’ni tekshiring. Yo‘q bo‘lsa tabiiy “qizil hozir yo‘q” / “128GB hozir qolmagan” deb ayting va tool bergan eng yaqin REAL variantni narxi bilan taklif qiling.
+- Katalog family so‘rovida real mos variantlar topilsa “yo‘q” demang. Typo/alias (“ayfon”, “13 por”, “koka kola”) ma’nosini real katalog bilan tekshirib yeching.
 - Agar real data chaqiruvi xato qilsa, buni “qolmagan” deb talqin qilmang. “Hozir aniq mavjudligini tasdiqlay olmayapman” kabi tabiiy, halol gap ayting va keyingi foydali qadamni taklif qiling.
 - Javob odatda 1–4 qisqa gap. Bir xabarda odatda faqat bitta aniq keyingi savol.
 - Mijozning ohangiga mos tabiiy gapiring. Bir xil shablonni takrorlamang.
@@ -1011,6 +1119,9 @@ XOTIRA:
 Xotira ${user.memoryEnabled ? 'yoqilgan' : 'o‘chirilgan'}.
 User o‘zi aniq aytgan barqaror faktlarni save_memory bilan saqlang: sherigi Akmal, marketologi Sardor, rollar, afzalliklar, uzoq muddatli ish konteksti. Oddiy fakt uchun qayta tasdiq kerak emas. Har shaxs uchun alohida key (akmal.relationship, sardor.role). Avval get_relevant_memories orqali bor-yo‘qligini tekshiring; tuzatishni update_memory bilan yangilang. Kontakt mavjud bo‘lsa haqiqiy contactIdni bog‘lang; topilmasa ism bilan xotira saqlash mumkin. Sirlar, parol, kod, karta rekviziti va taxminiy shaxsiy xususiyatlarni saqlamang. Boshqa odam haqida aytilgan faktni foydalanuvchining o‘zi deb yozmang.
 “Unut” so‘rovini delete_memory bilan tayyorlang. Chatni o‘chirish bilan xotirani o‘chirish boshqa-boshqa. Xotira o‘chirilgan bo‘lsa xotira toollarini ishlatmang yoki saqladim demang.
+
+BUSINESS SALES PROFILE:
+Do‘kon manzili, ish vaqti, public telefon, delivery/pickup, qabul qilinadigan to‘lov usullari va MIJOZGA OCHIQ to‘lov rekvizitlari oddiy personal memory emas — ular Telegram/WhatsApp sales agent ishlatadigan Business Sales Profile’ga saqlanadi. Backend bunday aniq owner-stated faktlarni avtomatik ajratib saqlaydi. Mijozga berish uchun karta/Click/Payme rekviziti aytilsa saqlanishi mumkin, lekin PIN, CVV/CVC, OTP/SMS kod, parol, access token yoki boshqa autentifikatsiya sirini hech qachon saqlangan deb aytmang va ularni so‘ramang.
 
 SOTUV AGENTINI O‘RGATISH / SALES PLAYBOOK:
 Foydalanuvchi “mijoz shunday desa bunday de”, “dastavka desa manzil va telefon so‘ra”, “olib ketaman desa manzilimizni ayt”, “qimmat desa darrov chegirma bermagin”, “sotuv agenti mana bunday sotsin”, “shu qoidani eslab qol” kabi biznes sotuv qoidasi, script, objection handling, pickup/delivery/payment siyosati yoki javob misolini aniq aytsa save_sales_playbook_rule bilan darhol persistent saqlang. Bu oddiy user memory emas; Telegram va WhatsApp sales agent uchun biznes playbook. Qayta tasdiq so‘ramang. Qisqa, barqaror title yarating; instructionda userning ma’nosini to‘liq saqlang. Trigger/response misollari bo‘lsa alohida yozing. Bir xil title bo‘lsa tool mavjud qoidani yangilaydi. Foydalanuvchi “sotuv qoidalarimni ko‘rsat” desa list_sales_playbook_rules ishlating. O‘chirishda avval list qilib real ruleIdni oling, keyin delete_sales_playbook_rule tayyorlang. Parol/token/karta sirlarini playbookka saqlamang.

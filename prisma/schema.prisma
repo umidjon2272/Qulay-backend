@@ -483,6 +483,11 @@ model BusinessSalesProfile {
   deliveryPolicy   String?  @db.Text
   pickupEnabled    Boolean?
   paymentMethods   String[] @default([])
+  cashPaymentNote  String?  @db.Text
+  cardPaymentNote  String?  @db.Text
+  clickPaymentNote String?  @db.Text
+  paymePaymentNote String?  @db.Text
+  transferPaymentNote String? @db.Text
   minimumOrderNote String?  @db.Text
   wholesalePolicy  String?  @db.Text
   discountPolicy   String?  @db.Text
