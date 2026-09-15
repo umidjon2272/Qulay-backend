@@ -110,6 +110,33 @@ describe('BitoToolBridgeService', () => {
     expect(bito.callToolForUser).toHaveBeenCalledWith('u', BITO_INVENTORY_PRIMARY_TOOL, expect.objectContaining({ page: 1, limit: 200, search: 'Cola' }), true);
   });
 
+  it('expands a broad family search even when provider search returns only one matching row', async () => {
+    const allRows = [
+      { product: { name: 'Iphone 13 por', unit: { name: 'dona' } }, quantity: 3, price: 4_800_000 },
+      { product: { name: 'Iphone 14', unit: { name: 'dona' } }, quantity: 2, price: 5_800_000 },
+      { product: { name: 'Iphone 15 Pro Max', unit: { name: 'dona' } }, quantity: 1, price: 12_000_000 },
+      { product: { name: 'Samsung A55', unit: { name: 'dona' } }, quantity: 4, price: 5_000_000 },
+    ];
+    const bito = {
+      listToolsForUser: jest.fn().mockResolvedValue([inventoryTool]),
+      callToolForUser: jest.fn(async (_user: string, _tool: string, input: Record<string, unknown>) => {
+        if (input.search === 'iphone') {
+          return { items: [allRows[0]], meta: { total: 1, page: 1 } };
+        }
+        return { items: allRows, meta: { total: allRows.length, page: 1 } };
+      }),
+    };
+    const service = new BitoToolBridgeService(bito as never, activity(), config);
+    const result = await service.getFullInventorySnapshot('u', { search: 'iphone' });
+    expect(result.items.map(item => item.name)).toEqual(expect.arrayContaining([
+      'Iphone 13 por', 'Iphone 14', 'Iphone 15 Pro Max',
+    ]));
+    expect(result.items.map(item => item.name)).not.toContain('Samsung A55');
+    expect(bito.callToolForUser).toHaveBeenCalledTimes(2);
+    expect(bito.callToolForUser.mock.calls[0][2]).toEqual(expect.objectContaining({ search: 'iphone' }));
+    expect(bito.callToolForUser.mock.calls[1][2]).not.toHaveProperty('search');
+  });
+
   it('finds product families and common aliases instead of falsely saying iPhone is unavailable', async () => {
     const rows = [
       { product: { name: 'Iphone 13 por', unit: { name: 'dona' } }, quantity: 3, price: 4_800_000 },

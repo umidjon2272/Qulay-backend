@@ -9,11 +9,12 @@ import { WhatsAppCryptoService } from './whatsapp-crypto.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { isWhatsAppSalesRelevant, oggOpusDurationSeconds, shouldActivateWhatsAppSalesContext } from './whatsapp-sales-policy';
 import { APP_ERROR_CODES } from '../common/errors/app-error-codes';
-import { coerceUniversalSalesState, customerSafeSalesAnswer, normalizeSalesTextForUnderstanding, updateUniversalSalesState } from '../ai-agent/universal-sales-context';
+import { coerceUniversalSalesState, customerSafeSalesAnswer, normalizeSalesTextForUnderstanding } from '../ai-agent/universal-sales-context';
 import {
   SalesTurnHandle,
   bufferSalesTextFragment,
   consumeSalesTextFragments,
+  isLikelySalesTextFragment,
   reserveSalesInboundTurn,
   runSalesTurnSequential,
   waitForSalesTurnDebounce,
@@ -65,6 +66,7 @@ type WhatsAppWebhook = {
 };
 
 const FOLLOWUP_WINDOW_MS = 60 * 60 * 1000;
+const SOFT_EXIT_WINDOW_MS = 15 * 60 * 1000;
 
 @Injectable()
 export class WhatsAppSalesAgentService {
@@ -259,14 +261,16 @@ export class WhatsAppSalesAgentService {
     }
     if (!turn) return;
     const initialText = this.messageText(message);
-    const canDebounceText = message.type !== 'audio' && Boolean(initialText);
-    if (canDebounceText) bufferSalesTextFragment(turn, initialText);
+    const fragment = message.type !== 'audio' && isLikelySalesTextFragment(initialText);
+    if (fragment) bufferSalesTextFragment(turn, initialText);
     await runSalesTurnSequential(turn, async () => {
       let combinedText: string | undefined;
-      if (canDebounceText) {
-        const ready = await waitForSalesTurnDebounce(turn!, 700);
+      if (fragment) {
+        const ready = await waitForSalesTurnDebounce(turn!, 550);
         if (!ready) return;
         combinedText = consumeSalesTextFragments(turn!);
+      } else if (message.type !== 'audio' && initialText) {
+        combinedText = consumeSalesTextFragments(turn!, initialText);
       }
       await this.processIncoming(userId, message, displayName, turn!, combinedText);
     });
@@ -321,12 +325,7 @@ export class WhatsAppSalesAgentService {
       }
 
       const normalizedCustomerText = normalizeSalesTextForUnderstanding(text);
-      const previousSalesState = recentSalesContext ? coerceUniversalSalesState(session.salesState) : { version: 1 as const };
-      const salesState = updateUniversalSalesState(previousSalesState, text);
-      await this.prisma.whatsAppSalesSession.update({
-        where: { id: session.id },
-        data: { salesState: salesState as unknown as Prisma.InputJsonValue },
-      });
+      const salesState = recentSalesContext ? coerceUniversalSalesState(session.salesState) : { version: 1 as const };
 
       const result = await this.ai.chat(
         userId,
@@ -335,6 +334,7 @@ export class WhatsAppSalesAgentService {
         turn.signal,
         {
           externalSales: true,
+          newSalesEpoch: !recentSalesContext,
           channel: 'WHATSAPP',
           customer: { peerName: displayName, peerType: 'USER', senderName: displayName },
           salesState,
@@ -345,11 +345,16 @@ export class WhatsAppSalesAgentService {
         where: { id: session.id },
         data: { salesState: salesState as unknown as Prisma.InputJsonValue, lastInboundAt: new Date(), customerName: displayName ?? session.customerName },
       });
+      if ('suppressReply' in result && result.suppressReply === true) {
+        await this.prisma.whatsAppSalesSession.update({ where: { id: session.id }, data: { salesContextUntil: null } });
+        return;
+      }
       let answer = result.message?.trim() || 'Yordam beraman. Qaysi mahsulot kerak edi?';
       if (result.pendingConfirmation) answer = 'Bu qadam uchun sotuvchi tasdig‘i kerak. Hozircha buyurtma ma’lumotlarini tayyorlab turaman.';
       answer = customerSafeSalesAnswer(answer, salesState);
       await this.cloud.sendText(userId, message.from, answer);
-      await this.prisma.whatsAppSalesSession.update({ where: { id: session.id }, data: { lastOutboundAt: new Date(), customerName: displayName ?? session.customerName } });
+      const replyContextUntil = salesState.lastIntent === 'SOFT_EXIT' ? new Date(Date.now() + SOFT_EXIT_WINDOW_MS) : activateUntil;
+      await this.prisma.whatsAppSalesSession.update({ where: { id: session.id }, data: { lastOutboundAt: new Date(), salesContextUntil: replyContextUntil, customerName: displayName ?? session.customerName } });
     } catch (error) {
       if (error instanceof ForbiddenException) {
         this.logger.warn({ event: 'whatsapp_sales_message_blocked', userId: this.safeId(userId), type: message?.type, code: this.errorCode(error) });

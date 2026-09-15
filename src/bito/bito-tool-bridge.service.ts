@@ -342,10 +342,12 @@ export class BitoToolBridgeService {
     let records = recordsFromExpandedResult(listResult);
     let fetchedFullList = !requestedSearch || !schemaHasProperty(verified.list.inputSchema, 'search');
 
-    // Some provider-side search implementations are stricter than users expect.
-    // If a search returns no rows, fetch the verified full stock list and filter
-    // locally rather than incorrectly claiming the product does not exist.
-    if (requestedSearch && records.length === 0) {
+    // Provider-side search may be exact, typo-sensitive or silently return only
+    // one matching row. A broad family request ("iphone", "coca cola",
+    // "redmi note") must see the whole verified stock list so we can return
+    // every real family variant instead of whichever row the provider happened
+    // to rank first. Exact model/SKU queries keep the faster provider search.
+    if (requestedSearch && (records.length === 0 || shouldExpandInventoryFamilySearch(requestedSearch))) {
       const retryInput = defaultReadInput(verified.list.inputSchema);
       listResult = await this.readToolFully(userId, verified.list, retryInput);
       records = recordsFromExpandedResult(listResult);
@@ -796,6 +798,16 @@ function canonicalInventoryText(value: string): string {
     .flatMap(expandInventoryToken)
     .map(canonicalInventoryToken);
   return tokens.filter((token, index) => token !== tokens[index - 1]).join(' ').trim();
+}
+
+function shouldExpandInventoryFamilySearch(query: string): boolean {
+  const tokens = canonicalInventoryText(query).split(/\s+/u).filter(Boolean);
+  if (!tokens.length || tokens.length > 4) return false;
+  // A numeric token normally identifies a concrete model/size/SKU (13 Pro,
+  // A55, 1L). Short non-numeric phrases are brand/family searches and should
+  // be expanded against the full verified inventory.
+  if (tokens.some(token => /\d/u.test(token))) return false;
+  return tokens.some(token => /\p{L}/u.test(token));
 }
 
 function rankInventoryMatches(items: InventoryItem[], query: string): RankedInventoryMatch[] {

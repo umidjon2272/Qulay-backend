@@ -10,11 +10,12 @@ import { TelegramIntegrationService } from './telegram-integration.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { bitoInventorySearchTerm } from '../bito/bito-intent';
 import { BitoToolBridgeService } from '../bito/bito-tool-bridge.service';
-import { coerceUniversalSalesState, customerSafeSalesAnswer, normalizeSalesTextForUnderstanding, updateUniversalSalesState } from '../ai-agent/universal-sales-context';
+import { coerceUniversalSalesState, customerSafeSalesAnswer, normalizeSalesTextForUnderstanding } from '../ai-agent/universal-sales-context';
 import {
   SalesTurnHandle,
   bufferSalesTextFragment,
   consumeSalesTextFragments,
+  isLikelySalesTextFragment,
   reserveSalesInboundTurn,
   runSalesTurnSequential,
   waitForSalesTurnDebounce,
@@ -42,16 +43,16 @@ type ActiveListener = {
   lastCheckAt: Date;
 };
 
-const GROUP_SALES_RELEVANT_TEXT = /(?:narx|nech\s*pul|qancha\s+tur|bormi|mavjud|qoldiq|ombor|mahsulot|tovar|dona|kg|litr|model|rang|variant|chegirma|aksiya|promo|buyurtma|zakaz|olaman|olmoqch|kerak|yetkaz|delivery|ulgurji|optom|(?:qanaqa|qanday|qaysi).{0,40}\bbor\b|достав|цена|сколько\s+стоит|есть\s+ли|в\s+налич|товар|продукт|заказ|скидк)/iu;
 const EXPLICIT_SALES_TEXT = /(?:\b(?:narx\p{L}*|price|цена|nech\s*pul|qancha\s+tur|сколько\s+стоит|mahsulot|tovar|product|товар|qoldiq|stock|ombor|inventory|mavjud|available|в\s+налич|buyurtma|zakaz|order|заказ|chegirma|discount|скидк|aksiya|promo|ulgurji|optom|wholesale|yetkaz|delivery|достав|sotib\s+ol|olmoqch|olaman|беру|купить|заказать)\b|\b\d+(?:[.,]\d+)?\s*(?:ta|dona|kg|g|litr|ml|шт)\b)/iu;
 const AVAILABILITY_TEXT = /(?:\b(?:bormi|bor\s+mi|mavjudmi|mavjud\s+mi|available)\b|есть\s+ли|в\s+наличии)/iu;
 const NEED_TEXT = /\b(?:kerak|olaman|olmoqch|bering)\b/iu;
+const STORE_INFO_TEXT = /(?:\b(?:do['‘’]?kon|magazin|shop|filial|ofis)\b.{0,50}\b(?:manzil|adres|lokatsiya|qayerda|telefon|raqam|ish\s+vaqt)|\b(?:manzil|adres|lokatsiya)\s+(?:qayerda|qatta)|\bqayerdansiz(?:lar)?\b|\btelefon\s+raqam|\bish\s+vaqt|\bnechchigacha\s+ishla\p{L}*|\bqaysi\s+to['‘’]?lov|\bto['‘’]?lov\s+usul|\bdelivery\s+hudud|\byetkazib\s+berish\s+hudud)/iu;
 const NON_SALES_AVAILABILITY = /(?:vaqt(?:ing|ingiz)?|bo['‘’]?sh|uyda|ishdam|online|aloqa|internet|imkon|gap|savol|muammo|joy|место|время|свобод|дома|онлайн)/iu;
 const SOCIAL_ONLY = /^(?:salom+|assalomu\s+alaykum|alaykum\s+assalom|hello+|hi+|privet|привет|qalesan|qalaysan|qandaysan|nima\s+gap|nmagap|yaxshimisan|qayerdasan|qayerdasiz|rahmat|rhm|ok+|xo['‘’]?p|hop|ha|yo['‘’]?q|😂+|😄+|😁+|👍+)[!.?,\s]*$/iu;
 const CASUAL_PERSONAL = /(?:\b(?:brat|bro|aka|uka|opa|singil|og['‘’]?ayni|dost|do['‘’]?st|qalesan|qalaysan|nima\s+gap|qayerdasan|chiqamiz|uchrashamiz|ko['‘’]?rishamiz|uydami|ishdami)\b)/iu;
-const SALES_FOLLOWUP_TEXT = /(?:\b(?:olaman|bering|kerak|qora|oq|qizil|rang|model|variant|hajm|litr|dona|ta|kg|yetkaz|delivery|manzil|qachon|bugun|ertaga|chegirma|aksiya|promo|qancha|nechta|qanchadan|сколько|беру|достав|цвет|модель)\b|^\s*\d+(?:[.,]\d+)?\s*(?:ta|dona|kg|litr|ml|шт)?\s*$)/iu;
 const LISTENER_HEALTH_INTERVAL_MS = 60_000;
 const SALES_CONTEXT_WINDOW_MS = 2 * 60 * 60 * 1000;
+const SALES_SOFT_EXIT_WINDOW_MS = 15 * 60 * 1000;
 const OWNER_TAKEOVER_PAUSE_MS = 15 * 60 * 1000;
 const AGENT_OUTGOING_TRACK_MS = 60_000;
 const AGENT_SEND_IN_FLIGHT_MS = 15_000;
@@ -256,14 +257,19 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
       return;
     }
     if (!turn) return;
-    const canDebounceText = !incoming.voice && Boolean(incoming.text.trim());
-    if (canDebounceText) bufferSalesTextFragment(turn, incoming.text);
+    const rawText = incoming.text.trim();
+    const fragment = !incoming.voice && isLikelySalesTextFragment(rawText);
+    if (fragment) bufferSalesTextFragment(turn, rawText);
     await runSalesTurnSequential(turn, async () => {
       let combinedText: string | undefined;
-      if (canDebounceText) {
-        const ready = await waitForSalesTurnDebounce(turn!, 700);
+      if (fragment) {
+        const ready = await waitForSalesTurnDebounce(turn!, 550);
         if (!ready) return;
         combinedText = consumeSalesTextFragments(turn!);
+      } else if (!incoming.voice && rawText) {
+        // Attach only previously buffered incomplete fragments. Never merge two
+        // complete customer questions just because they were sent quickly.
+        combinedText = consumeSalesTextFragments(turn!, rawText);
       }
       await this.processIncoming(userId, incoming, turn!, combinedText);
     });
@@ -345,14 +351,12 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
       if (!text) return;
 
       if (incoming.peer.type === 'GROUP') {
-        if (!addressed) {
-          if (activeSalesContext) {
-            // Even in an active customer thread, a selected group can contain
-            // unrelated chatter from the same sender. Continue only on a
-            // commercial-looking follow-up instead of answering every message.
-            if (SOCIAL_ONLY.test(text) || (!GROUP_SALES_RELEVANT_TEXT.test(text) && !SALES_FOLLOWUP_TEXT.test(text))) return;
-          } else if (!(await this.isGroupSalesIntent(userId, text))) return;
-        }
+        if (!addressed && !activeSalesContext && !(await this.isGroupSalesIntent(userId, text))) return;
+        // Once this sender has an active sales thread in an explicitly selected
+        // group, every message goes to the semantic sales brain. Short replies
+        // like “ha”, “mayli”, “rahmat”, “boshqasi-chi?” can be meaningful and
+        // must not be killed by regexes. Truly unrelated chatter is classified
+        // as NON_SALES by AiAgent and gets no reply.
       } else if (!activeSalesContext && !(await this.isPrivateSalesIntent(userId, text, incoming))) {
         // Privacy-first: greetings, personal banter and existing friend/contact
         // conversations never reach the model unless a real commercial intent
@@ -371,15 +375,12 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
       if (!salesSession) salesSession = await this.ensureSalesSession(userId, incoming);
       const contextUntil = new Date(Date.now() + SALES_CONTEXT_WINDOW_MS);
       const normalizedCustomerText = normalizeSalesTextForUnderstanding(text);
-      const previousSalesState = activeSalesContext ? coerceUniversalSalesState(salesSession.salesState) : { version: 1 as const };
-      const salesState = updateUniversalSalesState(previousSalesState, text);
+      // The AI sales brain, not a regex parser, owns semantic state updates.
+      // The backend state remains a verified guardrail and Bito truth cache.
+      const salesState = activeSalesContext ? coerceUniversalSalesState(salesSession.salesState) : { version: 1 as const };
       await this.prisma.telegramSalesSession.update({
         where: { id: salesSession.id },
-        data: {
-          salesContextUntil: contextUntil,
-          ownerPausedUntil: null,
-          salesState: salesState as unknown as Prisma.InputJsonValue,
-        },
+        data: { salesContextUntil: contextUntil, ownerPausedUntil: null },
       });
 
       const result = await this.ai.chat(
@@ -389,6 +390,7 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
         turn.signal,
         {
           externalSales: true,
+          newSalesEpoch: !activeSalesContext,
           channel: 'TELEGRAM',
           customer: {
             peerName: incoming.peer.displayName,
@@ -407,11 +409,17 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
         where: { id: salesSession.id },
         data: { salesState: salesState as unknown as Prisma.InputJsonValue },
       });
+      if ('suppressReply' in result && result.suppressReply === true) {
+        await this.markProcessed(salesSession.id, incoming.messageId, false);
+        await this.prisma.telegramSalesSession.update({ where: { id: salesSession.id }, data: { salesContextUntil: null } });
+        return;
+      }
       let answer = result.message?.trim() || 'Yordam beraman. Qaysi mahsulot kerak edi?';
       if (result.pendingConfirmation) answer = 'Bu qadam uchun sotuvchi tasdig‘i kerak. Hozircha buyurtma ma’lumotlarini tayyorlab turaman.';
       answer = customerSafeSalesAnswer(answer, salesState);
       await this.safeReply(userId, incoming.peer.peerId, answer);
-      await this.markProcessed(salesSession.id, incoming.messageId, true, contextUntil);
+      const replyContextUntil = salesState.lastIntent === 'SOFT_EXIT' ? new Date(Date.now() + SALES_SOFT_EXIT_WINDOW_MS) : contextUntil;
+      await this.markProcessed(salesSession.id, incoming.messageId, true, replyContextUntil);
     } catch (error) {
       if (error instanceof ForbiddenException) {
         this.logger.warn({ event: 'telegram_sales_message_blocked', userId: this.safeUserId(userId), code: this.errorCode(error) });
@@ -442,8 +450,11 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
     const establishedPersonal = incoming.senderIsContact
       && incoming.hadPriorConversation
       && incoming.recentOutgoingCount > 0;
+    const explicitBusinessStoreInfo = STORE_INFO_TEXT.test(value)
+      && /\b(?:do['‘’]?kon|magazin|shop|filial|ofis)\b/iu.test(value);
+    if (STORE_INFO_TEXT.test(value) && (!establishedPersonal || explicitBusinessStoreInfo)) return true;
     const productFragment = bitoInventorySearchTerm(value)?.trim();
-    const broadFamilyAvailability = /\b(?:qanaqa|qanday|qaysi)\b.{0,60}\bbor\b/iu.test(value);
+    const broadFamilyAvailability = /\b(?:qanaqa|qanday|qaysi\p{L}*)\b.{0,60}\bbor\b/iu.test(value);
 
     // For a saved contact with a real two-way history, privacy wins. Even words
     // like "narx" may occur in a personal chat ("telefoning narxi qancha?").
@@ -471,6 +482,12 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
     }
 
     if (NEED_TEXT.test(value) && productFragment && productFragment.length >= 2 && !CASUAL_PERSONAL.test(value)) {
+      // For a brand-new unknown sender, “5 mln bor kamera zo‘r tel kere” or
+      // “menga qora futbolka kerak” is already a credible customer request even
+      // when the literal fragment does not match a Bito product name. Let the
+      // semantic sales brain resolve the need and query the real catalog. Saved
+      // contacts with prior personal history were handled conservatively above.
+      if (!incoming.senderIsContact && !incoming.hadPriorConversation) return true;
       return this.productExistsInBito(userId, productFragment);
     }
 
@@ -490,8 +507,8 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
   private async isGroupSalesIntent(userId: string, text: string): Promise<boolean> {
     const value = normalizeSalesTextForUnderstanding(text);
     if (!value || SOCIAL_ONLY.test(value)) return false;
-    if (EXPLICIT_SALES_TEXT.test(value)) return true;
-    const broadFamilyAvailability = /\b(?:qanaqa|qanday|qaysi)\b.{0,60}\bbor\b/iu.test(value);
+    if (EXPLICIT_SALES_TEXT.test(value) || STORE_INFO_TEXT.test(value)) return true;
+    const broadFamilyAvailability = /\b(?:qanaqa|qanday|qaysi\p{L}*)\b.{0,60}\bbor\b/iu.test(value);
     if ((!AVAILABILITY_TEXT.test(value) && !NEED_TEXT.test(value) && !broadFamilyAvailability) || NON_SALES_AVAILABILITY.test(value) || CASUAL_PERSONAL.test(value)) return false;
     const productFragment = bitoInventorySearchTerm(value)?.trim();
     if (!productFragment || productFragment.length < 2) return false;

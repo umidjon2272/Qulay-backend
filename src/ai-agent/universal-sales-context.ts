@@ -15,6 +15,13 @@ export type UniversalSalesIntent =
   | 'PHONE'
   | 'PAYMENT'
   | 'ORDER'
+  | 'CATALOG_OPTIONS'
+  | 'COMPARISON'
+  | 'STORE_INFO'
+  | 'ACKNOWLEDGEMENT'
+  | 'SOFT_EXIT'
+  | 'GREETING'
+  | 'NON_SALES'
   | 'GENERAL';
 
 export type SalesFactStatus = 'PROPOSED' | 'VERIFIED' | 'UNAVAILABLE';
@@ -49,6 +56,38 @@ export type SalesTurnPlan = {
   productLookupNeeded: boolean;
   businessRuleNeeded: boolean;
   nextBestAction: SalesNextBestAction;
+};
+
+export type SalesCatalogScope = 'NONE' | 'FAMILY' | 'PRODUCT' | 'SELECTION';
+export type SalesBusinessFactRequest = 'NONE' | 'STORE_ADDRESS' | 'BUSINESS_HOURS' | 'PUBLIC_PHONE' | 'DELIVERY_POLICY' | 'PAYMENT_METHODS';
+
+/**
+ * Semantic interpretation produced by the sales conversation brain. This is
+ * intentionally customer-language state, not ERP truth. Product facts remain
+ * PROPOSED until the Bito catalog validates them.
+ */
+export type SalesTurnUnderstanding = {
+  intent: UniversalSalesIntent;
+  topicSwitch: boolean;
+  followUp: boolean;
+  needsCatalogLookup: boolean;
+  catalogScope: SalesCatalogScope;
+  clearUnavailableSelection: boolean;
+  product?: string;
+  productFamily?: string;
+  model?: string;
+  variant?: string;
+  color?: string;
+  size?: string;
+  quantity?: number;
+  budget?: string;
+  fulfillment?: 'DELIVERY' | 'PICKUP';
+  address?: string;
+  phone?: string;
+  paymentMethod?: 'CASH' | 'CARD' | 'CLICK' | 'PAYME' | 'TRANSFER' | 'OTHER';
+  timing?: string;
+  businessFactRequest: SalesBusinessFactRequest;
+  answerGoal?: string;
 };
 
 export type UniversalSalesState = {
@@ -155,7 +194,7 @@ export function coerceUniversalSalesState(value: unknown): UniversalSalesState {
   if (typeof source.totalPrice === 'number' && Number.isFinite(source.totalPrice) && source.totalPrice >= 0) state.totalPrice = source.totalPrice;
   if (source.fulfillment === 'DELIVERY' || source.fulfillment === 'PICKUP') state.fulfillment = source.fulfillment;
   if (['CASH', 'CARD', 'CLICK', 'PAYME', 'TRANSFER', 'OTHER'].includes(String(source.paymentMethod))) state.paymentMethod = source.paymentMethod as UniversalSalesState['paymentMethod'];
-  if (['AVAILABILITY', 'PRICE', 'EXACT_STOCK', 'PRICE_OBJECTION', 'CHEAPER_ALTERNATIVE', 'ADVICE', 'VARIANT', 'QUANTITY', 'DELIVERY', 'PICKUP', 'ADDRESS', 'PHONE', 'PAYMENT', 'ORDER', 'GENERAL'].includes(String(source.lastIntent))) {
+  if (['AVAILABILITY', 'PRICE', 'EXACT_STOCK', 'PRICE_OBJECTION', 'CHEAPER_ALTERNATIVE', 'ADVICE', 'VARIANT', 'QUANTITY', 'DELIVERY', 'PICKUP', 'ADDRESS', 'PHONE', 'PAYMENT', 'ORDER', 'CATALOG_OPTIONS', 'COMPARISON', 'STORE_INFO', 'ACKNOWLEDGEMENT', 'SOFT_EXIT', 'GREETING', 'NON_SALES', 'GENERAL'].includes(String(source.lastIntent))) {
     state.lastIntent = source.lastIntent as UniversalSalesIntent;
   }
   if (typeof source.wantsExactStock === 'boolean') state.wantsExactStock = source.wantsExactStock;
@@ -193,7 +232,7 @@ export function updateUniversalSalesState(previous: UniversalSalesState | undefi
   const cheaper = /\b(?:arzonroq|arzon|дешев\p{L}*|cheaper|budget)\b/iu.test(normalized) && /(?:bormi|variant|bor|есть|есть\s+ли|kerak|qidir|top)/iu.test(normalized);
   const advice = /\b(?:maslahat|qaysi\s+biri\s+yaxshi|nimani\s+olasiz|nimani\s+tavsiya|совет|посовет|recommend)\b/iu.test(normalized);
   const availability = /\b(?:bormi|mavjud|available|есть\s+ли|в\s+налич)/iu.test(normalized)
-    || /\b(?:qanaqa|qanday|qaysi)\b.{0,60}\bbor\b/iu.test(normalized);
+    || /\b(?:qanaqa|qanday|qaysi\p{L}*)\b.{0,60}\bbor\b/iu.test(normalized);
   const price = /\b(?:narx(?:i|ini|lar)?|price|nech\s+pul|qancha\s+tur|qanchadan|цена|сколько\s+стоит)\b/iu.test(normalized)
     || /(?:\b\d+\s*(?:ta|dona|шт|pcs)\b|\b(?:olsam|olaman|bering)\b).*\b(?:qancha|nech\s+pul)\b/iu.test(normalized);
   const delivery = /\b(?:delivery|yetkaz\p{L}*|kuryer|курьер)\b/iu.test(normalized);
@@ -237,8 +276,11 @@ export function updateUniversalSalesState(previous: UniversalSalesState | undefi
     if (shouldReplaceProduct) {
       const nextProduct = parsed.product || clean;
       const changed = previousProduct && canonicalComparable(previousProduct) !== canonicalComparable(nextProduct);
-      if (changed) clearDependentCatalogFacts(state);
-      if (changed) clearPriceFacts(state);
+      if (changed) {
+        clearDependentCatalogFacts(state);
+        clearPriceFacts(state);
+        delete state.quantity;
+      }
       state.product = nextProduct;
       state.productFamily = parsed.family || inferProductFamily(nextProduct);
       setFact(state, 'product', nextProduct, 'PROPOSED', 'CUSTOMER');
@@ -322,6 +364,160 @@ export function updateUniversalSalesState(previous: UniversalSalesState | undefi
   return state;
 }
 
+export function applySalesTurnUnderstanding(
+  previous: UniversalSalesState | undefined,
+  understanding: SalesTurnUnderstanding,
+  rawText: string,
+): UniversalSalesState {
+  const state = coerceUniversalSalesState(previous);
+  const before = coerceUniversalSalesState(previous);
+
+  if (understanding.topicSwitch) clearProductSelectionContext(state);
+  if (understanding.clearUnavailableSelection) clearUnavailableSelectionFacts(state);
+
+  // Keep a conservative deterministic fallback for literal facts (phone,
+  // quantity, payment, obvious volume/color) if the semantic brain omitted
+  // them. Product/topic decisions still come from the semantic understanding.
+  const fallback = updateUniversalSalesState(state, rawText);
+
+  const nextProduct = cleanOptional(understanding.product);
+  const nextFamily = cleanOptional(understanding.productFamily);
+  const nextModel = cleanOptional(understanding.model);
+  const nextVariant = cleanOptional(understanding.variant);
+  const nextColor = cleanOptional(understanding.color);
+  const nextSize = cleanOptional(understanding.size);
+
+  if (nextProduct || nextFamily) {
+    const product = nextProduct || nextFamily!;
+    const changedFamily = Boolean(
+      state.productFamily && nextFamily
+      && canonicalComparable(state.productFamily) !== canonicalComparable(nextFamily),
+    );
+    const changedProduct = Boolean(
+      state.product && product
+      && canonicalComparable(state.product) !== canonicalComparable(product),
+    );
+    if ((changedFamily || changedProduct) && !understanding.topicSwitch) {
+      clearProductSelectionContext(state);
+    }
+    const productFactChanged = !state.product || canonicalComparable(state.product) !== canonicalComparable(product);
+    const resolvedFamily = nextFamily || inferProductFamily(product) || state.productFamily;
+    const familyFactChanged = Boolean(resolvedFamily && (!state.productFamily || canonicalComparable(state.productFamily) !== canonicalComparable(resolvedFamily)));
+    state.product = product;
+    state.productFamily = resolvedFamily;
+    if (productFactChanged || !state.factStatus?.product) setFact(state, 'product', product, 'PROPOSED', 'CUSTOMER');
+    if (state.productFamily && (familyFactChanged || !state.factStatus?.productFamily)) setFact(state, 'productFamily', state.productFamily, 'PROPOSED', 'CUSTOMER');
+  } else if (!state.product && fallback.product) {
+    state.product = fallback.product;
+    state.productFamily = fallback.productFamily || inferProductFamily(fallback.product);
+    setFact(state, 'product', state.product, 'PROPOSED', 'CUSTOMER');
+    if (state.productFamily) setFact(state, 'productFamily', state.productFamily, 'PROPOSED', 'CUSTOMER');
+  }
+
+  const previousSelection = [state.model, state.variant, state.color, state.size].filter(Boolean).join('|');
+  if (nextModel) {
+    const changed = !state.model || canonicalComparable(state.model) !== canonicalComparable(nextModel);
+    state.model = nextModel;
+    if (!nextVariant) state.variant = nextModel;
+    if (changed || !state.factStatus?.model) setFact(state, 'model', nextModel, 'PROPOSED', 'CUSTOMER');
+    if (!nextVariant && (changed || !state.factStatus?.variant)) setFact(state, 'variant', nextModel, 'PROPOSED', 'CUSTOMER');
+  }
+  if (nextVariant) {
+    const changed = !state.variant || canonicalComparable(state.variant) !== canonicalComparable(nextVariant);
+    state.variant = nextVariant;
+    if (changed || !state.factStatus?.variant) setFact(state, 'variant', nextVariant, 'PROPOSED', 'CUSTOMER');
+  }
+  if (nextColor) {
+    const changed = !state.color || canonicalComparable(state.color) !== canonicalComparable(nextColor);
+    state.color = nextColor;
+    if (changed || !state.factStatus?.color) setFact(state, 'color', nextColor, 'PROPOSED', 'CUSTOMER');
+  }
+  if (nextSize) {
+    const changed = !state.size || canonicalComparable(state.size) !== canonicalComparable(nextSize);
+    state.size = nextSize;
+    if (changed || !state.factStatus?.size) setFact(state, 'size', nextSize, 'PROPOSED', 'CUSTOMER');
+  }
+
+  // Literal fallbacks are safe only for attributes that are explicitly present
+  // in this turn. They must never resurrect a product selection cleared by a
+  // semantic topic switch.
+  if (!nextVariant && fallback.variant && fallback.variant !== before.variant && state.product) {
+    state.variant = fallback.variant;
+    setFact(state, 'variant', fallback.variant, 'PROPOSED', 'CUSTOMER');
+  }
+  if (!nextColor && fallback.color && fallback.color !== before.color) {
+    state.color = fallback.color;
+    setFact(state, 'color', fallback.color, 'PROPOSED', 'CUSTOMER');
+  }
+  if (!nextSize && fallback.size && fallback.size !== before.size) {
+    state.size = fallback.size;
+    setFact(state, 'size', fallback.size, 'PROPOSED', 'CUSTOMER');
+  }
+
+  const currentSelection = [state.model, state.variant, state.color, state.size].filter(Boolean).join('|');
+  if (previousSelection !== currentSelection) clearPriceFacts(state);
+
+  const quantity = finitePositive(understanding.quantity) ?? (
+    fallback.quantity !== before.quantity ? finitePositive(fallback.quantity) : undefined
+  );
+  if (quantity !== undefined) state.quantity = quantity;
+
+  const budget = cleanOptional(understanding.budget) || (fallback.budget !== before.budget ? fallback.budget : undefined);
+  if (budget) state.budget = budget;
+
+  const fulfillment = understanding.fulfillment || (fallback.fulfillment !== before.fulfillment ? fallback.fulfillment : undefined);
+  if (fulfillment) state.fulfillment = fulfillment;
+  const address = cleanOptional(understanding.address) || (fallback.address !== before.address ? fallback.address : undefined);
+  if (address) state.address = address;
+  const phone = cleanOptional(understanding.phone) || (fallback.phone !== before.phone ? fallback.phone : undefined);
+  if (phone) state.phone = phone;
+  const payment = understanding.paymentMethod || (fallback.paymentMethod !== before.paymentMethod ? fallback.paymentMethod : undefined);
+  if (payment) state.paymentMethod = payment;
+  const timing = cleanOptional(understanding.timing) || (fallback.timing !== before.timing ? fallback.timing : undefined);
+  if (timing) state.timing = timing;
+
+  if (typeof state.unitPrice === 'number' && state.quantity) state.totalPrice = roundMoney(state.unitPrice * state.quantity);
+  else if (!state.quantity) delete state.totalPrice;
+
+  state.lastIntent = understanding.intent;
+  state.wantsExactStock = understanding.intent === 'EXACT_STOCK';
+  state.requestedCheaper = understanding.intent === 'CHEAPER_ALTERNATIVE';
+  state.requestedAdvice = understanding.intent === 'ADVICE';
+  state.updatedAt = new Date().toISOString();
+  return state;
+}
+
+export function salesCatalogLookupQueryForUnderstanding(
+  state: UniversalSalesState | undefined,
+  understanding: SalesTurnUnderstanding | undefined,
+  currentText: string,
+): string | undefined {
+  const value = coerceUniversalSalesState(state);
+  const scope = understanding?.catalogScope ?? 'SELECTION';
+  if (scope === 'NONE') return undefined;
+  if (scope === 'FAMILY') {
+    return (value.productFamily || value.product || bitoInventorySearchTerm(normalizeSalesTextForUnderstanding(currentText)) || undefined)?.trim();
+  }
+  if (scope === 'PRODUCT') {
+    return (value.product || value.productFamily || bitoInventorySearchTerm(normalizeSalesTextForUnderstanding(currentText)) || undefined)?.trim();
+  }
+  return salesCatalogLookupQuery(value, currentText);
+}
+
+export function salesTurnUnderstandingPrompt(understanding: SalesTurnUnderstanding | undefined): string {
+  if (!understanding) return 'Semantik turn tahlili mavjud emas; suhbat tarixidan tabiiy xulosa qiling.';
+  const facts = [
+    `intent=${understanding.intent}`,
+    `follow_up=${understanding.followUp}`,
+    `topic_switch=${understanding.topicSwitch}`,
+    `catalog_lookup=${understanding.needsCatalogLookup}`,
+    `catalog_scope=${understanding.catalogScope}`,
+    `business_fact=${understanding.businessFactRequest}`,
+  ];
+  if (understanding.answerGoal) facts.push(`answer_goal=${understanding.answerGoal.slice(0, 500)}`);
+  return facts.join('; ');
+}
+
 export function salesCatalogLookupQuery(state: UniversalSalesState | undefined, currentText: string): string | undefined {
   const value = coerceUniversalSalesState(state);
   const direct = bitoInventorySearchTerm(normalizeSalesTextForUnderstanding(currentText))?.trim();
@@ -354,13 +550,20 @@ export function reconcileUniversalSalesStateFromInventory(
       if (typeof value === 'string' && value.trim()) setFact(state, key, value, 'VERIFIED', 'BITO', checkedAt);
     }
     const items = Array.isArray(snapshot.items) ? snapshot.items.filter(item => item && typeof item === 'object') as Array<Record<string, unknown>> : [];
-    const selectedSpecific = Boolean(state.model || state.variant || state.size || state.color);
-    if ((items.length === 1 || selectedSpecific) && items.length) {
-      const publicPrice = items.map(item => item.price).find(value => typeof value === 'number' && Number.isFinite(value) && value >= 0);
+    const publicPrices = [...new Set(items
+      .map(item => item.price)
+      .filter((value): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0))];
+    // Never choose an arbitrary price when a query still resolves to several
+    // real variants (for example storage/color variants of the same phone).
+    // A deterministic unit price is safe only for one row or one common price.
+    if (items.length === 1 || publicPrices.length === 1) {
+      const publicPrice = publicPrices[0];
       if (typeof publicPrice === 'number') {
         state.unitPrice = publicPrice;
         if (state.quantity) state.totalPrice = roundMoney(publicPrice * state.quantity);
       }
+    } else if (publicPrices.length > 1) {
+      clearPriceFacts(state);
     }
     return state;
   }
@@ -412,7 +615,9 @@ export function planSalesNextAction(state: UniversalSalesState | undefined, curr
   const selectedUnverified = selectedFact?.status === 'PROPOSED';
   let nextBestAction: SalesNextBestAction = 'ANSWER_CURRENT_QUESTION';
 
-  if (intent === 'CHEAPER_ALTERNATIVE') nextBestAction = 'FIND_CHEAPER_ALTERNATIVE';
+  const conversationalOnly = ['ACKNOWLEDGEMENT', 'GREETING', 'SOFT_EXIT', 'NON_SALES', 'STORE_INFO', 'CATALOG_OPTIONS', 'COMPARISON'].includes(intent);
+  if (conversationalOnly) nextBestAction = 'ANSWER_CURRENT_QUESTION';
+  else if (intent === 'CHEAPER_ALTERNATIVE') nextBestAction = 'FIND_CHEAPER_ALTERNATIVE';
   else if (intent === 'PRICE_OBJECTION') nextBestAction = 'HANDLE_PRICE_OBJECTION';
   else if (intent === 'ADVICE') nextBestAction = 'RECOMMEND';
   else if (selectedUnavailable) nextBestAction = 'OFFER_ALTERNATIVE';
@@ -420,10 +625,10 @@ export function planSalesNextAction(state: UniversalSalesState | undefined, curr
   else if (selectedUnverified) nextBestAction = 'VERIFY_PRODUCT';
   else if ((intent === 'AVAILABILITY' || intent === 'PRICE') && !value.variant && !value.model && !value.size && !value.color) nextBestAction = 'CLARIFY_VARIANT';
   else if (intent === 'ORDER' && !value.quantity) nextBestAction = 'ASK_QUANTITY';
-  else if (value.quantity && !value.fulfillment) nextBestAction = 'ASK_FULFILLMENT';
-  else if (value.fulfillment === 'DELIVERY' && !value.address) nextBestAction = 'ASK_ADDRESS';
-  else if (value.fulfillment === 'DELIVERY' && !value.phone) nextBestAction = 'ASK_PHONE';
-  else if (value.fulfillment && !value.paymentMethod) nextBestAction = 'ASK_PAYMENT';
+  else if (['ORDER', 'QUANTITY', 'PRICE'].includes(intent) && value.quantity && !value.fulfillment) nextBestAction = 'ASK_FULFILLMENT';
+  else if (['DELIVERY', 'ADDRESS', 'PHONE', 'PAYMENT', 'ORDER'].includes(intent) && value.fulfillment === 'DELIVERY' && !value.address) nextBestAction = 'ASK_ADDRESS';
+  else if (['DELIVERY', 'ADDRESS', 'PHONE', 'PAYMENT', 'ORDER'].includes(intent) && value.fulfillment === 'DELIVERY' && !value.phone) nextBestAction = 'ASK_PHONE';
+  else if (['DELIVERY', 'PICKUP', 'PAYMENT', 'ORDER'].includes(intent) && value.fulfillment && !value.paymentMethod) nextBestAction = 'ASK_PAYMENT';
   else if (value.product && value.quantity && value.fulfillment && (value.fulfillment === 'PICKUP' || (value.address && value.phone)) && value.paymentMethod) nextBestAction = 'CONFIRM_ORDER';
 
   if (!value.product) missingFacts.push('product');
@@ -469,8 +674,9 @@ export function salesStatePrompt(state: UniversalSalesState | undefined): string
   for (const [key, fact] of Object.entries(value.factStatus ?? {})) {
     if (fact && typeof fact === 'object') known.push(`${key}_status=${fact.status}`);
   }
-  const plan = planSalesNextAction(value);
-  known.push(`next_best_action=${plan.nextBestAction}`);
+  // Do not expose a deterministic funnel step to the response model. The
+  // semantic sales brain decides the useful next move from the whole dialog;
+  // this state is only memory + verification truth.
   return known.length ? known.join('; ') : 'hali strukturali sotuv fakti yo‘q';
 }
 
@@ -494,7 +700,7 @@ export function suppressUnaskedExactStock(answer: string, state: UniversalSalesS
   if (value.wantsExactStock) return answer;
   return answer
     .replace(/(?:,?\s*)?(?:omborda|qoldiqda|qoldiq|stock(?:da)?|остаток)\s*[:—-]?\s*\d[\d\s.,]*\s*(?:dona|ta|pcs|шт)\s*(?:mavjud|bor|qoldi|qolgan|есть)?/giu, '')
-    .replace(/(?:,?\s*)?\d[\d\s.,]*\s*(?:dona|ta|pcs|шт)\s*(?:qoldi|qolgan|mavjud|в\s+наличии)/giu, '')
+    .replace(/(?:,?\s*)?\d[\d\s.,]*\s*(?:dona|ta|pcs|шт)\s*(?:qoldi|qolgan|mavjud|bor|есть|в\s+наличии)/giu, '')
     .replace(/\s{2,}/g, ' ')
     .replace(/\s+([,.!?])/g, '$1')
     .trim();
@@ -502,19 +708,25 @@ export function suppressUnaskedExactStock(answer: string, state: UniversalSalesS
 
 export function customerSafeSalesAnswer(answer: string, state: UniversalSalesState | undefined): string {
   let sanitized = answer
-    .replace(/savolingizni\s+operator(?:ga)?\s+qoldir(?:dim|amiz|aman)?[.!]?/giu, 'Bu joyini hozir aniq ayta olmayman.')
-    .replace(/operator(?:\s+tekshiradi|ga\s+beraman|ga\s+qoldiraman)[.!]?/giu, 'Bu joyini hozir aniq ayta olmayman.')
+    .replace(/savolingizni\s+operator(?:ga)?\s+qoldir(?:dim|amiz|aman)?[.!]?/giu, 'Buni hozir ishonchli ayta olmayman.')
+    .replace(/operator(?:\s+tekshiradi|ga\s+beraman|ga\s+qoldiraman)[.!]?/giu, 'Buni hozir ishonchli ayta olmayman.')
     .replace(/\b(?:BITO|MCP|QULAY\s*backend|backend|inventory\s+snapshot|tool(?:lar)?|API(?:\s*key)?|OAuth|access[-_ ]?token|refresh[-_ ]?token)\b/giu, '')
     .replace(/\b(?:BITO|WHATSAPP|TELEGRAM)_[A-Z0-9_]+\b/g, '')
     .replace(/\btekshirdim\b[,:-]?\s*/giu, '')
     .replace(/\boperator(?:ga|dan|ni|ning|lar)?\b/giu, 'sotuvchi')
     .replace(/\btizimda\s+(?:ko['‘’]?rinmadi|topilmadi)\b/giu, 'hozir topilmadi')
     .replace(/\b(?:implementation|provider)\s+(?:detail|tafsilot)\w*\b/giu, '')
+    .replace(/^\s*(?:orqali|bilan)\s*[:.,;—-]*\s*/iu, '')
+    .replace(/(?:^|[.!?]\s+)(?:orqali|bilan)\s*[.!?]?\s*/giu, '$1')
+    .replace(/^[\s,.:;—-]+/u, '')
     .replace(/[ \t]{2,}/g, ' ')
     .replace(/\s+([,.!?])/g, '$1')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
-  sanitized = suppressUnaskedExactStock(sanitized, state);
+  sanitized = suppressUnaskedExactStock(sanitized, state)
+    .replace(/^[\s,.:;—-]+/u, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
   if (!sanitized) {
     const product = coerceUniversalSalesState(state).product;
     sanitized = product ? `${product} bo‘yicha yordam beraman. Qaysi variant kerak edi?` : 'Yordam beraman. Qaysi mahsulot kerak edi?';
@@ -542,6 +754,40 @@ function setFact(
 ): void {
   state.factStatus = { ...(state.factStatus ?? {}) };
   state.factStatus[key] = { value, status, source, ...(checkedAt ? { checkedAt } : {}) };
+}
+
+function cleanOptional(value: string | undefined): string | undefined {
+  const clean = value?.replace(/\s+/g, ' ').trim();
+  return clean ? clean.slice(0, 500) : undefined;
+}
+
+function finitePositive(value: number | undefined): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.min(value, 1_000_000) : undefined;
+}
+
+function clearProductSelectionContext(state: UniversalSalesState): void {
+  for (const key of ['product', 'productFamily', 'variant', 'model', 'color', 'size'] as const) delete state[key];
+  delete state.quantity;
+  delete state.budget;
+  clearPriceFacts(state);
+  if (state.factStatus) {
+    const next = { ...state.factStatus };
+    for (const key of ['product', 'productFamily', 'variant', 'model', 'color', 'size'] as const) delete next[key];
+    state.factStatus = next;
+  }
+}
+
+function clearUnavailableSelectionFacts(state: UniversalSalesState): void {
+  if (!state.factStatus) return;
+  const next = { ...state.factStatus };
+  for (const key of ['color', 'size', 'variant', 'model'] as const) {
+    const fact = next[key];
+    if (!fact || fact.status !== 'UNAVAILABLE') continue;
+    if (state[key] && canonicalComparable(String(state[key])) === canonicalComparable(fact.value)) delete state[key];
+    delete next[key];
+  }
+  state.factStatus = next;
+  clearPriceFacts(state);
 }
 
 function clearPriceFacts(state: UniversalSalesState): void {

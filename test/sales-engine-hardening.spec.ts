@@ -1,15 +1,18 @@
 import { ConfigService } from '@nestjs/config';
 import {
+  applySalesTurnUnderstanding,
   customerSafeSalesAnswer,
   planSalesNextAction,
   reconcileUniversalSalesStateFromInventory,
   salesCatalogLookupQuery,
+  salesCatalogLookupQueryForUnderstanding,
   updateUniversalSalesState,
 } from '../src/ai-agent/universal-sales-context';
 import { extractBusinessSalesProfilePatch } from '../src/ai-agent/business-sales-profile';
 import {
   bufferSalesTextFragment,
   consumeSalesTextFragments,
+  isLikelySalesTextFragment,
   isSalesTurnCurrent,
   reserveSalesInboundTurn,
   runSalesTurnSequential,
@@ -48,9 +51,82 @@ describe('universal sales engine hardening', () => {
     expect(continued.variant).toBe('1.5L');
   });
 
+  it('uses semantic topic switching so old iPhone quantity never leaks into Coca-Cola', () => {
+    const iphone = {
+      version: 1 as const,
+      product: 'iphone', productFamily: 'iphone', model: '13 pro', variant: '13 pro',
+      quantity: 2, unitPrice: 4_800_000, totalPrice: 9_600_000,
+    };
+    const cola = applySalesTurnUnderstanding(iphone, {
+      intent: 'AVAILABILITY', topicSwitch: true, followUp: false,
+      needsCatalogLookup: true, catalogScope: 'PRODUCT', clearUnavailableSelection: false,
+      product: 'Coca Cola', productFamily: 'coca cola', businessFactRequest: 'NONE',
+      answerGoal: 'Coca-Cola mavjudligini aytish',
+    }, 'Kola bormi?');
+    expect(cola.productFamily).toBe('coca cola');
+    expect(cola.quantity).toBeUndefined();
+    expect(cola.unitPrice).toBeUndefined();
+    expect(cola.totalPrice).toBeUndefined();
+  });
+
+  it('does not downgrade Bito-verified selection when semantic NLU repeats the same product', () => {
+    const verified = reconcileUniversalSalesStateFromInventory(
+      updateUniversalSalesState(undefined, 'iphone 13 pro bormi?'),
+      { availabilityStatus: 'IN_STOCK', items: [{ name: 'Iphone 13 por', quantity: 3, price: 4_800_000 }] },
+    );
+    expect(verified.factStatus?.model?.status).toBe('VERIFIED');
+    const repeated = applySalesTurnUnderstanding(verified, {
+      intent: 'PRICE', topicSwitch: false, followUp: true,
+      needsCatalogLookup: true, catalogScope: 'SELECTION', clearUnavailableSelection: false,
+      product: 'iphone', productFamily: 'iphone', model: '13 pro', variant: '13 pro',
+      businessFactRequest: 'NONE', answerGoal: 'Narxni aytish',
+    }, 'iphone 13 pro narxi qancha?');
+    expect(repeated.factStatus?.model?.status).toBe('VERIFIED');
+    expect(repeated.factStatus?.variant?.status).toBe('VERIFIED');
+  });
+
+  it('keeps acknowledgement conversational instead of advancing an old checkout', () => {
+    const state = applySalesTurnUnderstanding({ version: 1, product: 'coca cola', quantity: 2 }, {
+      intent: 'ACKNOWLEDGEMENT', topicSwitch: false, followUp: true,
+      needsCatalogLookup: false, catalogScope: 'NONE', clearUnavailableSelection: false,
+      businessFactRequest: 'NONE', answerGoal: 'Qisqa javob bilan suhbatni davom ettirish',
+    }, 'Alo sotuvchi');
+    expect(state.product).toBe('coca cola');
+    expect(planSalesNextAction(state, 'Alo sotuvchi').nextBestAction).toBe('ANSWER_CURRENT_QUESTION');
+  });
+
+  it('broadens accepted alternatives and family-list follow-ups without losing the active family', () => {
+    const unavailable = {
+      version: 1 as const, product: 'iphone', productFamily: 'iphone', model: '13 pro', variant: '13 pro', color: 'qizil',
+      factStatus: { color: { value: 'qizil', status: 'UNAVAILABLE' as const, source: 'BITO' as const } },
+    };
+    const broadened = applySalesTurnUnderstanding(unavailable, {
+      intent: 'CATALOG_OPTIONS', topicSwitch: false, followUp: true,
+      needsCatalogLookup: true, catalogScope: 'FAMILY', clearUnavailableSelection: true,
+      businessFactRequest: 'NONE', answerGoal: 'Boshqa real variantlarni ko‘rsatish',
+    }, 'Mayli ko‘rsatin');
+    expect(broadened.color).toBeUndefined();
+    expect(broadened.productFamily).toBe('iphone');
+    expect(salesCatalogLookupQueryForUnderstanding(broadened, {
+      intent: 'CATALOG_OPTIONS', topicSwitch: false, followUp: true,
+      needsCatalogLookup: true, catalogScope: 'FAMILY', clearUnavailableSelection: false,
+      businessFactRequest: 'NONE', answerGoal: 'Yana variantlar',
+    }, 'Yana qaysilari bor?')).toBe('iphone');
+  });
+
+  it('debounces only unmistakable fragments, never two complete customer questions', () => {
+    expect(isLikelySalesTextFragment('1')).toBe(true);
+    expect(isLikelySalesTextFragment('litridan')).toBe(true);
+    expect(isLikelySalesTextFragment('5ta olaman')).toBe(false);
+    expect(isLikelySalesTextFragment('2 ta olsam qancha?')).toBe(false);
+    expect(isLikelySalesTextFragment('Qizil rangidan bormi?')).toBe(false);
+    expect(isLikelySalesTextFragment('Alo sotuvchi')).toBe(false);
+  });
+
   it('recognizes broad family and natural need phrases on WhatsApp too', () => {
     expect(isWhatsAppSalesRelevant('Qanaqa ayfonlar bor?', false, 'text')).toBe(true);
     expect(isWhatsAppSalesRelevant('Coca Cola kerak', false, 'text')).toBe(true);
+    expect(isWhatsAppSalesRelevant('Manzil qayerda?', false, 'text')).toBe(true);
     expect(isWhatsAppSalesRelevant('futbol yangiliklari', false, 'text')).toBe(false);
   });
 
@@ -78,6 +154,20 @@ describe('universal sales engine hardening', () => {
     expect(state.unitPrice).toBe(4_800_000);
     expect(state.totalPrice).toBe(9_600_000);
     expect(state.lastIntent).toBe('PRICE');
+  });
+
+  it('never picks an arbitrary unit price when several matched variants have different prices', () => {
+    let state = updateUniversalSalesState(undefined, 'iphone 13 pro bormi?');
+    state = reconcileUniversalSalesStateFromInventory(state, {
+      availabilityStatus: 'IN_STOCK',
+      items: [
+        { name: 'Iphone 13 Pro 128GB', quantity: 2, price: 4_800_000 },
+        { name: 'Iphone 13 Pro 256GB', quantity: 1, price: 5_500_000 },
+      ],
+    });
+    state = updateUniversalSalesState(state, '2ta olaman');
+    expect(state.unitPrice).toBeUndefined();
+    expect(state.totalPrice).toBeUndefined();
   });
 
   it('understands a debounced split quantity/volume phrase as one semantic turn', () => {
@@ -115,6 +205,7 @@ describe('universal sales engine hardening', () => {
     );
     expect(answer.toLowerCase()).not.toMatch(/bito|mcp|tool|operator|tekshirdim/);
     expect(answer).not.toContain('472');
+    expect(customerSafeSalesAnswer('Ha, 3 dona bor. Qaysi model kerak?', state)).not.toContain('3 dona');
   });
 
   it('extracts persistent customer-facing business sales facts from owner teaching messages', () => {

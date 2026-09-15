@@ -17,7 +17,7 @@ const MAX_EPHEMERAL_KEYS = 10_000;
 const EPHEMERAL_TTL_MS = 6 * 60 * 60 * 1000;
 
 function cleanupEphemeral(now = Date.now()): void {
-  if (generations.size < MAX_EPHEMERAL_KEYS && fallbackReceipts.size < MAX_EPHEMERAL_KEYS) return;
+  if (generations.size < MAX_EPHEMERAL_KEYS && fallbackReceipts.size < MAX_EPHEMERAL_KEYS && textFragments.size < MAX_EPHEMERAL_KEYS) return;
   for (const [key, value] of generations) {
     if (value.touchedAt < now - EPHEMERAL_TTL_MS && !queues.has(key)) generations.delete(key);
   }
@@ -34,9 +34,9 @@ function isSchemaLagError(error: unknown): boolean {
 }
 
 /**
- * DB-level receipt prevents duplicate inbound events across processes/restarts.
- * A bounded in-memory fallback keeps existing integrations alive during the
- * short deploy window before a new migration is applied.
+ * DB receipt prevents duplicate webhook/listener deliveries across processes.
+ * The generation is used only to coalesce clearly incomplete typing fragments;
+ * it never cancels a complete customer message or an in-flight AI reply.
  */
 export async function reserveSalesInboundTurn(
   prisma: PrismaService,
@@ -46,35 +46,41 @@ export async function reserveSalesInboundTurn(
   messageId: string,
 ): Promise<SalesTurnHandle | null> {
   const receiptKey = `${channel}:${userId}:${peerId}:${messageId}`;
-  let accepted = false;
   try {
     await prisma.salesInboundReceipt.create({
       data: { channel, userId, peerId: peerId.slice(0, 200), messageId: messageId.slice(0, 200) },
     });
-    accepted = true;
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') return null;
     if (!isSchemaLagError(error)) throw error;
     if (fallbackReceipts.has(receiptKey)) return null;
     fallbackReceipts.set(receiptKey, Date.now());
-    accepted = true;
   }
-  if (!accepted) return null;
 
   cleanupEphemeral();
   const key = `${channel}:${userId}:${peerId}`;
-  const current = generations.get(key);
-  const generation = (current?.value ?? 0) + 1;
-  // A newer inbound may supersede an older turn only while that older turn is
-  // still inside the short debounce window. Never abort a turn that has
-  // already reached the AI/tool pipeline: doing so caused normal follow-ups
-  // sent while the seller was thinking to silently erase the previous reply.
-  // The per-chat queue below preserves reply order, while generation checks
-  // coalesce only not-yet-started text fragments.
+  const generation = (generations.get(key)?.value ?? 0) + 1;
   generations.set(key, { value: generation, touchedAt: Date.now() });
+  // We deliberately do not abort older turns. A human can send the next
+  // message while the seller is thinking; both replies still need to arrive in
+  // order. Staleness is handled by sequential execution and DB receipts.
   return { key, generation, signal: new AbortController().signal };
 }
 
+/**
+ * Only unmistakably incomplete typing pieces are debounced. Full questions
+ * such as “2 ta olsam qancha?” and “qizil rangidan bormi?” must remain separate
+ * turns even when sent quickly, otherwise one of the questions appears to be
+ * ignored.
+ */
+export function isLikelySalesTextFragment(text: string): boolean {
+  const clean = text.normalize('NFKC').replace(/\s+/g, ' ').trim().toLocaleLowerCase();
+  if (!clean || /[?!]/u.test(clean)) return false;
+  if (/^(?:alo\s+sotuvchi|salom|mayli|xo['‘’]?p|hop|ha|yo['‘’]?q)$/iu.test(clean)) return false;
+  if (/^(?:\d+(?:[.,]\d+)?)$/u.test(clean)) return true;
+  if (/^(?:l|ltr|litr|litrdan|litridan|litrlik|ml|kg|gramm|dona|ta|rangidan|rang|modeldan|variantdan)$/iu.test(clean)) return true;
+  return false;
+}
 
 export function bufferSalesTextFragment(turn: SalesTurnHandle, text: string): void {
   const clean = text.replace(/\s+/g, ' ').trim().slice(0, 1200);
@@ -84,34 +90,32 @@ export function bufferSalesTextFragment(turn: SalesTurnHandle, text: string): vo
   textFragments.set(turn.key, { items, touchedAt: Date.now() });
 }
 
-export async function waitForSalesTurnDebounce(turn: SalesTurnHandle, milliseconds = 700): Promise<boolean> {
-  if (turn.signal.aborted || !isSalesTurnCurrent(turn)) return false;
-  await new Promise<void>(resolve => {
-    const timer = setTimeout(done, Math.max(0, milliseconds));
-    const onAbort = () => done();
-    function done() {
-      clearTimeout(timer);
-      turn.signal.removeEventListener('abort', onAbort);
-      resolve();
-    }
-    turn.signal.addEventListener('abort', onAbort, { once: true });
-  });
+/** Wait briefly only for an incomplete fragment. A newer turn takes ownership. */
+export async function waitForSalesTurnDebounce(turn: SalesTurnHandle, milliseconds = 550): Promise<boolean> {
+  if (!isSalesTurnCurrent(turn)) return false;
+  await new Promise<void>(resolve => setTimeout(resolve, Math.max(0, milliseconds)));
   return isSalesTurnCurrent(turn);
 }
 
-export function consumeSalesTextFragments(turn: SalesTurnHandle): string | undefined {
-  if (!isSalesTurnCurrent(turn)) return undefined;
+/**
+ * Consume pending fragments and optionally append the current complete message.
+ * This lets “1” + “litridan” + “5ta olaman” become one semantic turn while
+ * never merging two complete questions.
+ */
+export function consumeSalesTextFragments(turn: SalesTurnHandle, currentText?: string): string | undefined {
   const bucket = textFragments.get(turn.key);
-  if (!bucket?.items.length) return undefined;
+  const current = currentText?.replace(/\s+/g, ' ').trim();
+  const items = [...(bucket?.items ?? []), ...(current ? [current] : [])].filter(Boolean);
+  if (!items.length) return undefined;
   textFragments.delete(turn.key);
-  return bucket.items.join('\n').slice(0, 4000);
+  return items.join('\n').slice(0, 4000);
 }
 
 export function isSalesTurnCurrent(turn: SalesTurnHandle): boolean {
-  const current = generations.get(turn.key);
-  return Boolean(current && current.value === turn.generation && !turn.signal.aborted);
+  return generations.get(turn.key)?.value === turn.generation;
 }
 
+/** Every complete message in one customer chat executes strictly in order. */
 export async function runSalesTurnSequential<T>(turn: SalesTurnHandle, task: () => Promise<T>): Promise<T> {
   const previous = queues.get(turn.key) ?? Promise.resolve();
   let resolveTail: (() => void) | undefined;
@@ -124,9 +128,7 @@ export async function runSalesTurnSequential<T>(turn: SalesTurnHandle, task: () 
   } finally {
     resolveTail?.();
     const current = generations.get(turn.key);
-    if (current?.value === turn.generation) {
-      generations.set(turn.key, { ...current, touchedAt: Date.now() });
-    }
+    if (current?.value === turn.generation) generations.set(turn.key, { ...current, touchedAt: Date.now() });
     queueMicrotask(() => {
       const queued = queues.get(turn.key);
       if (queued) void queued.finally(() => {
