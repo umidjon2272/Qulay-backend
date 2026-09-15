@@ -132,34 +132,41 @@ describe('universal sales engine hardening', () => {
     expect(extractBusinessSalesProfilePatch("Do'kon manzilimiz qayerda edi?")).toEqual({});
   });
 
-  it('serializes one customer chat and cancels stale generations when a newer inbound arrives', async () => {
+  it('serializes one customer chat without cancelling a reply that is already being prepared', async () => {
     const prisma = {
       salesInboundReceipt: { create: jest.fn().mockResolvedValue({}) },
     } as never;
     const first = await reserveSalesInboundTurn(prisma, 'TELEGRAM', 'user-1', 'peer-1', '1');
     expect(first).not.toBeNull();
-    const second = await reserveSalesInboundTurn(prisma, 'TELEGRAM', 'user-1', 'peer-1', '2');
-    expect(second).not.toBeNull();
-    expect(first!.signal.aborted).toBe(true);
-    expect(isSalesTurnCurrent(first!)).toBe(false);
-    expect(isSalesTurnCurrent(second!)).toBe(true);
 
     const order: string[] = [];
-    await Promise.all([
-      runSalesTurnSequential(first!, async () => {
-        order.push('first:start');
-        await new Promise(resolve => setTimeout(resolve, 5));
-        order.push('first:end');
-      }),
-      runSalesTurnSequential(second!, async () => {
-        order.push('second:start');
-        order.push('second:end');
-      }),
-    ]);
+    let releaseFirst!: () => void;
+    const firstBlocked = new Promise<void>(resolve => { releaseFirst = resolve; });
+    const firstTask = runSalesTurnSequential(first!, async () => {
+      order.push('first:start');
+      await firstBlocked;
+      // A later customer message must not abort this already-started reply.
+      expect(first!.signal.aborted).toBe(false);
+      order.push('first:end');
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const second = await reserveSalesInboundTurn(prisma, 'TELEGRAM', 'user-1', 'peer-1', '2');
+    expect(second).not.toBeNull();
+    expect(first!.signal.aborted).toBe(false);
+    expect(isSalesTurnCurrent(first!)).toBe(false); // newer pending turn exists
+    expect(isSalesTurnCurrent(second!)).toBe(true);
+
+    const secondTask = runSalesTurnSequential(second!, async () => {
+      order.push('second:start');
+      order.push('second:end');
+    });
+    releaseFirst();
+    await Promise.all([firstTask, secondTask]);
     expect(order).toEqual(['first:start', 'first:end', 'second:start', 'second:end']);
   });
 
-  it('coalesces quick text fragments while cancelling stale AI turns', async () => {
+  it('coalesces quick text fragments before AI starts, without cancelling an in-flight seller reply', async () => {
     const prisma = { salesInboundReceipt: { create: jest.fn().mockResolvedValue({}) } } as never;
     const first = await reserveSalesInboundTurn(prisma, 'TELEGRAM', 'user-fragment', 'peer-fragment', '1');
     expect(first).not.toBeNull();

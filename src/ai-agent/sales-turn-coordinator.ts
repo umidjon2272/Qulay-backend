@@ -10,7 +10,7 @@ export type SalesTurnHandle = {
 };
 
 const queues = new Map<string, Promise<void>>();
-const generations = new Map<string, { value: number; touchedAt: number; controller?: AbortController }>();
+const generations = new Map<string, { value: number; touchedAt: number }>();
 const fallbackReceipts = new Map<string, number>();
 const textFragments = new Map<string, { items: string[]; touchedAt: number }>();
 const MAX_EPHEMERAL_KEYS = 10_000;
@@ -64,11 +64,15 @@ export async function reserveSalesInboundTurn(
   cleanupEphemeral();
   const key = `${channel}:${userId}:${peerId}`;
   const current = generations.get(key);
-  current?.controller?.abort(new Error('STALE_SALES_TURN'));
   const generation = (current?.value ?? 0) + 1;
-  const controller = new AbortController();
-  generations.set(key, { value: generation, touchedAt: Date.now(), controller });
-  return { key, generation, signal: controller.signal };
+  // A newer inbound may supersede an older turn only while that older turn is
+  // still inside the short debounce window. Never abort a turn that has
+  // already reached the AI/tool pipeline: doing so caused normal follow-ups
+  // sent while the seller was thinking to silently erase the previous reply.
+  // The per-chat queue below preserves reply order, while generation checks
+  // coalesce only not-yet-started text fragments.
+  generations.set(key, { value: generation, touchedAt: Date.now() });
+  return { key, generation, signal: new AbortController().signal };
 }
 
 
@@ -121,7 +125,7 @@ export async function runSalesTurnSequential<T>(turn: SalesTurnHandle, task: () 
     resolveTail?.();
     const current = generations.get(turn.key);
     if (current?.value === turn.generation) {
-      generations.set(turn.key, { ...current, touchedAt: Date.now(), controller: undefined });
+      generations.set(turn.key, { ...current, touchedAt: Date.now() });
     }
     queueMicrotask(() => {
       const queued = queues.get(turn.key);

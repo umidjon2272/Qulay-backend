@@ -15,7 +15,6 @@ import {
   SalesTurnHandle,
   bufferSalesTextFragment,
   consumeSalesTextFragments,
-  isSalesTurnCurrent,
   reserveSalesInboundTurn,
   runSalesTurnSequential,
   waitForSalesTurnDebounce,
@@ -408,18 +407,12 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
         where: { id: salesSession.id },
         data: { salesState: salesState as unknown as Prisma.InputJsonValue },
       });
-      if (!isSalesTurnCurrent(turn)) {
-        await this.markProcessed(salesSession.id, incoming.messageId, false, contextUntil);
-        return;
-      }
-
       let answer = result.message?.trim() || 'Yordam beraman. Qaysi mahsulot kerak edi?';
       if (result.pendingConfirmation) answer = 'Bu qadam uchun sotuvchi tasdig‘i kerak. Hozircha buyurtma ma’lumotlarini tayyorlab turaman.';
       answer = customerSafeSalesAnswer(answer, salesState);
       await this.safeReply(userId, incoming.peer.peerId, answer);
       await this.markProcessed(salesSession.id, incoming.messageId, true, contextUntil);
     } catch (error) {
-      if (!isSalesTurnCurrent(turn) || turn.signal.aborted) return;
       if (error instanceof ForbiddenException) {
         this.logger.warn({ event: 'telegram_sales_message_blocked', userId: this.safeUserId(userId), code: this.errorCode(error) });
         return;

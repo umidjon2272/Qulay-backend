@@ -14,7 +14,6 @@ import {
   SalesTurnHandle,
   bufferSalesTextFragment,
   consumeSalesTextFragments,
-  isSalesTurnCurrent,
   reserveSalesInboundTurn,
   runSalesTurnSequential,
   waitForSalesTurnDebounce,
@@ -346,15 +345,12 @@ export class WhatsAppSalesAgentService {
         where: { id: session.id },
         data: { salesState: salesState as unknown as Prisma.InputJsonValue, lastInboundAt: new Date(), customerName: displayName ?? session.customerName },
       });
-      if (!isSalesTurnCurrent(turn)) return;
-
       let answer = result.message?.trim() || 'Yordam beraman. Qaysi mahsulot kerak edi?';
       if (result.pendingConfirmation) answer = 'Bu qadam uchun sotuvchi tasdig‘i kerak. Hozircha buyurtma ma’lumotlarini tayyorlab turaman.';
       answer = customerSafeSalesAnswer(answer, salesState);
       await this.cloud.sendText(userId, message.from, answer);
       await this.prisma.whatsAppSalesSession.update({ where: { id: session.id }, data: { lastOutboundAt: new Date(), customerName: displayName ?? session.customerName } });
     } catch (error) {
-      if (!isSalesTurnCurrent(turn) || turn.signal.aborted) return;
       if (error instanceof ForbiddenException) {
         this.logger.warn({ event: 'whatsapp_sales_message_blocked', userId: this.safeId(userId), type: message?.type, code: this.errorCode(error) });
         return;
