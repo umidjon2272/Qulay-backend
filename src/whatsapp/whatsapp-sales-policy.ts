@@ -1,5 +1,5 @@
 import { normalizeSalesTextForUnderstanding } from '../ai-agent/universal-sales-context';
-const SALES_TRIGGER = /(?:narx|nech\s*pul|qancha|bormi|mavjud|qoldiq|ombor|mahsulot|tovar|dona|kg|litr|model|rang|variant|chegirma|aksiya|promo|buyurtma|zakaz|olaman|olmoqch|kerak|yetkaz|delivery|достав|цена|сколько|есть\s+ли|в\s+налич|товар|продукт|заказ|скидк|price|stock|available|order)/iu;
+const SALES_TRIGGER = /(?:narx|nech\s*pul|qancha|bormi|mavjud|qoldiq|ombor|mahsulot|tovar|dona|kg|litr|ltr|model|rang|variant|chegirma|aksiya|promo|buyurtma|zakaz|olaman|olmoqch|kerak|bering|yetkaz|delivery|(?:qanaqa|qanday|qaysi).{0,40}\bbor\b|достав|цена|сколько|есть\s+ли|в\s+налич|товар|продукт|заказ|скидк|price|stock|available|order)/iu;
 const CLEARLY_NON_SALES = /(?:futbol|football|kino|film|ob[-\s]?havo|weather|siyosat|politic|yangilik|news|o['‘’]?yin|game|musiqa|music)/iu;
 const GREETING = /^(?:salom+|assalomu\s+alaykum|alaykum\s+assalom|hello+|hi+|privet|привет|здравствуйте)[!.?\s]*$/iu;
 

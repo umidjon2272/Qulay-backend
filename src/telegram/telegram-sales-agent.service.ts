@@ -10,7 +10,16 @@ import { TelegramIntegrationService } from './telegram-integration.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { bitoInventorySearchTerm } from '../bito/bito-intent';
 import { BitoToolBridgeService } from '../bito/bito-tool-bridge.service';
-import { UniversalSalesState, coerceUniversalSalesState, normalizeSalesTextForUnderstanding, suppressUnaskedExactStock, updateUniversalSalesState } from '../ai-agent/universal-sales-context';
+import { coerceUniversalSalesState, customerSafeSalesAnswer, normalizeSalesTextForUnderstanding, updateUniversalSalesState } from '../ai-agent/universal-sales-context';
+import {
+  SalesTurnHandle,
+  bufferSalesTextFragment,
+  consumeSalesTextFragments,
+  isSalesTurnCurrent,
+  reserveSalesInboundTurn,
+  runSalesTurnSequential,
+  waitForSalesTurnDebounce,
+} from '../ai-agent/sales-turn-coordinator';
 
 export type TelegramSalesAgentSettings = {
   enabled: boolean;
@@ -34,14 +43,14 @@ type ActiveListener = {
   lastCheckAt: Date;
 };
 
-const GROUP_SALES_RELEVANT_TEXT = /(?:narx|nech\s*pul|qancha\s+tur|bormi|mavjud|qoldiq|ombor|mahsulot|tovar|dona|kg|litr|model|rang|variant|chegirma|aksiya|promo|buyurtma|zakaz|olaman|olmoqch|kerak|yetkaz|delivery|ulgurji|optom|достав|цена|сколько\s+стоит|есть\s+ли|в\s+налич|товар|продукт|заказ|скидк)/iu;
-const EXPLICIT_SALES_TEXT = /(?:\b(?:narx|price|цена|nech\s*pul|qancha\s+tur|сколько\s+стоит|mahsulot|tovar|product|товар|qoldiq|stock|ombor|inventory|mavjud|available|в\s+налич|buyurtma|zakaz|order|заказ|chegirma|discount|скидк|aksiya|promo|ulgurji|optom|wholesale|yetkaz|delivery|достав|sotib\s+ol|olmoqch|olaman|беру|купить|заказать)\b|\b\d+(?:[.,]\d+)?\s*(?:ta|dona|kg|g|litr|ml|шт)\b)/iu;
+const GROUP_SALES_RELEVANT_TEXT = /(?:narx|nech\s*pul|qancha\s+tur|bormi|mavjud|qoldiq|ombor|mahsulot|tovar|dona|kg|litr|model|rang|variant|chegirma|aksiya|promo|buyurtma|zakaz|olaman|olmoqch|kerak|yetkaz|delivery|ulgurji|optom|(?:qanaqa|qanday|qaysi).{0,40}\bbor\b|достав|цена|сколько\s+стоит|есть\s+ли|в\s+налич|товар|продукт|заказ|скидк)/iu;
+const EXPLICIT_SALES_TEXT = /(?:\b(?:narx\p{L}*|price|цена|nech\s*pul|qancha\s+tur|сколько\s+стоит|mahsulot|tovar|product|товар|qoldiq|stock|ombor|inventory|mavjud|available|в\s+налич|buyurtma|zakaz|order|заказ|chegirma|discount|скидк|aksiya|promo|ulgurji|optom|wholesale|yetkaz|delivery|достав|sotib\s+ol|olmoqch|olaman|беру|купить|заказать)\b|\b\d+(?:[.,]\d+)?\s*(?:ta|dona|kg|g|litr|ml|шт)\b)/iu;
 const AVAILABILITY_TEXT = /(?:\b(?:bormi|bor\s+mi|mavjudmi|mavjud\s+mi|available)\b|есть\s+ли|в\s+наличии)/iu;
+const NEED_TEXT = /\b(?:kerak|olaman|olmoqch|bering)\b/iu;
 const NON_SALES_AVAILABILITY = /(?:vaqt(?:ing|ingiz)?|bo['‘’]?sh|uyda|ishdam|online|aloqa|internet|imkon|gap|savol|muammo|joy|место|время|свобод|дома|онлайн)/iu;
 const SOCIAL_ONLY = /^(?:salom+|assalomu\s+alaykum|alaykum\s+assalom|hello+|hi+|privet|привет|qalesan|qalaysan|qandaysan|nima\s+gap|nmagap|yaxshimisan|qayerdasan|qayerdasiz|rahmat|rhm|ok+|xo['‘’]?p|hop|ha|yo['‘’]?q|😂+|😄+|😁+|👍+)[!.?,\s]*$/iu;
 const CASUAL_PERSONAL = /(?:\b(?:brat|bro|aka|uka|opa|singil|og['‘’]?ayni|dost|do['‘’]?st|qalesan|qalaysan|nima\s+gap|qayerdasan|chiqamiz|uchrashamiz|ko['‘’]?rishamiz|uydami|ishdami)\b)/iu;
 const SALES_FOLLOWUP_TEXT = /(?:\b(?:olaman|bering|kerak|qora|oq|qizil|rang|model|variant|hajm|litr|dona|ta|kg|yetkaz|delivery|manzil|qachon|bugun|ertaga|chegirma|aksiya|promo|qancha|nechta|qanchadan|сколько|беру|достав|цвет|модель)\b|^\s*\d+(?:[.,]\d+)?\s*(?:ta|dona|kg|litr|ml|шт)?\s*$)/iu;
-const TECHNICAL_NAME = /(?:bito|mcp|qulay\s*backend|api\s*key|oauth|token)/giu;
 const LISTENER_HEALTH_INTERVAL_MS = 60_000;
 const SALES_CONTEXT_WINDOW_MS = 2 * 60 * 60 * 1000;
 const OWNER_TAKEOVER_PAUSE_MS = 15 * 60 * 1000;
@@ -238,6 +247,30 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
   }
 
   private async handleIncoming(userId: string, incoming: TelegramIncomingMessage): Promise<void> {
+    if (incoming.senderIsBot || incoming.peer.type === 'CHANNEL') return;
+    const receiptPeerId = this.salesSessionPeerId(incoming);
+    let turn: SalesTurnHandle | null = null;
+    try {
+      turn = await reserveSalesInboundTurn(this.prisma, 'TELEGRAM', userId, receiptPeerId, String(incoming.messageId));
+    } catch (error) {
+      this.logger.warn({ event: 'telegram_sales_receipt_failed', userId: this.safeUserId(userId), code: this.errorCode(error) });
+      return;
+    }
+    if (!turn) return;
+    const canDebounceText = !incoming.voice && Boolean(incoming.text.trim());
+    if (canDebounceText) bufferSalesTextFragment(turn, incoming.text);
+    await runSalesTurnSequential(turn, async () => {
+      let combinedText: string | undefined;
+      if (canDebounceText) {
+        const ready = await waitForSalesTurnDebounce(turn!, 700);
+        if (!ready) return;
+        combinedText = consumeSalesTextFragments(turn!);
+      }
+      await this.processIncoming(userId, incoming, turn!, combinedText);
+    });
+  }
+
+  private async processIncoming(userId: string, incoming: TelegramIncomingMessage, turn: SalesTurnHandle, combinedText?: string): Promise<void> {
     const active = this.listeners.get(userId);
     if (active) { active.healthy = true; active.lastCheckAt = new Date(); }
     this.logger.log({ event: 'telegram_sales_message_received', userId: this.safeUserId(userId), peerType: incoming.peer.type, hasVoice: Boolean(incoming.voice) });
@@ -287,7 +320,7 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
       // Never spend STT/AI credits on an arbitrary personal voice note. A voice
       // starts/continues sales only in a selected group, an active sales DM, or
       // a truly new non-contact DM with no previous conversation.
-      let text = incoming.text.trim();
+      let text = combinedText?.trim() || incoming.text.trim();
       if (incoming.voice) {
         const voiceEligible = incoming.peer.type === 'GROUP'
           ? addressed
@@ -354,7 +387,7 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
         userId,
         { message: text, conversationId: salesSession.conversationId, voice: Boolean(incoming.voice) },
         undefined,
-        undefined,
+        turn.signal,
         {
           externalSales: true,
           channel: 'TELEGRAM',
@@ -368,12 +401,25 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
         },
       );
 
-      let answer = result.message?.trim() || 'Savolingizni operatorga qoldirdim.';
-      if (result.pendingConfirmation) answer = 'Bu amal sotuvchi tasdig‘ini talab qiladi. So‘rovingiz operatorga qoldirildi.';
-      answer = this.customerSafeAnswer(answer, salesState);
+      // AiAgent reconciles the same state object with the verified Bito
+      // inventory result. Persist it again before replying so follow-ups never
+      // fall back to an older/default variant.
+      await this.prisma.telegramSalesSession.update({
+        where: { id: salesSession.id },
+        data: { salesState: salesState as unknown as Prisma.InputJsonValue },
+      });
+      if (!isSalesTurnCurrent(turn)) {
+        await this.markProcessed(salesSession.id, incoming.messageId, false, contextUntil);
+        return;
+      }
+
+      let answer = result.message?.trim() || 'Yordam beraman. Qaysi mahsulot kerak edi?';
+      if (result.pendingConfirmation) answer = 'Bu qadam uchun sotuvchi tasdig‘i kerak. Hozircha buyurtma ma’lumotlarini tayyorlab turaman.';
+      answer = customerSafeSalesAnswer(answer, salesState);
       await this.safeReply(userId, incoming.peer.peerId, answer);
       await this.markProcessed(salesSession.id, incoming.messageId, true, contextUntil);
     } catch (error) {
+      if (!isSalesTurnCurrent(turn) || turn.signal.aborted) return;
       if (error instanceof ForbiddenException) {
         this.logger.warn({ event: 'telegram_sales_message_blocked', userId: this.safeUserId(userId), code: this.errorCode(error) });
         return;
@@ -389,7 +435,7 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
       // uncertain personal chat must never receive an automated error message.
       const existing = await this.prisma.telegramSalesSession.findUnique({ where: { userId_peerId: { userId, peerId: this.salesSessionPeerId(incoming) } } }).catch(() => null);
       if (existing?.salesContextUntil && existing.salesContextUntil.getTime() > Date.now()) {
-        await this.safeReply(userId, incoming.peer.peerId, 'Hozir javobni tayyorlay olmadim. Iltimos, birozdan keyin qayta yozing.').catch(() => undefined);
+        await this.safeReply(userId, incoming.peer.peerId, 'Bu joyini hozir aniq ayta olmayman. Iltimos, savolni bir marta qayta yozib ko‘ring.').catch(() => undefined);
       }
     } finally {
       this.processing.delete(key);
@@ -404,6 +450,7 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
       && incoming.hadPriorConversation
       && incoming.recentOutgoingCount > 0;
     const productFragment = bitoInventorySearchTerm(value)?.trim();
+    const broadFamilyAvailability = /\b(?:qanaqa|qanday|qaysi)\b.{0,60}\bbor\b/iu.test(value);
 
     // For a saved contact with a real two-way history, privacy wins. Even words
     // like "narx" may occur in a personal chat ("telefoning narxi qancha?").
@@ -412,7 +459,7 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
     // naturally without forcing the owner to label chats by hand.
     if (establishedPersonal) {
       if (CASUAL_PERSONAL.test(value)) return false;
-      if ((EXPLICIT_SALES_TEXT.test(value) || AVAILABILITY_TEXT.test(value)) && productFragment && productFragment.length >= 2) {
+      if ((EXPLICIT_SALES_TEXT.test(value) || AVAILABILITY_TEXT.test(value) || NEED_TEXT.test(value) || broadFamilyAvailability) && productFragment && productFragment.length >= 2) {
         return this.productExistsInBito(userId, productFragment);
       }
       return false;
@@ -430,6 +477,14 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
       }
     }
 
+    if (NEED_TEXT.test(value) && productFragment && productFragment.length >= 2 && !CASUAL_PERSONAL.test(value)) {
+      return this.productExistsInBito(userId, productFragment);
+    }
+
+    if (broadFamilyAvailability && productFragment && productFragment.length >= 2 && !CASUAL_PERSONAL.test(value)) {
+      return this.productExistsInBito(userId, productFragment);
+    }
+
     // For a brand-new unknown sender, a compact model/SKU-like phrase such as
     // "iPhone 13 Pro" is a reasonable lead signal even without "narx/bormi".
     if (!incoming.senderIsContact && !incoming.hadPriorConversation && !CASUAL_PERSONAL.test(value)) {
@@ -443,7 +498,8 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
     const value = normalizeSalesTextForUnderstanding(text);
     if (!value || SOCIAL_ONLY.test(value)) return false;
     if (EXPLICIT_SALES_TEXT.test(value)) return true;
-    if (!AVAILABILITY_TEXT.test(value) || NON_SALES_AVAILABILITY.test(value) || CASUAL_PERSONAL.test(value)) return false;
+    const broadFamilyAvailability = /\b(?:qanaqa|qanday|qaysi)\b.{0,60}\bbor\b/iu.test(value);
+    if ((!AVAILABILITY_TEXT.test(value) && !NEED_TEXT.test(value) && !broadFamilyAvailability) || NON_SALES_AVAILABILITY.test(value) || CASUAL_PERSONAL.test(value)) return false;
     const productFragment = bitoInventorySearchTerm(value)?.trim();
     if (!productFragment || productFragment.length < 2) return false;
     // In a selected group, "Ali bormi?" must not trigger the bot merely
@@ -542,15 +598,6 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
 
   private outgoingMessageKey(userId: string, peerId: string, messageId: number): string {
     return `${userId}:${peerId}:${messageId}`;
-  }
-
-  private customerSafeAnswer(value: string, salesState?: UniversalSalesState): string {
-    const sanitized = value
-      .replace(TECHNICAL_NAME, 'tizim')
-      .replace(/BITO_[A-Z0-9_]+/g, 'xizmat xatosi')
-      .replace(/\b(?:access|refresh)[-_ ]?token\b/giu, 'ruxsat')
-      .trim();
-    return suppressUnaskedExactStock(sanitized, salesState).slice(0, 3900);
   }
 
   private safeUserId(userId: string): string {

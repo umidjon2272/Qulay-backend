@@ -1,7 +1,13 @@
 // Bito routing is intentionally multilingual and tolerant of Uzbek suffixes.
 // We tokenize instead of relying on ASCII-style word boundaries so forms such
 // as "omborda", "xodimlarni" and Cyrillic inflections are routed correctly.
-const normalize = (text: string) => text.toLocaleLowerCase().replace(/[‘’ʻʼ`]/g, "'");
+const normalize = (text: string) => text
+  .toLocaleLowerCase()
+  .replace(/[‘’ʻʼ`]/g, "'")
+  .replace(/(\p{L}{2,})(\d)/gu, '$1 $2')
+  .replace(/(\d)(\p{L}{2,})/gu, '$1 $2')
+  .replace(/\s+/g, ' ')
+  .trim();
 const tokens = (text: string) => normalize(text).match(/[\p{L}\p{N}']+/gu) ?? [];
 const hasStem = (text: string, stems: string[]) => tokens(text).some(token => stems.some(stem => token === stem || token.startsWith(stem)));
 const hasPhrase = (text: string, phrases: string[]) => phrases.some(phrase => normalize(text).includes(phrase));
@@ -103,27 +109,28 @@ export function bitoInventoryIncludeZero(text: string): boolean {
 export function bitoInventorySearchTerm(text: string): string | undefined {
   const aliasToken = (token: string) => {
     const value = token.replace(/'/g, '').toLocaleLowerCase();
-    if (/^(?:a+y+fon|ayfon|aifon|aiphon|iphon|iphone)$/u.test(value)) return 'iphone';
+    if (/^(?:a+y+fon|ayfon|aifon|aiphon|iphon|iphone)(?:lar|lari|ni|ga|da|dan|chi)?$/u.test(value)) return 'iphone';
     if (/^(?:por|proo|pro)$/u.test(value)) return 'pro';
     if (/^(?:koka|coca)$/u.test(value)) return 'coca';
     if (/^(?:kola|cola)$/u.test(value)) return 'cola';
     return value;
   };
-  const rawTokens = tokens(text).map(aliasToken);
+  const searchText = normalize(text).replace(/\b(?:kola|cola)\s+(?:kola|cola)\b/giu, 'coca cola');
+  const rawTokens = tokens(searchText).map(aliasToken);
   const valueTokens = rawTokens.filter((token, index) => token !== rawTokens[index - 1]);
   if (!valueTokens.length) return undefined;
 
   const noiseStems = [
     'bito', 'ombor', 'qoldiq', 'qoldi', 'zaxira', 'stock', 'inventory', 'warehouse', 'sklad', 'ostat',
-    'mahsulot', 'tovar', 'product', 'goods', 'katalog', 'catalog', 'qaysi', 'nima', 'nimalar',
-    'salom', 'assalomu', 'alaykum', 'aziz', 'qanday', 'iltimos', 'please', 'hello', 'hi', 'privet',
-    'sizda', 'sizlarda', 'siz', 'bizga', 'menga', 'kerak', 'olmoqch', 'xohlay', 'hohlay',
+    'mahsulot', 'tovar', 'product', 'goods', 'katalog', 'catalog', 'qaysi', 'qanaqa', 'qanday', 'nima', 'nimalar',
+    'salom', 'assalomu', 'alaykum', 'aziz', 'alo', 'sotuvchi', 'qanday', 'iltimos', 'please', 'hello', 'hi', 'privet',
+    'sizda', 'sizlarda', 'siz', 'bizga', 'menga', 'kerak', 'kere', 'olmoqch', 'olaman', 'olsam', 'olsak', 'olsa', 'xohlay', 'hohlay',
     'narx', 'price', 'цена', 'qancha', 'nechta', 'necha', 'bor', 'mavjud', 'qolgan', 'qolmagan', 'tugagan', 'korsat',
     'chiqar', 'ayt', 'top', 'qidir', 'izla', 'tekshir', 'korchi', 'kurch', 'qani', 'ekan', 'hamma', 'barcha', 'toliq', 'jami', 'dona',
-    'kg', 'litr', 'litre', 'ml', 'gramm', 'ta', 'available', 'show', 'list', 'find', 'how', 'many', 'есть', 'сколько',
+    'kg', 'litr', 'litre', 'ltr', 'ml', 'gramm', 'ta', 'available', 'show', 'list', 'find', 'how', 'many', 'есть', 'сколько',
     'покаж', 'найд', 'товар', 'остат', 'склад',
   ];
-  const quantityUnits = new Set(['ta', 'dona', 'kg', 'g', 'gramm', 'litr', 'litre', 'ml', 'шт']);
+  const quantityUnits = new Set(['ta', 'tasini', 'dona', 'kg', 'g', 'gramm', 'litr', 'litre', 'ltr', 'ml', 'шт']);
   const residual = valueTokens.filter((token, index) => {
     if (token.length <= 1 || token === 'tasini') return false;
     if (noiseStems.some(stem => token === stem || token.startsWith(stem))) return false;

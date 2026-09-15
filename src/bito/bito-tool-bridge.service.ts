@@ -769,7 +769,7 @@ function comparableInventoryText(value: string): string {
     .trim();
 }
 
-type InventoryMatchMode = 'exact' | 'family' | 'fuzzy';
+type InventoryMatchMode = 'exact' | 'normalized' | 'token' | 'family' | 'fuzzy';
 type RankedInventoryMatch = { item: InventoryItem; score: number; mode: InventoryMatchMode };
 
 function canonicalInventoryToken(token: string): string {
@@ -780,8 +780,21 @@ function canonicalInventoryToken(token: string): string {
   return token;
 }
 
+function expandInventoryToken(token: string): string[] {
+  if (/^\d+d\d+l$/u.test(token)) return [token];
+  const alphaNumber = token.match(/^([\p{L}]+)(\d+)([\p{L}]+)?$/u);
+  if (alphaNumber) return [alphaNumber[1], alphaNumber[2], ...(alphaNumber[3] ? [alphaNumber[3]] : [])];
+  const compactModel = token.match(/^(\d+)(pro|por|proo|max|plus|mini|ultra)$/u);
+  if (compactModel) return [compactModel[1], compactModel[2]];
+  return [token];
+}
+
 function canonicalInventoryText(value: string): string {
-  const tokens = comparableInventoryText(value).split(/\s+/u).filter(Boolean).map(canonicalInventoryToken);
+  const tokens = comparableInventoryText(value)
+    .split(/\s+/u)
+    .filter(Boolean)
+    .flatMap(expandInventoryToken)
+    .map(canonicalInventoryToken);
   return tokens.filter((token, index) => token !== tokens[index - 1]).join(' ').trim();
 }
 
@@ -794,18 +807,21 @@ function rankInventoryMatches(items: InventoryItem[], query: string): RankedInve
 }
 
 function inventoryMatchScore(name: string, query: string): { score: number; mode?: InventoryMatchMode } {
+  const rawName = comparableInventoryText(name);
+  const rawQuery = comparableInventoryText(query);
   const haystack = canonicalInventoryText(name);
   const needle = canonicalInventoryText(query);
   if (!haystack || !needle) return { score: 0 };
-  if (haystack === needle) return { score: 1, mode: 'exact' };
-  if (haystack.includes(needle)) return { score: 0.99, mode: 'family' };
+  if (rawName === rawQuery) return { score: 1, mode: 'exact' };
+  if (haystack === needle) return { score: 0.995, mode: 'normalized' };
 
   const haystackTokens = haystack.split(' ');
   const needleTokens = [...new Set(needle.split(' ').filter(Boolean))];
   if (!needleTokens.length) return { score: 0 };
   const numericNeedles = needleTokens.filter(token => /^\d+$/u.test(token));
   if (numericNeedles.some(token => !haystackTokens.includes(token))) return { score: 0 };
-  if (needleTokens.every(token => haystackTokens.includes(token))) return { score: 0.96, mode: 'family' };
+  if (needleTokens.every(token => haystackTokens.includes(token))) return { score: 0.98, mode: 'token' };
+  if (haystack.includes(needle)) return { score: 0.97, mode: 'family' };
 
   const similarities = needleTokens.map(token => {
     if (/^\d+$/u.test(token)) return haystackTokens.includes(token) ? 1 : 0;

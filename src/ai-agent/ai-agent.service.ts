@@ -14,7 +14,16 @@ import { AiProviderService, ProviderMessage, ProviderTool } from './ai-provider.
 import { AgentActionQueryDto } from './dto/agent-action-query.dto';
 import { AgentChatDto } from './dto/agent-chat.dto';
 import { BITO_INVENTORY_TOOL_NAME, BitoToolBridgeService } from '../bito/bito-tool-bridge.service';
-import { UniversalSalesState, normalizeSalesTextForUnderstanding, salesLookupQuery, salesStatePrompt, likelyNeedsProductLookup } from './universal-sales-context';
+import {
+  UniversalSalesState,
+  normalizeSalesTextForUnderstanding,
+  salesCatalogLookupQuery,
+  salesLookupQuery,
+  salesStatePrompt,
+  likelyNeedsProductLookup,
+  reconcileUniversalSalesStateFromInventory,
+} from './universal-sales-context';
+import { businessSalesProfilePrompt, extractBusinessSalesProfilePatch } from './business-sales-profile';
 import {
   bitoBusinessIntent,
   bitoConnectionIntent,
@@ -92,6 +101,16 @@ export class AiAgentService {
       this.prisma.user.findUnique({ where: { id: userId }, select: { firstName: true, lastName: true, timezone: true, language: true, memoryEnabled: true } }),
     ]);
     if (!user) throw new NotFoundException('Foydalanuvchi topilmadi');
+    if (!externalSales) {
+      const profilePatch = extractBusinessSalesProfilePatch(dto.message);
+      if (Object.keys(profilePatch).length) {
+        await this.prisma.businessSalesProfile.upsert({
+          where: { userId },
+          create: { userId, ...profilePatch },
+          update: profilePatch,
+        }).catch(() => undefined);
+      }
+    }
     const conversation = await this.resolveConversation(userId, dto.conversationId, dto.message, preferences?.saveHistory !== false);
     if (conversation.isTemporary) {
       for (const [id, value] of this.temporary) if (value.expiresAt < Date.now()) this.temporary.delete(id);
@@ -124,14 +143,17 @@ export class AiAgentService {
       conversation.isTemporary ? Promise.resolve((this.temporary.get(conversation.id)?.messages ?? []).filter(m => m.isComplete).slice(-historyLimit).reverse()) : this.prisma.message.findMany({ where: { conversationId: conversation.id, isComplete: true }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: historyLimit }),
     ]);
 
-    const salesPlaybookRules = externalSales
-      ? await this.prisma.salesPlaybookRule.findMany({
-          where: { userId, active: true },
-          orderBy: [{ priority: 'desc' }, { updatedAt: 'desc' }],
-          take: 80,
-          select: { title: true, instruction: true, category: true, triggerExamples: true, responseExamples: true, priority: true },
-        })
-      : [];
+    const [salesPlaybookRules, businessSalesProfile] = externalSales
+      ? await Promise.all([
+          this.prisma.salesPlaybookRule.findMany({
+            where: { userId, active: true },
+            orderBy: [{ priority: 'desc' }, { updatedAt: 'desc' }],
+            take: 80,
+            select: { title: true, instruction: true, category: true, triggerExamples: true, responseExamples: true, priority: true },
+          }),
+          this.prisma.businessSalesProfile.findUnique({ where: { userId } }).catch(() => null),
+        ])
+      : [[], null];
 
     const normalizedSalesText = externalSales
       ? (context?.normalizedCustomerText?.trim() || normalizeSalesTextForUnderstanding(dto.message))
@@ -205,7 +227,7 @@ export class AiAgentService {
         ? '\nBITO ERP DATA REQUESTED: If bito_connection_status is available, check it. If Bito is not connected or the requested Bito capability is unavailable, say so clearly; do not substitute personal files, personal finance, or guessed values.'
         : '';
     const baseSystemPrompt = externalSales
-      ? this.externalSalesSystemPrompt(user, context, salesPlaybookRules)
+      ? this.externalSalesSystemPrompt(user, context, salesPlaybookRules, businessSalesProfile)
       : this.systemPrompt(user, user.memoryEnabled ? memories : [], pending);
     const messages: ProviderMessage[] = [
       { role: 'system', content: baseSystemPrompt + bitoPrompt + (externalSales
@@ -259,14 +281,12 @@ export class AiAgentService {
       // bridge falls back to a full verified snapshot if provider-side search
       // is stricter than the user's wording. Normal "what is in stock" hides
       // zero rows; explicit all/out-of-stock questions include them.
-      const directSearch = bitoInventorySearchTerm(externalSales ? normalizedSalesText : dto.message);
-      const stateSearch = externalSales && persistentSalesState?.product
-        ? [persistentSalesState.product, persistentSalesState.variant, persistentSalesState.color, persistentSalesState.size].filter(Boolean).join(' ')
-        : undefined;
-      // Short customer follow-ups such as “1.5 litr”, “qorasi” or “5 ta” keep
-      // the active product family in the lookup. A concrete current product
-      // phrase still wins over remembered context.
-      const search = directSearch || stateSearch;
+      // Customer follow-ups resolve against the persistent product family
+      // before the Bito call. This prevents “1.5 litr”, “qorasi” or “5 ta”
+      // from silently jumping back to an older/default variant.
+      const search = externalSales
+        ? salesCatalogLookupQuery(persistentSalesState, normalizedSalesText)
+        : bitoInventorySearchTerm(dto.message);
       const includeZero = bitoInventoryIncludeZero(dto.message);
       const includeSummary = bitoInventorySummaryIntent(dto.message);
       const input = { ...(search ? { search } : {}), includeZero, ...(includeSummary ? { includeSummary: true } : {}) };
@@ -278,6 +298,10 @@ export class AiAgentService {
           { locale: user.language, timezone: user.timezone },
         );
         if (result.status !== 'success') throw new Error('Bito inventory read unexpectedly required confirmation');
+        if (externalSales && persistentSalesState) {
+          const reconciled = reconcileUniversalSalesStateFromInventory(persistentSalesState, result.data);
+          Object.assign(persistentSalesState, reconciled);
+        }
         const inventoryData = externalSales ? this.customerSafeExternalToolData(result.data) : result.data;
         const toolOutput = JSON.stringify({ ok: true, tool: BITO_INVENTORY_TOOL_NAME, data: inventoryData });
         await this.appendMessage({
@@ -577,6 +601,7 @@ export class AiAgentService {
     user: { firstName: string; lastName: string; timezone: string; language: string },
     context: AgentChatContext | undefined,
     playbookRules: Array<{ title: string; instruction: string; category: string; triggerExamples: string[]; responseExamples: string[]; priority: number }>,
+    businessProfile: unknown,
   ) {
     const language = user.language === 'ru' ? 'ruscha' : 'o‘zbekcha';
     const channel = context?.channel ?? 'TELEGRAM';
@@ -590,6 +615,7 @@ export class AiAgentService {
         }))
       : [];
     const state = salesStatePrompt(context?.salesState);
+    const profile = businessSalesProfilePrompt(businessProfile);
     const normalizedCustomerText = context?.normalizedCustomerText?.trim() || '';
     return `Siz ${channel}dagi QULAY AI SOTUV AGENTISIZ. Siz mijoz emassiz; biznes nomidan odam sotuvchidek tabiiy, tez va foydali gaplashasiz. Mijoz: ${customer}. Javob tili: ${language}.
 
@@ -639,6 +665,10 @@ Mahsulot, mavjudlik, ombor, public narx, chegirma/aksiya va deliveryga oid real 
 
 MAXFIYLIK:
 Biznes egasining shaxsiy xotirasi, vazifalari, kalendari, fayllari, kontaktlari, ichki moliyasi, foydasi, qarzlar, xodimlar, maosh, supplier, tannarx/cost/margin va ichki reportlar mijoz uchun maxfiy. Tashqi chatdan hech qanday write/actionni avtomatik bajarmang. Buyurtma tayyor bo‘lsa kerakli ma’lumotni yig‘ib, tabiiy tarzda yakuniy tasdiq so‘rang; faqat haqiqatan zarur bo‘lsa inson sotuvchiga topshirishni ayting.
+
+BIZNESNING CUSTOMER-FACING SALES PROFILI:
+${profile}
+Bu profil do‘kon manzili, ish vaqti, delivery/pickup va public to‘lov qoidalari uchun source-of-truth. Profilga kiritilmagan faktni uydirmang.
 
 BIZNESNING SAQLANGAN SALES PLAYBOOK QOIDALARI:
 ${playbook.length ? JSON.stringify(playbook).slice(0, 24000) : 'Hali maxsus qoida saqlanmagan. Yuqoridagi xavfsiz default sotuv qoidalaridan foydalaning.'}

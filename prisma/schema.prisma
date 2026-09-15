@@ -261,8 +261,10 @@ model User {
   telegramConnection     TelegramConnection?
   telegramSalesSessions  TelegramSalesSession[]
   salesPlaybookRules      SalesPlaybookRule[]
-  whatsAppConnection     WhatsAppConnection?
-  whatsAppSalesSessions  WhatsAppSalesSession[]
+  businessSalesProfile    BusinessSalesProfile?
+  salesInboundReceipts    SalesInboundReceipt[]
+  whatsAppConnection      WhatsAppConnection?
+  whatsAppSalesSessions   WhatsAppSalesSession[]
   whatsAppInboundReceipts WhatsAppInboundReceipt[]
   googleConnection       GoogleConnection?
   bitoConnection         BitoConnection?
@@ -467,6 +469,39 @@ model SalesPlaybookRule {
 
   @@unique([userId, title])
   @@index([userId, active, priority])
+}
+
+
+model BusinessSalesProfile {
+  id               String   @id @default(uuid()) @db.Uuid
+  userId           String   @unique @db.Uuid
+  storeAddress     String?  @db.Text
+  businessHours    String?  @db.VarChar(300)
+  publicPhone      String?  @db.VarChar(50)
+  deliveryEnabled  Boolean?
+  deliveryAreas    String[] @default([])
+  deliveryPolicy   String?  @db.Text
+  pickupEnabled    Boolean?
+  paymentMethods   String[] @default([])
+  minimumOrderNote String?  @db.Text
+  wholesalePolicy  String?  @db.Text
+  discountPolicy   String?  @db.Text
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model SalesInboundReceipt {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @db.Uuid
+  channel   String   @db.VarChar(20)
+  peerId    String   @db.VarChar(200)
+  messageId String   @db.VarChar(200)
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([channel, userId, peerId, messageId])
+  @@index([userId, createdAt])
 }
 
 model WhatsAppConnection {
