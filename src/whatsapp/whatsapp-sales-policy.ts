@@ -1,16 +1,19 @@
+import { normalizeSalesTextForUnderstanding } from '../ai-agent/universal-sales-context';
 const SALES_TRIGGER = /(?:narx|nech\s*pul|qancha|bormi|mavjud|qoldiq|ombor|mahsulot|tovar|dona|kg|litr|model|rang|variant|chegirma|aksiya|promo|buyurtma|zakaz|olaman|olmoqch|kerak|yetkaz|delivery|достав|цена|сколько|есть\s+ли|в\s+налич|товар|продукт|заказ|скидк|price|stock|available|order)/iu;
 const CLEARLY_NON_SALES = /(?:futbol|football|kino|film|ob[-\s]?havo|weather|siyosat|politic|yangilik|news|o['‘’]?yin|game|musiqa|music)/iu;
 const GREETING = /^(?:salom+|assalomu\s+alaykum|alaykum\s+assalom|hello+|hi+|privet|привет|здравствуйте)[!.?\s]*$/iu;
 
 export function isWhatsAppSalesRelevant(text: string, recentSalesContext: boolean, messageType?: string): boolean {
+  const normalized = normalizeSalesTextForUnderstanding(text);
   if (recentSalesContext) return true;
-  if (CLEARLY_NON_SALES.test(text)) return false;
+  if (CLEARLY_NON_SALES.test(normalized)) return false;
   if (messageType === 'interactive' || messageType === 'button') return true;
-  return SALES_TRIGGER.test(text) || GREETING.test(text);
+  return SALES_TRIGGER.test(normalized) || GREETING.test(normalized);
 }
 
 export function shouldActivateWhatsAppSalesContext(text: string, recentSalesContext: boolean): boolean {
-  return recentSalesContext || SALES_TRIGGER.test(text) || GREETING.test(text);
+  const normalized = normalizeSalesTextForUnderstanding(text);
+  return recentSalesContext || SALES_TRIGGER.test(normalized) || GREETING.test(normalized);
 }
 
 /**

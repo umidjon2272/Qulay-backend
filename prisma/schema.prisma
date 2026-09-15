@@ -440,6 +440,7 @@ model TelegramSalesSession {
   lastOutboundAt       DateTime?
   salesContextUntil    DateTime?
   ownerPausedUntil     DateTime?
+  salesState           Json?
   createdAt            DateTime     @default(now())
   updatedAt            DateTime     @updatedAt
   user                 User         @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -505,6 +506,7 @@ model WhatsAppSalesSession {
   salesContextUntil DateTime?
   lastInboundAt     DateTime?
   lastOutboundAt    DateTime?
+  salesState         Json?
   createdAt         DateTime     @default(now())
   updatedAt         DateTime     @updatedAt
   user              User         @relation(fields: [userId], references: [id], onDelete: Cascade)

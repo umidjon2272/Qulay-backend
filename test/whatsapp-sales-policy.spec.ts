@@ -12,6 +12,12 @@ describe('WhatsApp sales policy', () => {
     expect(shouldActivateWhatsAppSalesContext('salom', false)).toBe(true);
   });
 
+  it('understands colloquial typo-heavy sales messages', () => {
+    expect(isWhatsAppSalesRelevant('coca cola bomidmi?', false, 'text')).toBe(true);
+    expect(isWhatsAppSalesRelevant('dastafka qlaszmi?', false, 'text')).toBe(true);
+  });
+
+
   it('reads Ogg granule duration at 48kHz', () => {
     const buffer = Buffer.alloc(28);
     buffer.write('OggS', 0, 'ascii');

@@ -9,6 +9,7 @@ import { WhatsAppCryptoService } from './whatsapp-crypto.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { isWhatsAppSalesRelevant, oggOpusDurationSeconds, shouldActivateWhatsAppSalesContext } from './whatsapp-sales-policy';
 import { APP_ERROR_CODES } from '../common/errors/app-error-codes';
+import { UniversalSalesState, coerceUniversalSalesState, normalizeSalesTextForUnderstanding, suppressUnaskedExactStock, updateUniversalSalesState } from '../ai-agent/universal-sales-context';
 
 export type WhatsAppSalesAgentSettings = {
   configured: boolean;
@@ -290,16 +291,30 @@ export class WhatsAppSalesAgentService {
         await this.prisma.whatsAppSalesSession.update({ where: { id: session.id }, data: { salesContextUntil: activateUntil } });
       }
 
+      const normalizedCustomerText = normalizeSalesTextForUnderstanding(text);
+      const previousSalesState = recentSalesContext ? coerceUniversalSalesState(session.salesState) : { version: 1 as const };
+      const salesState = updateUniversalSalesState(previousSalesState, text);
+      await this.prisma.whatsAppSalesSession.update({
+        where: { id: session.id },
+        data: { salesState: salesState as unknown as Prisma.InputJsonValue },
+      });
+
       const result = await this.ai.chat(
         userId,
         { message: text, conversationId: session.conversationId, voice: message.type === 'audio' },
         undefined,
         undefined,
-        { externalSales: true, channel: 'WHATSAPP', customer: { peerName: displayName, peerType: 'USER', senderName: displayName } },
+        {
+          externalSales: true,
+          channel: 'WHATSAPP',
+          customer: { peerName: displayName, peerType: 'USER', senderName: displayName },
+          salesState,
+          normalizedCustomerText,
+        },
       );
       let answer = result.message?.trim() || 'Savolingizni operatorga qoldirdim.';
       if (result.pendingConfirmation) answer = 'Bu amal sotuvchi tasdig‘ini talab qiladi. So‘rovingiz operatorga qoldirildi.';
-      answer = this.customerSafeAnswer(answer);
+      answer = this.customerSafeAnswer(answer, salesState);
       await this.cloud.sendText(userId, message.from, answer);
       await this.prisma.whatsAppSalesSession.update({ where: { id: session.id }, data: { lastInboundAt: new Date(), lastOutboundAt: new Date(), customerName: displayName ?? session.customerName } });
     } catch (error) {
@@ -345,15 +360,15 @@ export class WhatsAppSalesAgentService {
     return '';
   }
 
-  private customerSafeAnswer(value: string): string {
-    return value
+  private customerSafeAnswer(value: string, salesState?: UniversalSalesState): string {
+    const sanitized = value
       .replace(/(?:bito|mcp|qulay\s*backend|api\s*key|oauth|token)/giu, 'tizim')
       .replace(/BITO_[A-Z0-9_]+/g, 'xizmat xatosi')
       .replace(/WHATSAPP_[A-Z0-9_]+/g, 'xizmat xatosi')
       .replace(/\b(?:access|refresh)[-_ ]?token\b/giu, 'ruxsat')
       .replace(/\s{3,}/g, '\n\n')
-      .trim()
-      .slice(0, 3900);
+      .trim();
+    return suppressUnaskedExactStock(sanitized, salesState).slice(0, 3900);
   }
 
   private safeId(value: string): string { return createHash('sha256').update(value).digest('hex').slice(0, 10); }

@@ -1,6 +1,6 @@
 import { ForbiddenException, Injectable, Logger, OnModuleDestroy, OnModuleInit, NotFoundException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
-import { TelegramConnectionStatus } from '@prisma/client';
+import { Prisma, TelegramConnectionStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AiAgentService } from '../ai-agent/ai-agent.service';
 import { AiVoiceService } from '../ai-agent/ai-voice.service';
@@ -10,6 +10,7 @@ import { TelegramIntegrationService } from './telegram-integration.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { bitoInventorySearchTerm } from '../bito/bito-intent';
 import { BitoToolBridgeService } from '../bito/bito-tool-bridge.service';
+import { UniversalSalesState, coerceUniversalSalesState, normalizeSalesTextForUnderstanding, suppressUnaskedExactStock, updateUniversalSalesState } from '../ai-agent/universal-sales-context';
 
 export type TelegramSalesAgentSettings = {
   enabled: boolean;
@@ -337,12 +338,17 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
 
       if (!salesSession) salesSession = await this.ensureSalesSession(userId, incoming);
       const contextUntil = new Date(Date.now() + SALES_CONTEXT_WINDOW_MS);
-      if (!salesSession.salesContextUntil || salesSession.salesContextUntil.getTime() < contextUntil.getTime() - 60_000 || salesSession.ownerPausedUntil) {
-        salesSession = await this.prisma.telegramSalesSession.update({
-          where: { id: salesSession.id },
-          data: { salesContextUntil: contextUntil, ownerPausedUntil: null },
-        });
-      }
+      const normalizedCustomerText = normalizeSalesTextForUnderstanding(text);
+      const previousSalesState = activeSalesContext ? coerceUniversalSalesState(salesSession.salesState) : { version: 1 as const };
+      const salesState = updateUniversalSalesState(previousSalesState, text);
+      await this.prisma.telegramSalesSession.update({
+        where: { id: salesSession.id },
+        data: {
+          salesContextUntil: contextUntil,
+          ownerPausedUntil: null,
+          salesState: salesState as unknown as Prisma.InputJsonValue,
+        },
+      });
 
       const result = await this.ai.chat(
         userId,
@@ -357,12 +363,14 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
             peerType: incoming.peer.type,
             senderName: incoming.senderDisplayName,
           },
+          salesState,
+          normalizedCustomerText,
         },
       );
 
       let answer = result.message?.trim() || 'Savolingizni operatorga qoldirdim.';
       if (result.pendingConfirmation) answer = 'Bu amal sotuvchi tasdig‘ini talab qiladi. So‘rovingiz operatorga qoldirildi.';
-      answer = this.customerSafeAnswer(answer);
+      answer = this.customerSafeAnswer(answer, salesState);
       await this.safeReply(userId, incoming.peer.peerId, answer);
       await this.markProcessed(salesSession.id, incoming.messageId, true, contextUntil);
     } catch (error) {
@@ -389,7 +397,7 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
   }
 
   private async isPrivateSalesIntent(userId: string, text: string, incoming: TelegramIncomingMessage): Promise<boolean> {
-    const value = text.trim();
+    const value = normalizeSalesTextForUnderstanding(text);
     if (!value || SOCIAL_ONLY.test(value)) return false;
 
     const establishedPersonal = incoming.senderIsContact
@@ -432,7 +440,7 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
   }
 
   private async isGroupSalesIntent(userId: string, text: string): Promise<boolean> {
-    const value = text.trim();
+    const value = normalizeSalesTextForUnderstanding(text);
     if (!value || SOCIAL_ONLY.test(value)) return false;
     if (EXPLICIT_SALES_TEXT.test(value)) return true;
     if (!AVAILABILITY_TEXT.test(value) || NON_SALES_AVAILABILITY.test(value) || CASUAL_PERSONAL.test(value)) return false;
@@ -536,13 +544,13 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
     return `${userId}:${peerId}:${messageId}`;
   }
 
-  private customerSafeAnswer(value: string): string {
+  private customerSafeAnswer(value: string, salesState?: UniversalSalesState): string {
     const sanitized = value
       .replace(TECHNICAL_NAME, 'tizim')
       .replace(/BITO_[A-Z0-9_]+/g, 'xizmat xatosi')
       .replace(/\b(?:access|refresh)[-_ ]?token\b/giu, 'ruxsat')
       .trim();
-    return sanitized.slice(0, 3900);
+    return suppressUnaskedExactStock(sanitized, salesState).slice(0, 3900);
   }
 
   private safeUserId(userId: string): string {
