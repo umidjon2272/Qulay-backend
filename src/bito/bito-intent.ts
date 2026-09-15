@@ -101,7 +101,16 @@ export function bitoInventoryIncludeZero(text: string): boolean {
  * inventory service simply fetches the full verified list and filters locally.
  */
 export function bitoInventorySearchTerm(text: string): string | undefined {
-  const valueTokens = tokens(text).map(token => token.replace(/'/g, ''));
+  const aliasToken = (token: string) => {
+    const value = token.replace(/'/g, '').toLocaleLowerCase();
+    if (/^(?:a+y+fon|ayfon|aifon|aiphon|iphon|iphone)$/u.test(value)) return 'iphone';
+    if (/^(?:por|proo|pro)$/u.test(value)) return 'pro';
+    if (/^(?:koka|coca)$/u.test(value)) return 'coca';
+    if (/^(?:kola|cola)$/u.test(value)) return 'cola';
+    return value;
+  };
+  const rawTokens = tokens(text).map(aliasToken);
+  const valueTokens = rawTokens.filter((token, index) => token !== rawTokens[index - 1]);
   if (!valueTokens.length) return undefined;
 
   const noiseStems = [
@@ -109,8 +118,8 @@ export function bitoInventorySearchTerm(text: string): string | undefined {
     'mahsulot', 'tovar', 'product', 'goods', 'katalog', 'catalog', 'qaysi', 'nima', 'nimalar',
     'salom', 'assalomu', 'alaykum', 'aziz', 'qanday', 'iltimos', 'please', 'hello', 'hi', 'privet',
     'sizda', 'sizlarda', 'siz', 'bizga', 'menga', 'kerak', 'olmoqch', 'xohlay', 'hohlay',
-    'narx', 'price', 'цена', 'qancha', 'nechta', 'necha', 'bor', 'bormi', 'bormikan', 'mavjud', 'qolgan', 'qolmagan', 'tugagan', 'korsat',
-    'chiqar', 'ayt', 'top', 'qidir', 'izla', 'hamma', 'barcha', 'toliq', 'jami', 'dona',
+    'narx', 'price', 'цена', 'qancha', 'nechta', 'necha', 'bor', 'mavjud', 'qolgan', 'qolmagan', 'tugagan', 'korsat',
+    'chiqar', 'ayt', 'top', 'qidir', 'izla', 'tekshir', 'korchi', 'kurch', 'qani', 'ekan', 'hamma', 'barcha', 'toliq', 'jami', 'dona',
     'kg', 'litr', 'litre', 'ml', 'gramm', 'ta', 'available', 'show', 'list', 'find', 'how', 'many', 'есть', 'сколько',
     'покаж', 'найд', 'товар', 'остат', 'склад',
   ];
@@ -119,15 +128,16 @@ export function bitoInventorySearchTerm(text: string): string | undefined {
     if (token.length <= 1 || token === 'tasini') return false;
     if (noiseStems.some(stem => token === stem || token.startsWith(stem))) return false;
     if (/^\d+(?:[.,]\d+)?$/u.test(token)) {
-      const next = valueTokens[index + 1]?.replace(/'/g, '') ?? '';
+      const next = valueTokens[index + 1] ?? '';
       // Preserve model/SKU numbers ("iPhone 13 Pro") but drop purchase
       // quantities ("20 ta", "2 kg", "1.5 litr").
       return !quantityUnits.has(next);
     }
     return true;
   });
-  if (!residual.length || residual.length > 6) return undefined;
-  const term = residual.join(' ').trim();
+  const deduplicatedResidual = residual.filter((token, index) => residual.indexOf(token) === index);
+  if (!deduplicatedResidual.length || deduplicatedResidual.length > 6) return undefined;
+  const term = deduplicatedResidual.join(' ').trim();
   return term.length >= 2 ? term : undefined;
 }
 

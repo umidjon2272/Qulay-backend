@@ -89,10 +89,10 @@ export function normalizeSalesTextForUnderstanding(input: string): string {
     [/\b(?:samovivoz|samovyvoz|самовывоз)\b/giu, ' pickup '],
     [/\b(?:maslaxat|maslahat|tavsiya)\b/giu, ' maslahat '],
     [/\b(?:adres|адрес)\b/giu, ' manzil '],
-    [/\b(?:a+yfon|ayfon|iphon)\b/giu, ' iphone '],
-    [/\bpor\b/giu, ' pro '],
-    [/\bkoka\b/giu, ' coca '],
-    [/\bkola\b/giu, ' cola '],
+    [/\b(?:a+y+fon|ayfon|aifon|aiphon|iphon)\b/giu, ' iphone '],
+    [/\b(?:por|proo)\b/giu, ' pro '],
+    [/\b(?:koka)\b/giu, ' coca '],
+    [/\b(?:kola)\b/giu, ' cola '],
   ];
   for (const [pattern, replacement] of replacements) text = text.replace(pattern, replacement);
   return text.replace(/\s+/g, ' ').trim();
@@ -311,10 +311,10 @@ function extractBudget(text: string): string | undefined {
 
 
 function extractTiming(rawText: string, normalized: string): string | undefined {
-  const hasTimeSignal = /(?:bugun|ertaga|indin|today|tomorrow|сегодня|завтра|soat|at|ga)/iu.test(normalized);
+  const hasTimeSignal = /\b(?:bugun|ertaga|indin|today|tomorrow|сегодня|завтра|soat|at|ga)\b/iu.test(normalized);
   if (!hasTimeSignal) return undefined;
-  const clock = rawText.match(/(?:[01]?\d|2[0-3])(?::[0-5]\d)?\s*(?:ga|da|larda)?/u);
-  if (!clock && !/(?:bugun|ertaga|indin|today|tomorrow|сегодня|завтра)/iu.test(normalized)) return undefined;
+  const clock = rawText.match(/\b(?:[01]?\d|2[0-3])(?::[0-5]\d)?\s*(?:ga|da|larda)?\b/u);
+  if (!clock && !/\b(?:bugun|ertaga|indin|today|tomorrow|сегодня|завтра)\b/iu.test(normalized)) return undefined;
   return rawText.trim().slice(0, 120);
 }
 

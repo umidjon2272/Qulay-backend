@@ -12,6 +12,8 @@ describe('universal sales context', () => {
     expect(normalizeSalesTextForUnderstanding('mjoz qmat desa arzonro bomidmi dastafka qlaszmi')).toContain('qimmat');
     expect(normalizeSalesTextForUnderstanding('mjoz qmat desa arzonro bomidmi dastafka qlaszmi')).toContain('arzonroq');
     expect(normalizeSalesTextForUnderstanding('mjoz qmat desa arzonro bomidmi dastafka qlaszmi')).toContain('delivery');
+    expect(normalizeSalesTextForUnderstanding('aayfon 13 por borm')).toContain('iphone 13 pro');
+    expect(normalizeSalesTextForUnderstanding('koka kola borm')).toContain('coca cola');
   });
 
   it('keeps the product while short follow-ups change variant and quantity', () => {

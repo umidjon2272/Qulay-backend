@@ -96,6 +96,8 @@ export class BitoToolBridgeService {
       description:
         'Bito ERPdagi joriy ombor qoldiqlarini real mahsulot nomi, miqdor va birlik bilan qaytaradi. '
         + 'User ombor, qoldiq, mahsulot mavjudligi yoki aniq mahsulot qoldig‘ini so‘rasa shu READ toolni ishlating. '
+        + 'Qidiruv family/alias/typo fallback bilan ishlaydi: masalan iPhone so‘rovi iPhone 13 Pro kabi katalog variantlarini, ayfon/13 por kabi yozuvlar esa yaqin real nomlarni topishi mumkin. '
+        + 'availabilityStatus maydoni IN_STOCK, OUT_OF_STOCK yoki NOT_FOUND holatini ajratadi; OUT_OF_STOCK mahsulot katalogda bor, lekin qoldig‘i tugagan degani. '
         + 'Barcha sahifalar serverda avtomatik yig‘iladi; tasdiqlash talab qilinmaydi.',
       parameters: {
         type: 'object',
@@ -338,6 +340,7 @@ export class BitoToolBridgeService {
 
     let listResult = await this.readToolFully(userId, verified.list, listInput);
     let records = recordsFromExpandedResult(listResult);
+    let fetchedFullList = !requestedSearch || !schemaHasProperty(verified.list.inputSchema, 'search');
 
     // Some provider-side search implementations are stricter than users expect.
     // If a search returns no rows, fetch the verified full stock list and filter
@@ -346,16 +349,44 @@ export class BitoToolBridgeService {
       const retryInput = defaultReadInput(verified.list.inputSchema);
       listResult = await this.readToolFully(userId, verified.list, retryInput);
       records = recordsFromExpandedResult(listResult);
+      fetchedFullList = true;
     }
 
     if (!records.length && !hasEmptyCollection(listResult)) throw new ServiceUnavailableException('BITO_MAPPING_FAILED');
 
-    const normalized = normalizeSingleInventory(records);
+    let normalized = normalizeSingleInventory(records);
+    let rankedMatches = requestedSearch ? rankInventoryMatches(normalized, requestedSearch) : [];
+
+    // A provider search can be literal while a human customer writes aliases or
+    // typos ("ayfon", "13 por", "koka kola"). If the provider returned
+    // rows but none survive our semantic catalog matcher, retry from the full
+    // verified stock list before saying that a product is unavailable.
+    if (requestedSearch && !fetchedFullList && (rankedMatches.length === 0 || !rankedMatches.some(match => match.item.quantity > 0)) && records.length > 0) {
+      const retryInput = defaultReadInput(verified.list.inputSchema);
+      const retryResult = await this.readToolFully(userId, verified.list, retryInput);
+      const retryRecords = recordsFromExpandedResult(retryResult);
+      if (retryRecords.length || hasEmptyCollection(retryResult)) {
+        listResult = retryResult;
+        records = retryRecords;
+        normalized = normalizeSingleInventory(records);
+        rankedMatches = rankInventoryMatches(normalized, requestedSearch);
+      }
+    }
+
     const includeZero = input.includeZero === true;
-    const items = normalized
-      .filter(item => includeZero || item.quantity !== 0)
-      .filter(item => !requestedSearch || inventorySearchMatches(item.name, requestedSearch))
+    const allMatchedItems = requestedSearch ? rankedMatches.map(match => match.item) : normalized;
+    const availableMatchedItems = allMatchedItems.filter(item => item.quantity > 0);
+    const outOfStockItems = requestedSearch ? allMatchedItems.filter(item => item.quantity <= 0) : [];
+    const items = (includeZero ? allMatchedItems : availableMatchedItems)
+      .slice()
       .sort((a, b) => a.name.localeCompare(b.name, 'uz'));
+    const matchedStockQuantity = allMatchedItems.reduce((sum, item) => sum + Math.max(0, Number.isFinite(item.quantity) ? item.quantity : 0), 0);
+    const availabilityStatus = requestedSearch
+      ? allMatchedItems.length === 0 ? 'NOT_FOUND' : matchedStockQuantity > 0 ? 'IN_STOCK' : 'OUT_OF_STOCK'
+      : undefined;
+    const familyAlternatives = requestedSearch
+      ? findInventoryFamilyAlternatives(normalized, requestedSearch, new Set(allMatchedItems.map(item => item.name)))
+      : [];
 
     // Summary is useful for aggregate counts/alerts but must never make the
     // inventory list fail. Bito business/report tools may independently error.
@@ -395,10 +426,22 @@ export class BitoToolBridgeService {
       totalStockQuantity,
       totalPositions: records.length,
       matchedCount: items.length,
+      catalogMatchedCount: allMatchedItems.length,
+      availableMatchedCount: availableMatchedItems.length,
+      outOfStockMatchedCount: outOfStockItems.length,
+      matchedStockQuantity,
+      ...(requestedSearch ? {
+        searchQuery: requestedSearch,
+        normalizedSearchQuery: canonicalInventoryText(requestedSearch),
+        availabilityStatus,
+        matchMode: rankedMatches[0]?.mode ?? 'none',
+      } : {}),
       items,
+      ...(outOfStockItems.length ? { outOfStockItems: outOfStockItems.slice(0, 20) } : {}),
+      ...(familyAlternatives.length ? { familyAlternatives } : {}),
       ...(summary !== undefined ? { summary } : {}),
       ...(rawRows ? { rawRows, unmappedCount: unmapped, rawRowsTruncated: unmapped > rawRows.length } : {}),
-      note: 'productCount/stockPositionCount = Bito stock rows/variants; uniqueProductNameCount = deduplicated display names; totalStockQuantity = summed units. For “nechta mahsulot” report productCount, never totalStockQuantity. Internal identifiers are intentionally not exposed.',
+      note: 'productCount/stockPositionCount = Bito stock rows/variants; uniqueProductNameCount = deduplicated display names; totalStockQuantity = summed units. For product search, availabilityStatus=IN_STOCK means at least one matched position has stock; OUT_OF_STOCK means the catalog match exists but current quantity is zero; NOT_FOUND means no confident catalog match after alias/fuzzy fallback. familyAlternatives are real same-family catalog candidates, not invented suggestions. For “nechta mahsulot” report productCount, never totalStockQuantity. Internal identifiers are intentionally not exposed.',
     };
   }
 
@@ -717,70 +760,104 @@ function comparableInventoryText(value: string): string {
   return value
     .normalize('NFKC')
     .toLocaleLowerCase()
-    // Canonicalize volume tokens before punctuation is stripped so 1.5L never
-    // becomes a loose family match for 1L.
-    .replace(/\b(\d+)[.,](\d+)\s*(?:l|ltr|litr|litre)\b/giu, '$1d$2l')
-    .replace(/\b(\d+)\s*(?:l|ltr|litr|litre)\b/giu, '$1l')
+    // Preserve decimal/whole-liter model tokens before punctuation is stripped
+    // so 1.5L never becomes a loose match for 1L.
+    .replace(/\b(\d+)[.,](\d+)\s*(?:l|ltr|litr|litre|litrlik)\b/giu, '$1d$2l')
+    .replace(/\b(\d+)\s*(?:l|ltr|litr|litre|litrlik)\b/giu, '$1l')
     .replace(/[^\p{L}\p{N}]+/gu, ' ')
     .replace(/\s+/g, ' ')
-    .trim()
-    // Customer-facing search must tolerate common Uzbek/Russian transliteration
-    // and typo variants without changing the canonical product name returned
-    // from Bito. These aliases are used only for comparison.
-    .replace(/\b(?:a+yfon|ayfon|iphon|iphone)\b/giu, 'iphone')
-    .replace(/\bpor\b/giu, 'pro')
-    .replace(/\bkoka\b/giu, 'coca')
-    .replace(/\bkola\b/giu, 'cola');
+    .trim();
 }
 
-function inventorySearchMatches(itemName: string, requestedSearch: string): boolean {
-  const search = comparableInventoryText(requestedSearch);
-  if (!search) return true;
-  const name = comparableInventoryText(itemName);
-  const compactSearch = search.replace(/\s+/g, '');
-  if (name.includes(search) || name.replace(/\s+/g, '').includes(compactSearch)) return true;
+type InventoryMatchMode = 'exact' | 'family' | 'fuzzy';
+type RankedInventoryMatch = { item: InventoryItem; score: number; mode: InventoryMatchMode };
 
-  const queryTokens = [...new Set(search.split(' ').filter(token => token.length >= 2))];
-  const nameTokens = [...new Set(name.split(' ').filter(token => token.length >= 2))];
-  if (!queryTokens.length || !nameTokens.length) return false;
-
-  const specific = queryTokens.filter(token => /\d/u.test(token));
-  if (specific.length && !specific.every(token => /^\d+$/u.test(token)
-    ? nameTokens.includes(token)
-    : nameTokens.some(candidate => inventoryTokenMatch(token, candidate)))) return false;
-
-  const words = queryTokens.filter(token => !/^\d+(?:[.,]\d+)?$/u.test(token));
-  const matchedWords = words.filter(query => nameTokens.some(candidate => inventoryTokenMatch(query, candidate)));
-  if (!matchedWords.length) return false;
-
-  // A strong family token such as "iphone" should find "Iphone 13 por" even
-  // when the customer's sentence contains extra noisy/typo words. Specific
-  // model numbers, when present, are still mandatory above.
-  if (matchedWords.some(token => token.length >= 5)) return true;
-  return matchedWords.length / Math.max(1, words.length) >= 0.6;
+function canonicalInventoryToken(token: string): string {
+  if (/^(?:a+y+fon|ayfon|aifon|aiphon|iphon|iphone)$/u.test(token)) return 'iphone';
+  if (/^(?:por|proo|pro)$/u.test(token)) return 'pro';
+  if (/^(?:koka|coca)$/u.test(token)) return 'coca';
+  if (/^(?:kola|cola)$/u.test(token)) return 'cola';
+  return token;
 }
 
-function inventoryTokenMatch(left: string, right: string): boolean {
-  if (left === right || left.startsWith(right) || right.startsWith(left)) return true;
-  const maxDistance = Math.max(left.length, right.length) >= 6 ? 2 : 1;
-  return levenshteinDistance(left, right) <= maxDistance;
+function canonicalInventoryText(value: string): string {
+  const tokens = comparableInventoryText(value).split(/\s+/u).filter(Boolean).map(canonicalInventoryToken);
+  return tokens.filter((token, index) => token !== tokens[index - 1]).join(' ').trim();
+}
+
+function rankInventoryMatches(items: InventoryItem[], query: string): RankedInventoryMatch[] {
+  if (!query.trim()) return items.map(item => ({ item, score: 1, mode: 'exact' as const }));
+  return items
+    .map(item => ({ item, ...inventoryMatchScore(item.name, query) }))
+    .filter((entry): entry is RankedInventoryMatch => Boolean(entry.mode) && entry.score >= 0.78)
+    .sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name, 'uz'));
+}
+
+function inventoryMatchScore(name: string, query: string): { score: number; mode?: InventoryMatchMode } {
+  const haystack = canonicalInventoryText(name);
+  const needle = canonicalInventoryText(query);
+  if (!haystack || !needle) return { score: 0 };
+  if (haystack === needle) return { score: 1, mode: 'exact' };
+  if (haystack.includes(needle)) return { score: 0.99, mode: 'family' };
+
+  const haystackTokens = haystack.split(' ');
+  const needleTokens = [...new Set(needle.split(' ').filter(Boolean))];
+  if (!needleTokens.length) return { score: 0 };
+  const numericNeedles = needleTokens.filter(token => /^\d+$/u.test(token));
+  if (numericNeedles.some(token => !haystackTokens.includes(token))) return { score: 0 };
+  if (needleTokens.every(token => haystackTokens.includes(token))) return { score: 0.96, mode: 'family' };
+
+  const similarities = needleTokens.map(token => {
+    if (/^\d+$/u.test(token)) return haystackTokens.includes(token) ? 1 : 0;
+    return Math.max(0, ...haystackTokens.map(candidate => tokenSimilarity(token, candidate)));
+  });
+  const average = similarities.reduce((sum, value) => sum + value, 0) / similarities.length;
+  const weakest = Math.min(...similarities);
+  if (weakest >= 0.72 && average >= 0.82) return { score: average * 0.94, mode: 'fuzzy' };
+  return { score: 0 };
+}
+
+function findInventoryFamilyAlternatives(items: InventoryItem[], query: string, excludedNames: Set<string>): InventoryItem[] {
+  const tokens = canonicalInventoryText(query).split(' ').filter(token => /\p{L}/u.test(token));
+  const genericModifiers = new Set(['pro', 'max', 'plus', 'mini', 'ultra', 'pet']);
+  const anchors = tokens.filter(token => token.length >= 3 && !genericModifiers.has(token));
+  if (!anchors.length) return [];
+  const candidates = items
+    .filter(item => !excludedNames.has(item.name))
+    .map(item => {
+      const name = canonicalInventoryText(item.name);
+      const tokenSet = new Set(name.split(' '));
+      const anchorHits = anchors.filter(anchor => tokenSet.has(anchor) || name.includes(anchor)).length;
+      return { item, anchorHits };
+    })
+    .filter(entry => entry.anchorHits > 0)
+    .sort((a, b) => b.anchorHits - a.anchorHits || Number(b.item.quantity > 0) - Number(a.item.quantity > 0) || a.item.name.localeCompare(b.item.name, 'uz'))
+    .slice(0, 5)
+    .map(entry => entry.item);
+  return candidates;
+}
+
+function tokenSimilarity(left: string, right: string): number {
+  if (left === right) return 1;
+  if (!left || !right) return 0;
+  if (left.length >= 4 && right.length >= 4 && (left.startsWith(right) || right.startsWith(left))) {
+    return Math.min(left.length, right.length) / Math.max(left.length, right.length);
+  }
+  const distance = levenshteinDistance(left, right);
+  return 1 - distance / Math.max(left.length, right.length);
 }
 
 function levenshteinDistance(left: string, right: string): number {
-  if (left === right) return 0;
-  if (!left.length) return right.length;
-  if (!right.length) return left.length;
   const previous = Array.from({ length: right.length + 1 }, (_, index) => index);
   for (let i = 1; i <= left.length; i += 1) {
-    const current = [i];
+    let diagonal = previous[0];
+    previous[0] = i;
     for (let j = 1; j <= right.length; j += 1) {
-      current[j] = Math.min(
-        current[j - 1] + 1,
-        previous[j] + 1,
-        previous[j - 1] + (left[i - 1] === right[j - 1] ? 0 : 1),
-      );
+      const above = previous[j];
+      const cost = left[i - 1] === right[j - 1] ? 0 : 1;
+      previous[j] = Math.min(previous[j] + 1, previous[j - 1] + 1, diagonal + cost);
+      diagonal = above;
     }
-    for (let j = 0; j < current.length; j += 1) previous[j] = current[j];
   }
   return previous[right.length];
 }

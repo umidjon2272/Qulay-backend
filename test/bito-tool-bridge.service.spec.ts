@@ -110,6 +110,58 @@ describe('BitoToolBridgeService', () => {
     expect(bito.callToolForUser).toHaveBeenCalledWith('u', BITO_INVENTORY_PRIMARY_TOOL, expect.objectContaining({ page: 1, limit: 200, search: 'Cola' }), true);
   });
 
+  it('finds product families and common aliases instead of falsely saying iPhone is unavailable', async () => {
+    const rows = [
+      { product: { name: 'Iphone 13 por', unit: { name: 'dona' } }, quantity: 3, price: 4_800_000 },
+      { product: { name: 'Iphone 14 Pro Max', unit: { name: 'dona' } }, quantity: 2, price: 8_000_000 },
+      { product: { name: 'Samsung A55', unit: { name: 'dona' } }, quantity: 4, price: 5_000_000 },
+    ];
+    const bito = {
+      listToolsForUser: jest.fn().mockResolvedValue([inventoryTool]),
+      callToolForUser: jest.fn(async (_user: string, _tool: string, input: Record<string, unknown>) => {
+        // Simulate Bito provider search being literal and failing on customer aliases.
+        if (input.search === 'ayfon' || input.search === 'iphone 13 pro') return { items: [], meta: { total: 0, page: 1 } };
+        return { items: rows, meta: { total: rows.length, page: 1 } };
+      }),
+    };
+    const service = new BitoToolBridgeService(bito as never, activity(), config);
+
+    const family = await service.getFullInventorySnapshot('u', { search: 'iphone' });
+    expect(family.availabilityStatus).toBe('IN_STOCK');
+    expect(family.items.map(item => item.name)).toEqual(expect.arrayContaining(['Iphone 13 por', 'Iphone 14 Pro Max']));
+    expect(family.items.map(item => item.name)).not.toContain('Samsung A55');
+
+    const alias = await service.getFullInventorySnapshot('u', { search: 'ayfon' });
+    expect(alias.availabilityStatus).toBe('IN_STOCK');
+    expect(alias.items.map(item => item.name)).toEqual(expect.arrayContaining(['Iphone 13 por', 'Iphone 14 Pro Max']));
+
+    const typo = await service.getFullInventorySnapshot('u', { search: 'iphone 13 pro' });
+    expect(typo.availabilityStatus).toBe('IN_STOCK');
+    expect(typo.items[0]).toMatchObject({ name: 'Iphone 13 por', quantity: 3 });
+  });
+
+  it('distinguishes a real zero-stock product from a product that does not exist and offers real family alternatives', async () => {
+    const rows = [
+      { product: { name: 'Iphone 13 por', unit: { name: 'dona' } }, quantity: 0, price: 4_800_000 },
+      { product: { name: 'Iphone 14 Pro Max', unit: { name: 'dona' } }, quantity: 2, price: 8_000_000 },
+    ];
+    const bito = {
+      listToolsForUser: jest.fn().mockResolvedValue([inventoryTool]),
+      callToolForUser: jest.fn().mockResolvedValue({ items: rows, meta: { total: rows.length, page: 1 } }),
+    };
+    const service = new BitoToolBridgeService(bito as never, activity(), config);
+
+    const exhausted = await service.getFullInventorySnapshot('u', { search: 'iphone 13 pro' });
+    expect(exhausted.availabilityStatus).toBe('OUT_OF_STOCK');
+    expect(exhausted.items).toEqual([]);
+    expect(exhausted.outOfStockItems).toEqual([expect.objectContaining({ name: 'Iphone 13 por', quantity: 0 })]);
+    expect(exhausted.familyAlternatives).toEqual([expect.objectContaining({ name: 'Iphone 14 Pro Max', quantity: 2 })]);
+
+    const missing = await service.getFullInventorySnapshot('u', { search: 'Pixel 99 Ultra' });
+    expect(missing.availabilityStatus).toBe('NOT_FOUND');
+    expect(missing.catalogMatchedCount).toBe(0);
+  });
+
   it('keeps a safe business-row fallback if Bito changes a display field instead of inventing a mapping', async () => {
     const bito = {
       listToolsForUser: jest.fn().mockResolvedValue([inventoryTool]),
