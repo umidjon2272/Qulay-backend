@@ -64,3 +64,24 @@ The verify token must equal `INSTAGRAM_WEBHOOK_VERIFY_TOKEN` (or the WhatsApp ve
 - Duplicate message/comment protection
 - Shared Telegram / WhatsApp / Instagram Sales Brain
 - Bito live product truth + owner-taught Product Knowledge fallback
+
+## Unpublished Meta app: development comment bridge
+
+Meta may withhold real webhook notifications while the app is not Published. For tester-only development, QULAY can poll recent real comments and route them through the **same** Instagram Sales Brain and duplicate-receipt pipeline:
+
+- `INSTAGRAM_DEV_COMMENT_POLL_ENABLED=true`
+- `INSTAGRAM_DEV_COMMENT_POLL_INTERVAL_MS=60000`
+
+Keep this bridge **false** in normal production once Meta webhooks are live. The bridge never stores or logs access tokens/comment text, skips historical comments, and uses the same comment IDs as webhook ingestion so a later webhook delivery is deduplicated.
+
+## AI Chat management
+
+The integration panel intentionally stays compact. The owner can manage Instagram behavior from QULAY AI Chat, for example:
+
+- `Instagram sotuv agentini yoq.`
+- `Instagram commentlarni o‘chir.`
+- `Oxirgi postimga "promt" deb yozganlarga directga mana bu matnni yubor.`
+- `Shu Instagram automationni to‘xtat.`
+- `Shu automationni davom ettir.`
+
+QULAY lists real posts/automations first and never invents a media ID or automation ID.
