@@ -22,4 +22,11 @@ describe('Instagram AI-chat tool context', () => {
     expect(instagramConversationContext('ertaga soat 10 ga eslatma yarat', history)).toBe(false);
     expect(instagramActionIntent('ertaga soat 10 ga eslatma yarat', history)).toBe(false);
   });
+
+  it('drops Instagram context when Uzbek-suffixed Telegram or WhatsApp is named', () => {
+    expect(instagramConversationContext('Telegramni yoq', history)).toBe(false);
+    expect(instagramActionIntent('Telegramni yoq', history)).toBe(false);
+    expect(instagramConversationContext('WhatsAppni yoq', history)).toBe(false);
+    expect(instagramActionIntent('WhatsAppni yoq', history)).toBe(false);
+  });
 });
