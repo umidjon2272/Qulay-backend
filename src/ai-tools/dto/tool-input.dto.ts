@@ -4,7 +4,7 @@ import {
   Matches, Max, MaxLength, Min, MinLength,
 } from 'class-validator';
 import {
-  FinanceCurrency, FinanceTransactionType, MemoryType, MeetingStatus, TaskPriority, TaskStatus,
+  FinanceCurrency, FinanceTransactionType, MemoryType, MeetingStatus, SalesKnowledgeAvailability, TaskPriority, TaskStatus,
 } from '@prisma/client';
 import { CreateContactDto } from '../../contacts/dto/create-contact.dto';
 import { UpdateContactDto } from '../../contacts/dto/update-contact.dto';
@@ -270,4 +270,52 @@ export class ListSalesPlaybookRulesToolInput {
 
 export class DeleteSalesPlaybookRuleToolInput {
   @IsUUID('4') ruleId!: string;
+}
+
+
+export class SaveSalesProductKnowledgeToolInput {
+  @Transform(trim) @IsString() @MinLength(2) @MaxLength(220) canonicalName!: string;
+  @IsOptional() @Transform(trim) @IsString() @MaxLength(220) productFamily?: string;
+  @IsOptional() @IsArray() @ArrayMaxSize(30) @IsString({ each: true }) aliases?: string[];
+  @IsOptional() @IsString() @MaxLength(4000) description?: string;
+  @IsOptional() @Transform(({ value }: { value: unknown }) => value === undefined || value === null || value === '' ? undefined : String(value)) @IsDecimal({ decimal_digits: '0,2' }) @Matches(FINANCE_AMOUNT_PATTERN) publicPrice?: string;
+  @IsOptional() @IsEnum(FinanceCurrency) currency?: FinanceCurrency;
+  @IsOptional() @IsEnum(SalesKnowledgeAvailability) availability?: SalesKnowledgeAvailability;
+  @IsOptional() @Type(() => Number) stockQuantity?: number;
+  @IsOptional() @Transform(trim) @IsString() @MaxLength(50) unit?: string;
+  @IsOptional() @IsArray() @ArrayMaxSize(40) @IsString({ each: true }) attributes?: string[];
+  @IsOptional() @IsString() @MaxLength(4000) note?: string;
+  @IsOptional() @IsBoolean() active?: boolean;
+}
+
+export class ListSalesProductKnowledgeToolInput {
+  @IsOptional() @Transform(trim) @IsString() @MaxLength(220) query?: string;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(200) limit?: number;
+}
+
+export class DeleteSalesProductKnowledgeToolInput {
+  @IsUUID('4') knowledgeId!: string;
+}
+
+export class ListInstagramPostsToolInput {
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(50) limit?: number;
+}
+
+export class SaveInstagramCommentAutomationToolInput {
+  @IsString() @MinLength(2) @MaxLength(120) mediaId!: string;
+  @IsString() @MinLength(1) @MaxLength(2000) triggerText!: string;
+  @IsString() @MinLength(1) @MaxLength(4000) dmMessage!: string;
+  @IsOptional() @IsString() @MaxLength(1000) publicReply?: string;
+  @IsOptional() @IsBoolean() semanticMatch?: boolean;
+  @IsOptional() @IsBoolean() sendPrivateReply?: boolean;
+  @IsOptional() @IsBoolean() replyPublicly?: boolean;
+  @IsOptional() @IsBoolean() active?: boolean;
+}
+
+export class ListInstagramCommentAutomationsToolInput {
+  @IsOptional() @IsBoolean() activeOnly?: boolean;
+}
+
+export class DeleteInstagramCommentAutomationToolInput {
+  @IsUUID('4') automationId!: string;
 }

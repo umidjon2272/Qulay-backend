@@ -1,7 +1,7 @@
 import { Prisma } from '@prisma/client';
 import type { PrismaService } from '../prisma/prisma.service';
 
-export type SalesChannel = 'TELEGRAM' | 'WHATSAPP';
+export type SalesChannel = 'TELEGRAM' | 'WHATSAPP' | 'INSTAGRAM';
 
 export type SalesTurnHandle = {
   key: string;

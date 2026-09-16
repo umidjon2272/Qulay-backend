@@ -9,7 +9,8 @@ export type SubscriptionFeature =
   | 'TELEGRAM'
   | 'BITO'
   | 'TELEGRAM_SALES'
-  | 'WHATSAPP_SALES';
+  | 'WHATSAPP_SALES'
+  | 'INSTAGRAM_SALES';
 
 export type PlanLimits = {
   aiCreditsPerMonth: number;
@@ -48,6 +49,6 @@ export const SUBSCRIPTION_PLANS: Record<SubscriptionTier, {
     name: 'Sales AI',
     monthlyPriceUzs: 199_000,
     limits: { aiCreditsPerMonth: 8_000, toolActionsPerMonth: 25_000, voiceMinutesPerMonth: 300, files: 5_000, storageMb: 100_000, memories: 25_000 },
-    features: ['AI_CHAT', 'TASKS', 'REMINDERS', 'CALENDAR', 'GOOGLE', 'TELEGRAM', 'BITO', 'TELEGRAM_SALES', 'WHATSAPP_SALES'],
+    features: ['AI_CHAT', 'TASKS', 'REMINDERS', 'CALENDAR', 'GOOGLE', 'TELEGRAM', 'BITO', 'TELEGRAM_SALES', 'WHATSAPP_SALES', 'INSTAGRAM_SALES'],
   },
 };

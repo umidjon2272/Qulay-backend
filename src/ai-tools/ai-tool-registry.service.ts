@@ -48,10 +48,14 @@ ListFilesToolInput, SearchFilesToolInput, GetFileMetadataToolInput, GetFileConte
   UpdateGoogleCalendarEventToolInput, DeleteGoogleCalendarEventToolInput, SearchGoogleDriveFilesToolInput,
   BudgetStatusToolInput, CashflowForecastToolInput, DailyBriefingToolInput,
   SaveSalesPlaybookRuleToolInput, ListSalesPlaybookRulesToolInput, DeleteSalesPlaybookRuleToolInput,
+  SaveSalesProductKnowledgeToolInput, ListSalesProductKnowledgeToolInput, DeleteSalesProductKnowledgeToolInput,
+  ListInstagramPostsToolInput, SaveInstagramCommentAutomationToolInput,
+  ListInstagramCommentAutomationsToolInput, DeleteInstagramCommentAutomationToolInput,
 } from './dto/tool-input.dto';
 import { TelegramIntegrationService } from '../telegram/telegram-integration.service';
 import { GoogleCalendarService } from '../google/google-calendar.service';
 import { GoogleDriveService } from '../google/google-drive.service';
+import { InstagramIntegrationService } from '../instagram/instagram-integration.service';
 import { FilesService } from '../files/files.service';
 import { CalendarEventsQueryDto, CreateCalendarEventDto, UpdateCalendarEventDto, DriveFilesQueryDto } from '../google/dto/google.dto';
 import {
@@ -124,6 +128,7 @@ export class AIToolRegistryService {
     @Optional() private readonly googleDriveService?: GoogleDriveService,
     @Optional() private readonly filesService?: FilesService,
     @Optional() private readonly bitoIntegrationService?: BitoIntegrationService,
+    @Optional() private readonly instagramIntegrationService?: InstagramIntegrationService,
   ) {
     this.registerTools();
     this.registerWorkspaceTools();
@@ -213,7 +218,7 @@ export class AIToolRegistryService {
       inputSchema: ['get_tasks', 'get_reminders', 'get_meetings', 'get_notes'].includes(config.name)
         ? { ...config.inputSchema, properties: { ...config.inputSchema.properties, page: { type: 'integer', description: 'Page number, starting at 1. Fetch further pages when meta.total exceeds returned items.' } } }
         : config.inputSchema,
-      requiresConfirmation: config.sideEffect === 'WRITE' && !['save_memory', 'update_memory', 'save_sales_playbook_rule'].includes(config.name),
+      requiresConfirmation: config.sideEffect === 'WRITE' && !['save_memory', 'update_memory', 'save_sales_playbook_rule', 'save_sales_product_knowledge'].includes(config.name),
       sideEffect: config.sideEffect,
       permission: 'USER_SCOPED',
       validate: (input) => validateInput(input, config.validate),
@@ -428,7 +433,7 @@ export class AIToolRegistryService {
 
     this.register(this.base<SaveSalesPlaybookRuleToolInput, unknown>({
       name: 'save_sales_playbook_rule',
-      description: 'Teach the Telegram/WhatsApp sales agent a persistent business-specific sales rule, script, objection-handling instruction, store fact, delivery/payment policy, or example. Use when the authenticated owner explicitly says how the sales agent should sell or respond. Do not store secrets.',
+      description: 'Teach the Telegram/WhatsApp/Instagram sales agent a persistent business-specific sales rule, script, objection-handling instruction, store fact, delivery/payment policy, or example. Use when the authenticated owner explicitly says how the sales agent should sell or respond. Do not store secrets.',
       category: AIToolCategory.SYSTEM,
       sideEffect: 'WRITE',
       validate: SaveSalesPlaybookRuleToolInput,
@@ -482,6 +487,135 @@ export class AIToolRegistryService {
       preview: (context, input) => this.prisma.salesPlaybookRule.findFirst({ where: { id: input.ruleId, userId: context.userId }, select: { id: true, title: true, instruction: true } }),
       execute: (context, input) => this.prisma.salesPlaybookRule.delete({ where: { id: input.ruleId }, select: { id: true, title: true } }),
     }));
+
+
+    this.register(this.base<SaveSalesProductKnowledgeToolInput, unknown>({
+      name: 'save_sales_product_knowledge',
+      description: 'Save or update a customer-facing product fact explicitly taught by the authenticated business owner. This is WHAT the business sells, not a sales script. Never infer missing price/stock or store secrets.',
+      category: AIToolCategory.SYSTEM,
+      sideEffect: 'WRITE',
+      validate: SaveSalesProductKnowledgeToolInput,
+      inputSchema: schema({
+        canonicalName: { type: 'string' }, productFamily: { type: 'string' }, aliases: { type: 'array' }, description: { type: 'string' },
+        publicPrice: { type: 'string' }, currency: { type: 'string', enum: Object.values(FinanceCurrency) },
+        availability: { type: 'string', enum: ['AVAILABLE', 'UNAVAILABLE', 'UNKNOWN'] }, stockQuantity: { type: 'number' },
+        unit: { type: 'string' }, attributes: { type: 'array' }, note: { type: 'string' }, active: { type: 'boolean' },
+      }, ['canonicalName']),
+      preview: (_context, input) => input,
+      execute: (context, input) => this.prisma.salesProductKnowledge.upsert({
+        where: { userId_canonicalName: { userId: context.userId, canonicalName: input.canonicalName } },
+        create: {
+          userId: context.userId, canonicalName: input.canonicalName, productFamily: input.productFamily,
+          aliases: input.aliases ?? [], description: input.description, publicPrice: input.publicPrice,
+          currency: input.currency, availability: input.availability ?? 'UNKNOWN', stockQuantity: input.stockQuantity,
+          unit: input.unit, attributes: input.attributes ?? undefined, note: input.note, active: input.active ?? true,
+        },
+        update: {
+          ...(input.productFamily !== undefined ? { productFamily: input.productFamily } : {}),
+          ...(input.aliases !== undefined ? { aliases: input.aliases } : {}),
+          ...(input.description !== undefined ? { description: input.description } : {}),
+          ...(input.publicPrice !== undefined ? { publicPrice: input.publicPrice } : {}),
+          ...(input.currency !== undefined ? { currency: input.currency } : {}),
+          ...(input.availability !== undefined ? { availability: input.availability } : {}),
+          ...(input.stockQuantity !== undefined ? { stockQuantity: input.stockQuantity } : {}),
+          ...(input.unit !== undefined ? { unit: input.unit } : {}),
+          ...(input.attributes !== undefined ? { attributes: input.attributes } : {}),
+          ...(input.note !== undefined ? { note: input.note } : {}),
+          ...(input.active !== undefined ? { active: input.active } : {}),
+        },
+        select: { id: true, canonicalName: true, productFamily: true, aliases: true, description: true, publicPrice: true, currency: true, availability: true, stockQuantity: true, unit: true, attributes: true, note: true, active: true, updatedAt: true },
+      }),
+    }));
+
+    this.register(this.base<ListSalesProductKnowledgeToolInput, unknown>({
+      name: 'list_sales_product_knowledge',
+      description: 'List customer-facing product facts taught by the authenticated business owner. Use to review or find the real knowledgeId before deleting.',
+      category: AIToolCategory.SYSTEM,
+      sideEffect: 'READ',
+      validate: ListSalesProductKnowledgeToolInput,
+      inputSchema: schema({ query: { type: 'string' }, limit: { type: 'integer' } }),
+      execute: (context, input) => this.prisma.salesProductKnowledge.findMany({
+        where: {
+          userId: context.userId,
+          ...(input.query ? { OR: [
+            { canonicalName: { contains: input.query, mode: 'insensitive' } },
+            { productFamily: { contains: input.query, mode: 'insensitive' } },
+            { description: { contains: input.query, mode: 'insensitive' } },
+          ] } : {}),
+        },
+        orderBy: { updatedAt: 'desc' },
+        take: input.limit ?? 50,
+        select: { id: true, canonicalName: true, productFamily: true, aliases: true, description: true, publicPrice: true, currency: true, availability: true, stockQuantity: true, unit: true, attributes: true, note: true, active: true, updatedAt: true },
+      }),
+    }));
+
+    this.register(this.base<DeleteSalesProductKnowledgeToolInput, unknown>({
+      name: 'delete_sales_product_knowledge',
+      description: 'Delete one owner-taught product fact by its real knowledgeId. List product knowledge first if the id is unknown.',
+      category: AIToolCategory.SYSTEM,
+      sideEffect: 'WRITE',
+      validate: DeleteSalesProductKnowledgeToolInput,
+      inputSchema: schema({ knowledgeId: { type: 'string' } }, ['knowledgeId']),
+      authorize: async (context, input) => {
+        const row = await this.prisma.salesProductKnowledge.findFirst({ where: { id: input.knowledgeId, userId: context.userId }, select: { id: true } });
+        if (!row) throw new NotFoundException('Product knowledge not found');
+      },
+      preview: (context, input) => this.prisma.salesProductKnowledge.findFirst({ where: { id: input.knowledgeId, userId: context.userId }, select: { id: true, canonicalName: true } }),
+      execute: (context, input) => this.prisma.salesProductKnowledge.delete({ where: { id: input.knowledgeId }, select: { id: true, canonicalName: true } }),
+    }));
+
+    if (this.instagramIntegrationService) {
+      this.register(this.base<ListInstagramPostsToolInput, unknown>({
+        name: 'list_instagram_posts',
+        description: 'List REAL posts/reels from the authenticated owner Instagram account, newest first. Always use this before creating a post-specific comment automation; never invent mediaId.',
+        category: AIToolCategory.INSTAGRAM,
+        sideEffect: 'READ',
+        validate: ListInstagramPostsToolInput,
+        inputSchema: schema({ limit: { type: 'integer' } }),
+        execute: (context, input) => this.instagramIntegrationService!.listPosts(context.userId, input.limit ?? 25),
+      }));
+      this.register(this.base<ListInstagramCommentAutomationsToolInput, unknown>({
+        name: 'list_instagram_comment_automations',
+        description: 'List saved Instagram comment-to-DM automations for the authenticated owner.',
+        category: AIToolCategory.INSTAGRAM,
+        sideEffect: 'READ',
+        validate: ListInstagramCommentAutomationsToolInput,
+        inputSchema: schema({ activeOnly: { type: 'boolean' } }),
+        execute: (context, input) => this.instagramIntegrationService!.listAutomations(context.userId, input.activeOnly === true),
+      }));
+      this.register(this.base<SaveInstagramCommentAutomationToolInput, unknown>({
+        name: 'save_instagram_comment_automation',
+        description: 'Prepare an Instagram comment automation for one REAL mediaId returned by list_instagram_posts. Matching comments may receive a private reply/DM and optionally a public reply. This future external messaging action requires confirmation.',
+        category: AIToolCategory.INSTAGRAM,
+        sideEffect: 'WRITE',
+        validate: SaveInstagramCommentAutomationToolInput,
+        inputSchema: schema({ mediaId: { type: 'string' }, triggerText: { type: 'string' }, dmMessage: { type: 'string' }, publicReply: { type: 'string' }, semanticMatch: { type: 'boolean' }, sendPrivateReply: { type: 'boolean' }, replyPublicly: { type: 'boolean' }, active: { type: 'boolean' } }, ['mediaId', 'triggerText', 'dmMessage']),
+        authorize: async (context, input) => {
+          const posts = await this.instagramIntegrationService!.listPosts(context.userId, 50);
+          if (!posts.some(post => post.id === input.mediaId)) throw new BadRequestException('Instagram mediaId real postlar orasida topilmadi');
+        },
+        preview: async (context, input) => {
+          const posts = await this.instagramIntegrationService!.listPosts(context.userId, 50);
+          const post = posts.find(item => item.id === input.mediaId);
+          return { post: post ? { id: post.id, caption: post.caption, permalink: post.permalink } : { id: input.mediaId }, triggerText: input.triggerText, dmMessage: input.dmMessage, publicReply: input.publicReply ?? null, semanticMatch: input.semanticMatch !== false, sendPrivateReply: input.sendPrivateReply !== false, replyPublicly: input.replyPublicly === true };
+        },
+        execute: (context, input) => this.instagramIntegrationService!.createAutomation(context.userId, input),
+      }));
+      this.register(this.base<DeleteInstagramCommentAutomationToolInput, unknown>({
+        name: 'delete_instagram_comment_automation',
+        description: 'Delete one Instagram comment automation by its real automationId.',
+        category: AIToolCategory.INSTAGRAM,
+        sideEffect: 'WRITE',
+        validate: DeleteInstagramCommentAutomationToolInput,
+        inputSchema: schema({ automationId: { type: 'string' } }, ['automationId']),
+        authorize: async (context, input) => {
+          const rows = await this.instagramIntegrationService!.listAutomations(context.userId, false);
+          if (!rows.some(row => row.id === input.automationId)) throw new NotFoundException('Instagram automation not found');
+        },
+        preview: async (context, input) => (await this.instagramIntegrationService!.listAutomations(context.userId, false)).find(row => row.id === input.automationId) ?? null,
+        execute: (context, input) => this.instagramIntegrationService!.deleteAutomation(context.userId, input.automationId),
+      }));
+    }
 
     this.register(this.base<CreateTaskToolInput, unknown>({
       name: 'create_task', description: 'Create a task for the authenticated user.', category: AIToolCategory.TASK,

@@ -4,6 +4,7 @@ import { Prisma, TelegramConnectionStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AiAgentService } from '../ai-agent/ai-agent.service';
 import { AiVoiceService } from '../ai-agent/ai-voice.service';
+import { SalesVisionService, SalesImageUnderstanding } from '../ai-agent/sales-vision.service';
 import { TelegramClientService, TelegramIncomingMessage, TelegramMessageListener, TelegramOutgoingMessage } from './telegram-client.service';
 import { TelegramCryptoService } from './telegram-crypto.service';
 import { TelegramIntegrationService } from './telegram-integration.service';
@@ -75,6 +76,7 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
     private readonly telegram: TelegramIntegrationService,
     private readonly ai: AiAgentService,
     private readonly voice: AiVoiceService,
+    private readonly vision: SalesVisionService,
     private readonly subscriptions: SubscriptionsService,
     private readonly bitoTools: BitoToolBridgeService,
   ) {}
@@ -258,7 +260,7 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
     }
     if (!turn) return;
     const rawText = incoming.text.trim();
-    const fragment = !incoming.voice && isLikelySalesTextFragment(rawText);
+    const fragment = !incoming.voice && !incoming.image && isLikelySalesTextFragment(rawText);
     if (fragment) bufferSalesTextFragment(turn, rawText);
     await runSalesTurnSequential(turn, async () => {
       let combinedText: string | undefined;
@@ -266,7 +268,7 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
         const ready = await waitForSalesTurnDebounce(turn!, 550);
         if (!ready) return;
         combinedText = consumeSalesTextFragments(turn!);
-      } else if (!incoming.voice && rawText) {
+      } else if (!incoming.voice && !incoming.image && rawText) {
         // Attach only previously buffered incomplete fragments. Never merge two
         // complete customer questions just because they were sent quickly.
         combinedText = consumeSalesTextFragments(turn!, rawText);
@@ -278,7 +280,7 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
   private async processIncoming(userId: string, incoming: TelegramIncomingMessage, turn: SalesTurnHandle, combinedText?: string): Promise<void> {
     const active = this.listeners.get(userId);
     if (active) { active.healthy = true; active.lastCheckAt = new Date(); }
-    this.logger.log({ event: 'telegram_sales_message_received', userId: this.safeUserId(userId), peerType: incoming.peer.type, hasVoice: Boolean(incoming.voice) });
+    this.logger.log({ event: 'telegram_sales_message_received', userId: this.safeUserId(userId), peerType: incoming.peer.type, hasVoice: Boolean(incoming.voice), hasImage: Boolean(incoming.image) });
     if (incoming.senderIsBot || incoming.peer.type === 'CHANNEL') return;
     const key = `${userId}:${incoming.peer.peerId}:${incoming.messageId}`;
     if (this.processing.has(key)) return;
@@ -351,16 +353,36 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
         }, incoming.voice.durationSeconds);
         text = [text, transcript.text].filter(Boolean).join('\n').trim();
       }
+      let imageUnderstanding: SalesImageUnderstanding | undefined;
+      if (incoming.image) {
+        const imageEligible = incoming.peer.type === 'GROUP'
+          ? addressed || activeSalesContext
+          : activeSalesContext || (!incoming.senderIsContact && !incoming.hadPriorConversation);
+        if (!imageEligible) return;
+        try {
+          const buffer = await incoming.image.download();
+          if (buffer?.length && buffer.length <= 8 * 1024 * 1024) {
+            imageUnderstanding = await this.vision.understandProductImage(userId, {
+              buffer,
+              mimeType: incoming.image.mimeType || 'image/jpeg',
+              caption: text,
+            });
+          }
+        } catch (error) {
+          this.logger.warn({ event: 'telegram_sales_image_understanding_failed', userId: this.safeUserId(userId), code: this.errorCode(error) });
+        }
+        text = text || 'Shunaqasi bormi?';
+      }
       if (!text) return;
 
       if (incoming.peer.type === 'GROUP') {
-        if (!addressed && !activeSalesContext && !(await this.isGroupSalesIntent(userId, text))) return;
+        if (!addressed && !activeSalesContext && !imageUnderstanding && !(await this.isGroupSalesIntent(userId, text))) return;
         // Once this sender has an active sales thread in an explicitly selected
         // group, every message goes to the semantic sales brain. Short replies
         // like “ha”, “mayli”, “rahmat”, “boshqasi-chi?” can be meaningful and
         // must not be killed by regexes. Truly unrelated chatter is classified
         // as NON_SALES by AiAgent and gets no reply.
-      } else if (!activeSalesContext && !(await this.isPrivateSalesIntent(userId, text, incoming))) {
+      } else if (!activeSalesContext && !imageUnderstanding && !(await this.isPrivateSalesIntent(userId, text, incoming))) {
         // Privacy-first: greetings, personal banter and existing friend/contact
         // conversations never reach the model unless a real commercial intent
         // appears. Contact status is a signal, not a hard block, so saved
@@ -402,6 +424,7 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
           },
           salesState,
           normalizedCustomerText,
+          visualProductHint: imageUnderstanding,
         },
       );
 

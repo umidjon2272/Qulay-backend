@@ -146,6 +146,19 @@ enum WhatsAppConnectionStatus {
   ERROR
 }
 
+enum InstagramConnectionStatus {
+  DISCONNECTED
+  CONNECTED
+  DEGRADED
+  ERROR
+}
+
+enum SalesKnowledgeAvailability {
+  AVAILABLE
+  UNAVAILABLE
+  UNKNOWN
+}
+
 enum GoogleConnectionStatus {
   DISCONNECTED
   CONNECTED
@@ -262,10 +275,15 @@ model User {
   telegramSalesSessions  TelegramSalesSession[]
   salesPlaybookRules      SalesPlaybookRule[]
   businessSalesProfile    BusinessSalesProfile?
+  salesProductKnowledge   SalesProductKnowledge[]
   salesInboundReceipts    SalesInboundReceipt[]
   whatsAppConnection      WhatsAppConnection?
   whatsAppSalesSessions   WhatsAppSalesSession[]
   whatsAppInboundReceipts WhatsAppInboundReceipt[]
+  instagramConnection    InstagramConnection?
+  instagramSalesSessions InstagramSalesSession[]
+  instagramAutomations   InstagramCommentAutomation[]
+  instagramAutomationReceipts InstagramAutomationReceipt[]
   googleConnection       GoogleConnection?
   bitoConnection         BitoConnection?
   notifications          Notification[]
@@ -496,6 +514,31 @@ model BusinessSalesProfile {
   user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
+model SalesProductKnowledge {
+  id               String                     @id @default(uuid()) @db.Uuid
+  userId           String                     @db.Uuid
+  canonicalName    String                     @db.VarChar(220)
+  productFamily    String?                    @db.VarChar(220)
+  aliases          String[]                   @default([])
+  description      String?                    @db.Text
+  publicPrice      Decimal?                   @db.Decimal(18, 2)
+  currency         FinanceCurrency?
+  availability     SalesKnowledgeAvailability @default(UNKNOWN)
+  stockQuantity    Decimal?                   @db.Decimal(18, 3)
+  unit             String?                    @db.VarChar(50)
+  attributes       Json?
+  note             String?                    @db.Text
+  source           String                     @default("OWNER_CHAT") @db.VarChar(50)
+  active           Boolean                    @default(true)
+  createdAt        DateTime                   @default(now())
+  updatedAt        DateTime                   @updatedAt
+  user             User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, canonicalName])
+  @@index([userId, active, updatedAt])
+  @@index([userId, productFamily])
+}
+
 model SalesInboundReceipt {
   id        String   @id @default(uuid()) @db.Uuid
   userId    String   @db.Uuid
@@ -563,6 +606,89 @@ model WhatsAppInboundReceipt {
   createdAt DateTime @default(now())
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([userId, createdAt])
+}
+
+model InstagramConnection {
+  id                   String                    @id @default(uuid()) @db.Uuid
+  userId               String                    @unique @db.Uuid
+  instagramUserId      String                    @unique @db.VarChar(80)
+  username             String?                   @db.VarChar(200)
+  displayName          String?                   @db.VarChar(200)
+  profilePictureUrl    String?                   @db.Text
+  encryptedAccessToken String                    @db.Text
+  status               InstagramConnectionStatus @default(DISCONNECTED)
+  webhookSubscribed    Boolean                   @default(false)
+  salesAgentEnabled    Boolean                   @default(false)
+  dmEnabled            Boolean                   @default(true)
+  commentsEnabled      Boolean                   @default(true)
+  imageVisionEnabled   Boolean                   @default(true)
+  connectedAt          DateTime?
+  lastValidatedAt      DateTime?
+  lastUsedAt           DateTime?
+  lastErrorAt          DateTime?
+  lastErrorCode        String?                   @db.VarChar(100)
+  createdAt            DateTime                  @default(now())
+  updatedAt            DateTime                  @updatedAt
+  user                 User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@index([username])
+}
+
+model InstagramSalesSession {
+  id                String       @id @default(uuid()) @db.Uuid
+  userId            String       @db.Uuid
+  peerId            String       @db.VarChar(100)
+  username          String?      @db.VarChar(200)
+  displayName       String?      @db.VarChar(200)
+  conversationId    String       @unique @db.Uuid
+  salesContextUntil DateTime?
+  lastInboundAt     DateTime?
+  lastOutboundAt    DateTime?
+  salesState        Json?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  user              User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversation      Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, peerId])
+  @@index([userId, updatedAt])
+}
+
+model InstagramCommentAutomation {
+  id               String   @id @default(uuid()) @db.Uuid
+  userId           String   @db.Uuid
+  mediaId          String   @db.VarChar(120)
+  mediaCaption     String?  @db.Text
+  mediaPermalink   String?  @db.Text
+  triggerText      String   @db.Text
+  semanticMatch    Boolean  @default(true)
+  dmMessage        String   @db.Text
+  publicReply      String?  @db.Text
+  sendPrivateReply Boolean  @default(true)
+  replyPublicly    Boolean  @default(false)
+  active           Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  receipts         InstagramAutomationReceipt[]
+
+  @@index([userId, mediaId, active])
+  @@index([userId, updatedAt])
+}
+
+model InstagramAutomationReceipt {
+  id           String                       @id @default(uuid()) @db.Uuid
+  userId       String                       @db.Uuid
+  automationId String                       @db.Uuid
+  commentId    String                       @db.VarChar(200)
+  commenterId  String?                      @db.VarChar(120)
+  createdAt    DateTime                     @default(now())
+  user         User                         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  automation   InstagramCommentAutomation   @relation(fields: [automationId], references: [id], onDelete: Cascade)
+
+  @@unique([automationId, commentId])
   @@index([userId, createdAt])
 }
 
@@ -690,6 +816,7 @@ model Conversation {
   pendingAgentActions PendingAgentAction[]
   telegramSalesSession TelegramSalesSession?
   whatsAppSalesSession WhatsAppSalesSession?
+  instagramSalesSession InstagramSalesSession?
 
   @@index([userId, updatedAt])
 }

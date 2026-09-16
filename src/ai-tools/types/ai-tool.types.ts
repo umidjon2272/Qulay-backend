@@ -13,6 +13,7 @@ export enum AIToolCategory {
   GOOGLE = 'GOOGLE',
   FILE = 'FILE',
   BITO = 'BITO',
+  INSTAGRAM = 'INSTAGRAM',
 }
 
 export type AIToolSideEffect = 'READ' | 'WRITE';

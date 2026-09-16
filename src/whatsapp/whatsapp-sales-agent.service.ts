@@ -4,6 +4,7 @@ import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { AiAgentService } from '../ai-agent/ai-agent.service';
 import { AiVoiceService } from '../ai-agent/ai-voice.service';
+import { SalesVisionService, SalesImageUnderstanding } from '../ai-agent/sales-vision.service';
 import { WhatsAppCloudService } from './whatsapp-cloud.service';
 import { WhatsAppCryptoService } from './whatsapp-crypto.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
@@ -47,6 +48,7 @@ type IncomingWhatsAppMessage = {
   type?: string;
   text?: { body?: string };
   audio?: { id?: string; mime_type?: string; voice?: boolean };
+  image?: { id?: string; mime_type?: string; caption?: string };
   interactive?: { button_reply?: { title?: string }; list_reply?: { title?: string } };
   button?: { text?: string };
 };
@@ -79,6 +81,7 @@ export class WhatsAppSalesAgentService {
     private readonly crypto: WhatsAppCryptoService,
     private readonly ai: AiAgentService,
     private readonly voice: AiVoiceService,
+    private readonly vision: SalesVisionService,
     private readonly subscriptions: SubscriptionsService,
   ) {}
 
@@ -261,7 +264,7 @@ export class WhatsAppSalesAgentService {
     }
     if (!turn) return;
     const initialText = this.messageText(message);
-    const fragment = message.type !== 'audio' && isLikelySalesTextFragment(initialText);
+    const fragment = message.type !== 'audio' && message.type !== 'image' && isLikelySalesTextFragment(initialText);
     if (fragment) bufferSalesTextFragment(turn, initialText);
     await runSalesTurnSequential(turn, async () => {
       let combinedText: string | undefined;
@@ -269,7 +272,7 @@ export class WhatsAppSalesAgentService {
         const ready = await waitForSalesTurnDebounce(turn!, 550);
         if (!ready) return;
         combinedText = consumeSalesTextFragments(turn!);
-      } else if (message.type !== 'audio' && initialText) {
+      } else if (message.type !== 'audio' && message.type !== 'image' && initialText) {
         combinedText = consumeSalesTextFragments(turn!, initialText);
       }
       await this.processIncoming(userId, message, displayName, turn!, combinedText);
@@ -316,10 +319,26 @@ export class WhatsAppSalesAgentService {
         text = [text, transcript.text].filter(Boolean).join('\n').trim();
       }
 
+      let imageUnderstanding: SalesImageUnderstanding | undefined;
+      if (message.type === 'image' && message.image?.id) {
+        try {
+          const media = await this.cloud.downloadMedia(userId, message.image.id, 8 * 1024 * 1024);
+          imageUnderstanding = await this.vision.understandProductImage(userId, {
+            buffer: media.buffer,
+            mimeType: message.image.mime_type || media.mimeType,
+            caption: message.image.caption || text,
+          });
+        } catch (error) {
+          this.logger.warn({ event: 'whatsapp_sales_image_understanding_failed', userId: this.safeId(userId), code: this.errorCode(error) });
+        }
+        const imageCaption = message.image.caption?.trim() || '';
+        text = text.trim() || imageCaption || 'Shunaqasi bormi?';
+      }
+
       if (!text) return;
-      const salesRelevant = isWhatsAppSalesRelevant(text, recentSalesContext, message.type);
+      const salesRelevant = message.type === 'image' || isWhatsAppSalesRelevant(text, recentSalesContext, message.type);
       if (connection.salesOnly && !salesRelevant) return;
-      const activateUntil = shouldActivateWhatsAppSalesContext(text, recentSalesContext) ? new Date(Date.now() + FOLLOWUP_WINDOW_MS) : session.salesContextUntil;
+      const activateUntil = (message.type === 'image' || shouldActivateWhatsAppSalesContext(text, recentSalesContext)) ? new Date(Date.now() + FOLLOWUP_WINDOW_MS) : session.salesContextUntil;
       if (activateUntil?.getTime() !== session.salesContextUntil?.getTime()) {
         await this.prisma.whatsAppSalesSession.update({ where: { id: session.id }, data: { salesContextUntil: activateUntil } });
       }
@@ -339,6 +358,7 @@ export class WhatsAppSalesAgentService {
           customer: { peerName: displayName, peerType: 'USER', senderName: displayName },
           salesState,
           normalizedCustomerText,
+          visualProductHint: imageUnderstanding,
         },
       );
       await this.prisma.whatsAppSalesSession.update({
@@ -381,8 +401,9 @@ export class WhatsAppSalesAgentService {
     });
   }
 
-  private messageText(message: { type?: string; text?: { body?: string }; interactive?: { button_reply?: { title?: string }; list_reply?: { title?: string } }; button?: { text?: string } }): string {
+  private messageText(message: { type?: string; text?: { body?: string }; image?: { caption?: string }; interactive?: { button_reply?: { title?: string }; list_reply?: { title?: string } }; button?: { text?: string } }): string {
     if (message.type === 'text') return message.text?.body?.trim() ?? '';
+    if (message.type === 'image') return message.image?.caption?.trim() ?? '';
     if (message.type === 'interactive') return message.interactive?.button_reply?.title?.trim() ?? message.interactive?.list_reply?.title?.trim() ?? '';
     if (message.type === 'button') return message.button?.text?.trim() ?? '';
     return '';

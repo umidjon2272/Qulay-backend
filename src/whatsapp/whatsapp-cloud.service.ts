@@ -139,21 +139,20 @@ export class WhatsAppCloudService {
     return body.messages?.[0]?.id ?? null;
   }
 
-  async downloadMedia(userId: string, mediaId: string): Promise<{ buffer: Buffer; mimeType: string; size: number }> {
+  async downloadMedia(userId: string, mediaId: string, maxBytes = 6 * 1024 * 1024): Promise<{ buffer: Buffer; mimeType: string; size: number }> {
     const connection = await this.prisma.whatsAppConnection.findUnique({ where: { userId } });
     if (!connection?.encryptedAccessToken || !['CONNECTED', 'DEGRADED'].includes(connection.status)) throw new ServiceUnavailableException('WhatsApp ulanmagan');
     const accessToken = this.crypto.decrypt(connection.encryptedAccessToken);
     const metadata = await this.graphJson<{ url?: string; mime_type?: string; file_size?: number }>(`/${encodeURIComponent(mediaId)}`, accessToken);
-    if (!metadata.url) throw new ServiceUnavailableException('WhatsApp audio manzili olinmadi');
-    const maxBytes = 6 * 1024 * 1024;
-    if (typeof metadata.file_size === 'number' && metadata.file_size > maxBytes) throw new BadRequestException('WhatsApp golos juda katta');
+    if (!metadata.url) throw new ServiceUnavailableException('WhatsApp media manzili olinmadi');
+    if (typeof metadata.file_size === 'number' && metadata.file_size > maxBytes) throw new BadRequestException('WhatsApp media juda katta');
     const response = await fetch(metadata.url, {
       headers: { Authorization: `Bearer ${accessToken}` },
       signal: AbortSignal.timeout(20_000),
-    }).catch(() => { throw new ServiceUnavailableException('WhatsApp audioni yuklab bo‘lmadi'); });
-    if (!response.ok) throw new ServiceUnavailableException('WhatsApp audioni yuklab bo‘lmadi');
+    }).catch(() => { throw new ServiceUnavailableException('WhatsApp mediani yuklab bo‘lmadi'); });
+    if (!response.ok) throw new ServiceUnavailableException('WhatsApp mediani yuklab bo‘lmadi');
     const buffer = Buffer.from(await response.arrayBuffer());
-    if (!buffer.length || buffer.length > maxBytes) throw new BadRequestException('WhatsApp golos bo‘sh yoki juda katta');
+    if (!buffer.length || buffer.length > maxBytes) throw new BadRequestException('WhatsApp media bo‘sh yoki juda katta');
     return { buffer, mimeType: metadata.mime_type ?? response.headers.get('content-type') ?? 'audio/ogg', size: buffer.length };
   }
 

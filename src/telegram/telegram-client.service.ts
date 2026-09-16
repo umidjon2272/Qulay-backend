@@ -12,6 +12,7 @@ export type TelegramAccount = { telegramUserId: string; username: string | null;
 export type TelegramPeer = { peerId: string; type: 'USER' | 'GROUP' | 'CHANNEL'; displayName: string; username: string | null; lastActivity: string | null };
 export type TelegramPendingLogin = { encryptedSessionSource: string; phoneCodeHash: string };
 export type TelegramIncomingVoice = { durationSeconds: number; mimeType: string; download: () => Promise<Buffer | null> };
+export type TelegramIncomingImage = { mimeType: string; download: () => Promise<Buffer | null> };
 export type TelegramIncomingMessage = {
   peer: TelegramPeer;
   messageId: number;
@@ -27,6 +28,7 @@ export type TelegramIncomingMessage = {
   mentioned: boolean;
   replyToOwnMessage: boolean;
   voice: TelegramIncomingVoice | null;
+  image?: TelegramIncomingImage | null;
   receivedAt: string;
 };
 export type TelegramOutgoingMessage = { peer: TelegramPeer; messageId: number; sentAt: string };
@@ -790,8 +792,26 @@ export class GramJsTelegramClientService extends TelegramClientService {
               },
             };
           }
+          let image: TelegramIncomingImage | null = null;
+          const photo = (message.photo ?? message.media?.photo) as any;
+          const imageDocument = !audio && typeof document?.mimeType === 'string' && document.mimeType.startsWith('image/') ? document : null;
+          if (photo || imageDocument) {
+            image = {
+              mimeType: typeof imageDocument?.mimeType === 'string' ? imageDocument.mimeType : 'image/jpeg',
+              download: async () => {
+                let downloaded: unknown = null;
+                if (typeof message.downloadMedia === 'function') downloaded = await message.downloadMedia({}).catch(() => null);
+                if (!downloaded && message.media) downloaded = await client.downloadMedia(message.media, {}).catch(() => null);
+                return Buffer.isBuffer(downloaded)
+                  ? downloaded
+                  : downloaded instanceof Uint8Array
+                    ? Buffer.from(downloaded)
+                    : null;
+              },
+            };
+          }
 
-          this.logger.log({ event: 'telegram_sales_incoming_received', peerType: peer.type, hasVoice: Boolean(voice), contact: senderValue?.contact === true, priorConversation: hadPriorConversation });
+          this.logger.log({ event: 'telegram_sales_incoming_received', peerType: peer.type, hasVoice: Boolean(voice), hasImage: Boolean(image), contact: senderValue?.contact === true, priorConversation: hadPriorConversation });
           await onMessage({
             peer,
             messageId: message.id,
@@ -807,6 +827,7 @@ export class GramJsTelegramClientService extends TelegramClientService {
             mentioned: message.mentioned === true,
             replyToOwnMessage,
             voice,
+            image,
             receivedAt: occurredAt,
           });
         } catch (error) {

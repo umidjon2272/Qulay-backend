@@ -65,6 +65,23 @@ export default () => ({
     tokenEncryptionKey: process.env.WHATSAPP_TOKEN_ENCRYPTION_KEY,
     graphApiVersion: process.env.WHATSAPP_GRAPH_API_VERSION ?? 'v24.0',
   },
+  instagram: {
+    // Instagram and WhatsApp can live in the same Meta app. Dedicated
+    // INSTAGRAM_* values override the existing WhatsApp Meta credentials, but
+    // reusing the app secret / verify token / encryption key keeps setup simple
+    // when both channels are configured in one Meta developer app.
+    configured: [
+      process.env.INSTAGRAM_APP_SECRET ?? process.env.WHATSAPP_APP_SECRET,
+      process.env.INSTAGRAM_WEBHOOK_VERIFY_TOKEN ?? process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN,
+      process.env.INSTAGRAM_TOKEN_ENCRYPTION_KEY ?? process.env.WHATSAPP_TOKEN_ENCRYPTION_KEY,
+    ].every(Boolean),
+    appId: process.env.INSTAGRAM_APP_ID ?? process.env.WHATSAPP_APP_ID,
+    appSecret: process.env.INSTAGRAM_APP_SECRET ?? process.env.WHATSAPP_APP_SECRET,
+    webhookVerifyToken: process.env.INSTAGRAM_WEBHOOK_VERIFY_TOKEN ?? process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN,
+    tokenEncryptionKey: process.env.INSTAGRAM_TOKEN_ENCRYPTION_KEY ?? process.env.WHATSAPP_TOKEN_ENCRYPTION_KEY,
+    graphApiVersion: process.env.INSTAGRAM_GRAPH_API_VERSION ?? process.env.WHATSAPP_GRAPH_API_VERSION ?? 'v24.0',
+    graphBaseUrl: process.env.INSTAGRAM_GRAPH_BASE_URL ?? 'https://graph.facebook.com',
+  },
   bito: {
     debugShapes: process.env.BITO_DEBUG_SHAPES === 'true',
     credentialEncryptionKey: process.env.BITO_CREDENTIAL_ENCRYPTION_KEY,
@@ -79,6 +96,7 @@ export default () => ({
     apiKey: process.env.OPENAI_API_KEY,
     model: process.env.OPENAI_MODEL ?? 'gpt-5-mini',
     transcribeModel: process.env.OPENAI_TRANSCRIBE_MODEL ?? 'gpt-4o-mini-transcribe',
+    visionModel: process.env.OPENAI_VISION_MODEL ?? process.env.OPENAI_MODEL ?? 'gpt-5-mini',
     ttsModel: process.env.OPENAI_TTS_MODEL ?? 'gpt-4o-mini-tts',
     ttsVoice: process.env.OPENAI_TTS_VOICE ?? 'coral',
     realtimeModel: process.env.OPENAI_REALTIME_MODEL,

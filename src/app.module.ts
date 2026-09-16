@@ -23,6 +23,7 @@ import { AIToolsModule } from './ai-tools/ai-tools.module';
 import { TelegramModule } from './telegram/telegram.module';
 import { TelegramSalesAgentModule } from './telegram/telegram-sales-agent.module';
 import { WhatsAppModule } from './whatsapp/whatsapp.module';
+import { InstagramModule } from './instagram/instagram.module';
 import { GoogleModule } from './google/google.module';
 import { BitoModule } from './bito/bito.module';
 import { NotificationsModule } from './notifications/notifications.module';
@@ -71,6 +72,7 @@ import { AgentSchedulerModule } from './agent-scheduler/agent-scheduler.module';
     AiAgentModule,
     TelegramSalesAgentModule,
     WhatsAppModule,
+    InstagramModule,
     AgentSettingsModule,
     IntegrationsHealthModule,
     BriefingModule,
