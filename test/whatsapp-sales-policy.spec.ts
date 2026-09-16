@@ -15,6 +15,8 @@ describe('WhatsApp sales policy', () => {
   it('understands colloquial typo-heavy sales messages', () => {
     expect(isWhatsAppSalesRelevant('coca cola bomidmi?', false, 'text')).toBe(true);
     expect(isWhatsAppSalesRelevant('dastafka qlaszmi?', false, 'text')).toBe(true);
+    expect(isWhatsAppSalesRelevant('salom ayfon brom', false, 'text')).toBe(true);
+    expect(isWhatsAppSalesRelevant('16 pro bor-mi', false, 'text')).toBe(true);
   });
 
 

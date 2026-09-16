@@ -180,7 +180,7 @@ export function normalizeSalesTextForUnderstanding(input: string): string {
     [/\b(?:kere|keremas|kerak)\b/giu, ' kerak '],
     [/\b(?:olb|opket|obket|olib)\b/giu, ' olib '],
     [/\b(?:qaytga|qatta|qayerga)\b/giu, ' qayerga '],
-    [/\b(?:bomidi|bomidmi|bomiydimi|borm|bomi|bormi)\b/giu, ' bormi '],
+    [/\b(?:bomidi|bomidmi|bomiydimi|brom|brmi|borm|bomi|bormi|bor\s*-\s*mi)\b/giu, ' bormi '],
     [/\b(?:mjoz|mijz|mjz|mijoz)\b/giu, ' mijoz '],
     [/\b(?:klent|klen|client|klient|клиент)\b/giu, ' mijoz '],
     [/\b(?:tolov|to'lov|oplata|оплат\p{L}*)\b/giu, " to'lov "],
