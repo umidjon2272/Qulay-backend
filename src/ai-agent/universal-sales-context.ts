@@ -686,7 +686,7 @@ export function reconcileUniversalSalesStateFromInventory(
       setFact(state, 'product', state.product, specific ? 'VERIFIED' : 'UNAVAILABLE', 'BITO', checkedAt);
     }
     if (specific && state[specific]) {
-      setFact(state, specific, String(state[specific]), 'UNAVAILABLE', 'BITO', checkedAt);
+      markEquivalentSelectionUnavailable(state, specific, checkedAt);
       clearPriceFacts(state);
     }
     captureOfferedAlternative(state, Array.isArray(snapshot.familyAlternatives) ? snapshot.familyAlternatives : [], checkedAt);
@@ -696,7 +696,7 @@ export function reconcileUniversalSalesStateFromInventory(
   // NOT_FOUND: reject only the most specific current proposal. Never silently
   // replace it with a family alternative or an older variant.
   if (specific && state[specific]) {
-    setFact(state, specific, String(state[specific]), 'UNAVAILABLE', 'BITO', checkedAt);
+    markEquivalentSelectionUnavailable(state, specific, checkedAt);
     clearPriceFacts(state);
   } else if (state.product) {
     setFact(state, 'product', state.product, 'UNAVAILABLE', 'BITO', checkedAt);
@@ -982,6 +982,21 @@ function acceptOfferedAlternative(state: UniversalSalesState): void {
   if (state.size) setFact(state, 'size', state.size, 'VERIFIED', 'BITO', checkedAt);
   if (typeof offer.unitPrice === 'number') state.unitPrice = offer.unitPrice;
   delete state.offeredAlternative;
+}
+
+function markEquivalentSelectionUnavailable(
+  state: UniversalSalesState,
+  selectedKey: 'color' | 'storage' | 'size' | 'variant' | 'model',
+  checkedAt: string,
+): void {
+  const selectedValue = state[selectedKey];
+  if (!selectedValue) return;
+  const comparable = canonicalComparable(String(selectedValue));
+  for (const key of ['color', 'storage', 'size', 'variant', 'model'] as const) {
+    const value = state[key];
+    if (!value || canonicalComparable(String(value)) !== comparable) continue;
+    setFact(state, key, String(value), 'UNAVAILABLE', 'BITO', checkedAt);
+  }
 }
 
 function setFact(
