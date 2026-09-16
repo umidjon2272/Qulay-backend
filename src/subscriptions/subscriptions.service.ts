@@ -466,7 +466,7 @@ export class SubscriptionsService {
         monthlyPrice: row.monthlyPrice ?? fallback.monthlyPriceUzs,
         currency: row.currency ?? FinanceCurrency.UZS,
         isActive: row.isActive ?? true,
-        features: Array.isArray(row.features) ? row.features : [...fallback.features],
+        features: [...fallback.features],
         limits: row.limits,
       } as EffectivePlan;
     }
