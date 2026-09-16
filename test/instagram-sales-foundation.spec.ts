@@ -1,7 +1,9 @@
 import { InstagramCommentMatcherService } from '../src/instagram/instagram-comment-matcher.service';
 import { InstagramIntegrationService } from '../src/instagram/instagram-integration.service';
 import { InstagramCommentPollerService } from '../src/instagram/instagram-comment-poller.service';
+import { InstagramDmPollerService } from '../src/instagram/instagram-dm-poller.service';
 import { parseInstagramMediaComments } from '../src/instagram/instagram-comment-parser';
+import { parseInstagramConversationMessages } from '../src/instagram/instagram-dm-parser';
 import { InstagramSalesAgentService } from '../src/instagram/instagram-sales-agent.service';
 import { SalesProductKnowledgeService } from '../src/ai-agent/sales-product-knowledge.service';
 
@@ -48,6 +50,30 @@ describe('Instagram sales foundation', () => {
     await service.updateAutomation('u', 'a1', { active: false });
 
     expect(update).toHaveBeenCalledWith({ where: { id: 'a1' }, data: { active: false } });
+  });
+
+  it('does not advance the Instagram comment poll cursor when a new comment fails to route', async () => {
+    const cursor = new Date(Date.now() - 60_000);
+    const update = jest.fn().mockResolvedValue({});
+    const prisma = {
+      instagramConnection: {
+        findMany: jest.fn().mockResolvedValue([{ userId: 'u', instagramUserId: 'owner-ig', commentPollCursorAt: cursor }]),
+        update,
+      },
+      instagramCommentAutomation: { findMany: jest.fn().mockResolvedValue([]) },
+    };
+    const config = { get: jest.fn((key: string) => key === 'instagram.devCommentPollEnabled' ? true : 60_000) };
+    const now = new Date().toISOString();
+    const graph = {
+      listMedia: jest.fn().mockResolvedValue([{ id: 'm1' }]),
+      listMediaComments: jest.fn().mockResolvedValue([{ id: 'c1', mediaId: 'm1', text: 'narx', commenterId: 'buyer', username: 'buyer', timestamp: now }]),
+    };
+    const sales = { handlePolledComment: jest.fn().mockResolvedValue(false) };
+    const poller = new InstagramCommentPollerService(config as never, prisma as never, graph as never, sales as never);
+
+    await poller.tick();
+
+    expect(update).not.toHaveBeenCalledWith(expect.objectContaining({ data: { commentPollCursorAt: expect.any(Date) } }));
   });
 
   it('routes recent development-polled comments through the canonical Instagram sales handler', async () => {
@@ -113,6 +139,88 @@ describe('Instagram sales foundation', () => {
     expect(graph.privateReplyToComment).toHaveBeenCalledTimes(1);
     expect(graph.replyToComment).toHaveBeenCalledTimes(1);
     expect(subscriptions.assertAiAllowed).not.toHaveBeenCalled();
+  });
+
+  it('parses Instagram conversation message actor, text and image attachments without depending on one response shape', () => {
+    const rows = parseInstagramConversationMessages([
+      { id: 'm1', created_time: '2026-09-16T11:00:00+0000', message: 'Salom', from: { id: 'buyer-1', username: 'buyer' }, to: { data: [{ id: 'owner-ig' }] } },
+      { id: 'm2', created_time: '2026-09-16T11:01:00+0000', text: '16 pro bormi', sender: { id: 'buyer-2', username: 'buyer2' }, recipients: { data: [{ id: 'owner-ig' }] }, attachments: { data: [{ image_data: { url: 'https://cdn.example.test/product.jpg' } }] } },
+    ]);
+    expect(rows).toEqual([
+      expect.objectContaining({ id: 'm1', fromId: 'buyer-1', fromUsername: 'buyer', text: 'Salom', imageUrls: [] }),
+      expect.objectContaining({ id: 'm2', fromId: 'buyer-2', fromUsername: 'buyer2', text: '16 pro bormi', imageUrls: ['https://cdn.example.test/product.jpg'] }),
+    ]);
+  });
+
+  it('does not advance the Instagram DM poll cursor when a new inbound message fails to route', async () => {
+    const cursor = new Date(Date.now() - 60_000);
+    const update = jest.fn().mockResolvedValue({});
+    const prisma = {
+      instagramConnection: {
+        findMany: jest.fn().mockResolvedValue([{ userId: 'u', instagramUserId: 'owner-ig', authMode: 'INSTAGRAM_LOGIN', dmPollCursorAt: cursor }]),
+        update,
+      },
+    };
+    const config = { get: jest.fn((key: string) => key === 'instagram.devCommentPollEnabled' ? true : 60_000) };
+    const now = new Date().toISOString();
+    const graph = {
+      listConversations: jest.fn().mockResolvedValue([{ id: 'conv-1', updatedTime: now }]),
+      listConversationMessages: jest.fn().mockResolvedValue([{ id: 'm-buyer', createdTime: now, fromId: 'buyer-1', fromUsername: 'buyer', text: 'salom', imageUrls: [] }]),
+    };
+    const sales = { handlePolledDm: jest.fn().mockResolvedValue(false) };
+    const poller = new InstagramDmPollerService(config as never, prisma as never, graph as never, sales as never);
+
+    await poller.tick();
+
+    expect(update).not.toHaveBeenCalledWith(expect.objectContaining({ data: { dmPollCursorAt: expect.any(Date) } }));
+  });
+
+  it('routes only new inbound Instagram DMs through the canonical sales handler and persists a restart-safe cursor', async () => {
+    const cursor = new Date(Date.now() - 60_000);
+    const update = jest.fn().mockResolvedValue({});
+    const prisma = {
+      instagramConnection: {
+        findMany: jest.fn().mockResolvedValue([{ userId: 'u', instagramUserId: 'owner-ig', authMode: 'INSTAGRAM_LOGIN', dmPollCursorAt: cursor }]),
+        update,
+      },
+    };
+    const config = { get: jest.fn((key: string) => key === 'instagram.devCommentPollEnabled' ? true : 60_000) };
+    const now = new Date().toISOString();
+    const graph = {
+      listConversations: jest.fn().mockResolvedValue([{ id: 'conv-1', updatedTime: now }]),
+      listConversationMessages: jest.fn().mockResolvedValue([
+        { id: 'm-owner', createdTime: now, fromId: 'owner-ig', fromUsername: 'owner', text: 'outgoing' },
+        { id: 'm-buyer', createdTime: now, fromId: 'buyer-1', fromUsername: 'buyer', text: 'salom ayfon bormi' },
+      ]),
+    };
+    const sales = { handlePolledDm: jest.fn().mockResolvedValue(true) };
+    const poller = new InstagramDmPollerService(config as never, prisma as never, graph as never, sales as never);
+
+    await poller.tick();
+
+    expect(sales.handlePolledDm).toHaveBeenCalledTimes(1);
+    expect(sales.handlePolledDm).toHaveBeenCalledWith('u', expect.objectContaining({ messageId: 'm-buyer', senderId: 'buyer-1', text: 'salom ayfon bormi' }));
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({ where: { userId: 'u' }, data: { dmPollCursorAt: expect.any(Date) } }));
+  });
+
+  it('initializes Instagram DM polling cursor without replaying historical inbox messages', async () => {
+    const update = jest.fn().mockResolvedValue({});
+    const prisma = {
+      instagramConnection: {
+        findMany: jest.fn().mockResolvedValue([{ userId: 'u', instagramUserId: 'owner-ig', authMode: 'INSTAGRAM_LOGIN', dmPollCursorAt: null }]),
+        update,
+      },
+    };
+    const config = { get: jest.fn((key: string) => key === 'instagram.devCommentPollEnabled' ? true : 60_000) };
+    const graph = { listConversations: jest.fn(), listConversationMessages: jest.fn() };
+    const sales = { handlePolledDm: jest.fn() };
+    const poller = new InstagramDmPollerService(config as never, prisma as never, graph as never, sales as never);
+
+    await poller.tick();
+
+    expect(graph.listConversations).not.toHaveBeenCalled();
+    expect(sales.handlePolledDm).not.toHaveBeenCalled();
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({ where: { userId: 'u' }, data: { dmPollCursorAt: expect.any(Date) } }));
   });
 
   it('tracks private and public automation delivery independently so a retry never duplicates the successful DM', async () => {

@@ -13,7 +13,7 @@ import { InstagramCommentMatcherService } from './instagram-comment-matcher.serv
 const SALES_CONTEXT_MS = 2 * 60 * 60 * 1000;
 const SOFT_EXIT_MS = 15 * 60 * 1000;
 
-type InstagramDmEvent = {
+export type InstagramDmEvent = {
   messageId: string;
   senderId: string;
   recipientId: string;
@@ -121,19 +121,28 @@ export class InstagramSalesAgentService {
     return this.handleComment(userId, event);
   }
 
-  private async handleDm(userId: string, event: InstagramDmEvent): Promise<void> {
+  async handlePolledDm(userId: string, event: InstagramDmEvent): Promise<boolean> {
+    return this.handleDm(userId, event);
+  }
+
+  private async handleDm(userId: string, event: InstagramDmEvent): Promise<boolean> {
     let turn;
     try { turn = await reserveSalesInboundTurn(this.prisma, 'INSTAGRAM', userId, event.senderId, event.messageId); }
-    catch (error) { this.logger.warn({ event: 'instagram_sales_receipt_failed', userId: this.graph.safeId(userId), code: this.graph.errorCode(error) }); return; }
-    if (!turn) return;
-    await runSalesTurnSequential(turn, async () => {
+    catch (error) {
+      this.logger.warn({ event: 'instagram_sales_receipt_failed', userId: this.graph.safeId(userId), code: this.graph.errorCode(error) });
+      return false;
+    }
+    // Existing receipt means this exact webhook/polled message was already
+    // accepted by another delivery path. Treat it as handled for the poller.
+    if (!turn) return true;
+    return runSalesTurnSequential(turn, async () => {
       try {
         await Promise.all([
           this.subscriptions.assertFeatureAllowed(userId, 'INSTAGRAM_SALES'),
           this.subscriptions.assertAiAllowed(userId),
         ]);
         const connection = await this.prisma.instagramConnection.findUnique({ where: { userId } });
-        if (!connection?.salesAgentEnabled || !connection.dmEnabled || !['CONNECTED', 'DEGRADED'].includes(connection.status)) return;
+        if (!connection?.salesAgentEnabled || !connection.dmEnabled || !['CONNECTED', 'DEGRADED'].includes(connection.status)) return true;
         const session = await this.ensureSession(userId, event.senderId, event.username ?? null, event.displayName ?? null);
         const active = Boolean(session.salesContextUntil && session.salesContextUntil.getTime() > Date.now());
         let imageUnderstanding: SalesImageUnderstanding | undefined;
@@ -162,20 +171,29 @@ export class InstagramSalesAgentService {
         await this.prisma.instagramSalesSession.update({ where: { id: session.id }, data: { salesState: state as unknown as Prisma.InputJsonValue } });
         if ('suppressReply' in result && result.suppressReply === true) {
           await this.prisma.instagramSalesSession.update({ where: { id: session.id }, data: { salesContextUntil: null } });
-          return;
+          return true;
         }
         let answer = result.message?.trim() || (imageUnderstanding ? 'Rasmdagiga o‘xshash variantlarni ko‘rib beraman. Qaysi xususiyati siz uchun muhim?' : 'Yordam beraman. Qaysi mahsulot kerak edi?');
         if (result.pendingConfirmation) answer = 'Buyurtma ma’lumotlarini tayyorlab turaman. Yakunlash uchun kerakli ma’lumotni birga aniqlaymiz.';
         answer = customerSafeSalesAnswer(answer, state).slice(0, 950);
         await this.graph.sendText(userId, event.senderId, answer);
         await this.prisma.instagramSalesSession.update({ where: { id: session.id }, data: { lastOutboundAt: new Date(), salesContextUntil: state.lastIntent === 'SOFT_EXIT' ? new Date(Date.now() + SOFT_EXIT_MS) : contextUntil } });
+        return true;
       } catch (error) {
+        const code = this.graph.errorCode(error);
+        // The receipt represents completed processing, not merely an attempt.
+        // Release it so a webhook retry or the development poller can retry
+        // transient failures without permanently losing the customer message.
+        await this.prisma.salesInboundReceipt.deleteMany({
+          where: { channel: 'INSTAGRAM', userId, peerId: event.senderId, messageId: event.messageId },
+        }).catch(() => undefined);
         if (error instanceof ForbiddenException) {
-          this.logger.warn({ event: 'instagram_sales_dm_blocked', userId: this.graph.safeId(userId), code: this.graph.errorCode(error) });
-          return;
+          this.logger.warn({ event: 'instagram_sales_dm_blocked', userId: this.graph.safeId(userId), code });
+          return false;
         }
-        this.logger.warn({ event: 'instagram_sales_dm_failed', userId: this.graph.safeId(userId), code: this.graph.errorCode(error) });
+        this.logger.warn({ event: 'instagram_sales_dm_failed', userId: this.graph.safeId(userId), code });
         await this.graph.sendText(userId, event.senderId, 'Hozir javob berishda vaqtinchalik muammo bo‘ldi. Iltimos, savolni yana bir marta yozib ko‘ring.').catch(() => undefined);
+        return false;
       }
     });
   }
@@ -183,9 +201,14 @@ export class InstagramSalesAgentService {
   private async handleComment(userId: string, event: InstagramCommentEvent): Promise<boolean> {
     let turn;
     try { turn = await reserveSalesInboundTurn(this.prisma, 'INSTAGRAM', userId, `comment:${event.commenterId}`, event.commentId); }
-    catch (error) { this.logger.warn({ event: 'instagram_comment_receipt_failed', userId: this.graph.safeId(userId), code: this.graph.errorCode(error) }); return false; }
-    if (!turn) return false;
-    await runSalesTurnSequential(turn, async () => {
+    catch (error) {
+      this.logger.warn({ event: 'instagram_comment_receipt_failed', userId: this.graph.safeId(userId), code: this.graph.errorCode(error) });
+      return false;
+    }
+    // A duplicate receipt means another webhook/poll delivery already accepted
+    // this exact comment. Treat it as handled so the poll cursor may advance.
+    if (!turn) return true;
+    return runSalesTurnSequential(turn, async () => {
       try {
         // Deterministic/typo-tolerant automations must work even when AI credits
         // are exhausted. Feature entitlement is still required, but AI credit
@@ -193,15 +216,21 @@ export class InstagramSalesAgentService {
         await this.subscriptions.assertFeatureAllowed(userId, 'INSTAGRAM_SALES');
         const quickAutomation = await this.runCommentAutomations(userId, event, false);
         if (quickAutomation.matched) {
-          if (!quickAutomation.complete) await this.releaseCommentInboundReceipt(userId, event);
-          return;
+          if (!quickAutomation.complete) {
+            await this.releaseCommentInboundReceipt(userId, event);
+            return false;
+          }
+          return true;
         }
 
         await this.subscriptions.assertAiAllowed(userId);
         const semanticAutomation = await this.runCommentAutomations(userId, event, true);
         if (semanticAutomation.matched) {
-          if (!semanticAutomation.complete) await this.releaseCommentInboundReceipt(userId, event);
-          return;
+          if (!semanticAutomation.complete) {
+            await this.releaseCommentInboundReceipt(userId, event);
+            return false;
+          }
+          return true;
         }
 
         const media = await this.graph.getMedia(userId, event.mediaId);
@@ -209,7 +238,7 @@ export class InstagramSalesAgentService {
         const active = Boolean(session.salesContextUntil && session.salesContextUntil.getTime() > Date.now());
         const state = active ? coerceUniversalSalesState(session.salesState) : { version: 1 as const };
         const message = event.text.trim() || 'Salom';
-        const result = await this.ai.chat(userId, { message, conversationId: session.conversationId }, undefined, turn!.signal, {
+        const result = await this.ai.chat(userId, { message, conversationId: session.conversationId }, undefined, turn.signal, {
           externalSales: true,
           newSalesEpoch: !active,
           channel: 'INSTAGRAM',
@@ -220,10 +249,11 @@ export class InstagramSalesAgentService {
           sourceContext: media?.caption ? `Instagram post caption: ${media.caption.slice(0, 1200)}` : undefined,
         });
         await this.prisma.instagramSalesSession.update({ where: { id: session.id }, data: { salesState: state as unknown as Prisma.InputJsonValue, lastInboundAt: new Date() } });
-        if ('suppressReply' in result && result.suppressReply === true) return;
+        if ('suppressReply' in result && result.suppressReply === true) return true;
         const answer = customerSafeSalesAnswer(result.message?.trim() || 'Directga yozsangiz, yordam beraman 🙂', state).slice(0, 900);
         if (answer) await this.graph.replyToComment(userId, event.commentId, answer);
         await this.prisma.instagramSalesSession.update({ where: { id: session.id }, data: { lastOutboundAt: new Date(), salesContextUntil: new Date(Date.now() + SALES_CONTEXT_MS) } });
+        return true;
       } catch (error) {
         // A blocked/failed AI comment should not be permanently marked as
         // consumed by the development poller. Releasing the outer receipt lets
@@ -231,12 +261,12 @@ export class InstagramSalesAgentService {
         await this.releaseCommentInboundReceipt(userId, event);
         if (error instanceof ForbiddenException) {
           this.logger.warn({ event: 'instagram_comment_agent_blocked', userId: this.graph.safeId(userId), code: this.graph.errorCode(error) });
-          return;
+          return false;
         }
         this.logger.warn({ event: 'instagram_comment_agent_failed', userId: this.graph.safeId(userId), code: this.graph.errorCode(error) });
+        return false;
       }
     });
-    return true;
   }
 
   private async runCommentAutomations(

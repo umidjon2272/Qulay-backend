@@ -6,6 +6,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { InstagramCryptoService } from './instagram-crypto.service';
 import { buildPrivateReplyRequest, parseInstagramJson } from './instagram-api-helpers';
 import { InstagramMediaComment, parseInstagramMediaComments } from './instagram-comment-parser';
+import { InstagramConversationMessage, parseInstagramConversationMessages } from './instagram-dm-parser';
 
 export type InstagramProfile = {
   id: string;
@@ -22,6 +23,11 @@ export type InstagramMedia = {
   thumbnailUrl: string | null;
   permalink: string | null;
   timestamp: string | null;
+};
+
+export type InstagramConversation = {
+  id: string;
+  updatedTime: string | null;
 };
 
 
@@ -191,6 +197,75 @@ export class InstagramGraphService {
     }
     await this.touch(userId);
     return parseInstagramMediaComments(mediaId, rows.slice(0, take));
+  }
+
+  async listConversations(userId: string, limit = 50): Promise<InstagramConversation[]> {
+    const connection = await this.connectionForUser(userId);
+    const token = this.crypto.decrypt(connection.encryptedAccessToken);
+    const take = Math.max(1, Math.min(50, limit));
+    const platform = connection.authMode === InstagramAuthMode.FACEBOOK_LOGIN ? '&platform=instagram' : '';
+    const data = await this.graphJson<{ data?: Array<Record<string, unknown>> }>(
+      `/${encodeURIComponent(connection.instagramUserId)}/conversations?fields=id,updated_time&limit=${take}${platform}`,
+      token,
+      undefined,
+      connection.authMode,
+    );
+    await this.touch(userId);
+    return (data.data ?? []).map(item => ({
+      id: String(item.id ?? '').trim(),
+      updatedTime: typeof item.updated_time === 'string' ? item.updated_time : null,
+    })).filter(item => item.id);
+  }
+
+  async listConversationMessages(userId: string, conversationId: string): Promise<InstagramConversationMessage[]> {
+    const connection = await this.connectionForUser(userId);
+    const token = this.crypto.decrypt(connection.encryptedAccessToken);
+    const fields = encodeURIComponent('messages.limit(20){id,created_time,from,to,message}');
+    const data = await this.graphJson<{ messages?: { data?: Array<Record<string, unknown>> } }>(
+      `/${encodeURIComponent(conversationId)}?fields=${fields}`,
+      token,
+      undefined,
+      connection.authMode,
+    );
+    const rows = data.messages?.data ?? [];
+    const parsed = parseInstagramConversationMessages(rows);
+    const parsedById = new Map(parsed.map(item => [item.id, item]));
+
+    // Meta can return only message ids from the conversation edge. Image-only
+    // messages may also need a detail request to expose attachment metadata.
+    // Resolve only incomplete/image-only rows; keep the normal text path cheap.
+    const detailIds = rows
+      .map(item => String(item.id ?? item.message_id ?? '').trim())
+      .filter(id => {
+        if (!id) return false;
+        const row = parsedById.get(id);
+        return !row || (!row.text && row.imageUrls.length === 0);
+      });
+    if (detailIds.length) {
+      const details = await Promise.all(detailIds.map(async messageId => {
+        const path = `/${encodeURIComponent(messageId)}?fields=id,created_time,from,to,message,attachments`;
+        try {
+          return await this.graphJson<Record<string, unknown>>(path, token, undefined, connection.authMode);
+        } catch {
+          try {
+            return await this.graphJson<Record<string, unknown>>(
+              `/${encodeURIComponent(messageId)}?fields=id,created_time,from,to,message`,
+              token,
+              undefined,
+              connection.authMode,
+            );
+          } catch {
+            return null;
+          }
+        }
+      }));
+      for (const row of parseInstagramConversationMessages(details.filter((item): item is Record<string, unknown> => Boolean(item)))) {
+        parsedById.set(row.id, row);
+      }
+    }
+    const resolved = [...parsedById.values()];
+    await this.touch(userId);
+    return resolved;
   }
 
   async getMedia(userId: string, mediaId: string): Promise<InstagramMedia | null> {

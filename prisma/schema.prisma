@@ -575,7 +575,6 @@ model WhatsAppConnection {
   connectedAt          DateTime?
   lastValidatedAt      DateTime?
   lastUsedAt           DateTime?
-  commentPollCursorAt  DateTime?
   lastErrorAt          DateTime?
   lastErrorCode        String?                   @db.VarChar(100)
   createdAt            DateTime                  @default(now())
@@ -633,6 +632,8 @@ model InstagramConnection {
   connectedAt          DateTime?
   lastValidatedAt      DateTime?
   lastUsedAt           DateTime?
+  commentPollCursorAt  DateTime?
+  dmPollCursorAt       DateTime?
   lastErrorAt          DateTime?
   lastErrorCode        String?                   @db.VarChar(100)
   createdAt            DateTime                  @default(now())
