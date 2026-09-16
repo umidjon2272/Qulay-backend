@@ -86,7 +86,7 @@ export class InstagramSalesAgentService {
         const value = objectOf(change.value);
         if (field === 'comments' || field === 'live_comments') {
           const commentId = textOf(value.id) || textOf(value.comment_id);
-          const text = textOf(value.text) || textOf(value.message);
+          const text = textOf(value.text) || textOf(value.message) || '';
           const from = objectOf(value.from);
           const commenterId = textOf(from.id) || textOf(value.from_id);
           const username = textOf(from.username) || textOf(value.username);
