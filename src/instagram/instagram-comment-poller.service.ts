@@ -84,6 +84,7 @@ export class InstagramCommentPollerService implements OnModuleInit, OnModuleDest
         let skippedSelf = 0;
         let skippedNoTimestamp = 0;
         let handled = 0;
+        let failed = 0;
 
         for (const mediaId of mediaIds) {
           const comments = await this.graph.listMediaComments(connection.userId, mediaId, 500);
@@ -112,15 +113,19 @@ export class InstagramCommentPollerService implements OnModuleInit, OnModuleDest
               mediaId: comment.mediaId,
             });
             if (routed) handled += 1;
+            else failed += 1;
           }
         }
 
-        // Advance to tick start, not "now": comments created while this loop was
-        // running remain eligible next tick. SalesInboundReceipt dedupes overlap.
-        await this.prisma.instagramConnection.update({
-          where: { userId: connection.userId },
-          data: { commentPollCursorAt: tickStartedAt },
-        });
+        // Advance only when every accepted comment finished. If a delivery
+        // failed, keep the old cursor; durable receipts dedupe already-complete
+        // comments while the failed comment becomes eligible for the next poll.
+        if (failed === 0) {
+          await this.prisma.instagramConnection.update({
+            where: { userId: connection.userId },
+            data: { commentPollCursorAt: tickStartedAt },
+          });
+        }
         this.logger.debug({
           event: 'instagram_dev_comment_poll_ok',
           userId: this.safeId(connection.userId),
@@ -131,6 +136,8 @@ export class InstagramCommentPollerService implements OnModuleInit, OnModuleDest
           skippedSelf,
           skippedNoTimestamp,
           handled,
+          failed,
+          cursorAdvanced: failed === 0,
         });
       } catch (error) {
         // Cursor is intentionally not advanced: the same interval can retry.
