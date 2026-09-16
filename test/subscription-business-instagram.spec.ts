@@ -4,7 +4,7 @@ import { SubscriptionsService } from '../src/subscriptions/subscriptions.service
 
 describe('Business Instagram entitlement', () => {
   it('includes Instagram Sales in the Business plan', () => {
-    expect(SUBSCRIPTION_PLANS[SubscriptionTier.BUSINESS].features).toContain('INSTAGRAM_SALES');
+    expect(SUBSCRIPTION_PLANS[SubscriptionTier.BUSINESS].features).toEqual(expect.arrayContaining(['TELEGRAM_SALES', 'WHATSAPP_SALES', 'INSTAGRAM_SALES']));
   });
 
   it('uses current tier features even when an active entitlement snapshot is older', () => {
@@ -27,6 +27,6 @@ describe('Business Instagram entitlement', () => {
         },
       }, SubscriptionTier.BUSINESS);
 
-    expect(plan.features).toContain('INSTAGRAM_SALES');
+    expect(plan.features).toEqual(expect.arrayContaining(['TELEGRAM_SALES', 'WHATSAPP_SALES', 'INSTAGRAM_SALES']));
   });
 });

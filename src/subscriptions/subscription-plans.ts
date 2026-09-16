@@ -43,7 +43,7 @@ export const SUBSCRIPTION_PLANS: Record<SubscriptionTier, {
     name: 'Business',
     monthlyPriceUzs: 149_000,
     limits: { aiCreditsPerMonth: 5_000, toolActionsPerMonth: 25_000, voiceMinutesPerMonth: 180, files: 5_000, storageMb: 100_000, memories: 25_000 },
-    features: ['AI_CHAT', 'TASKS', 'REMINDERS', 'CALENDAR', 'GOOGLE', 'TELEGRAM', 'BITO', 'INSTAGRAM_SALES'],
+    features: ['AI_CHAT', 'TASKS', 'REMINDERS', 'CALENDAR', 'GOOGLE', 'TELEGRAM', 'BITO', 'TELEGRAM_SALES', 'WHATSAPP_SALES', 'INSTAGRAM_SALES'],
   },
   SALES_AI: {
     name: 'Sales AI',

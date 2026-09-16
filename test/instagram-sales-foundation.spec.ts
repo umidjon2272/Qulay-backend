@@ -125,4 +125,34 @@ describe('Instagram sales foundation', () => {
     expect(results[0]).toMatchObject({ name: 'iPhone 13 Pro 128GB qora', availability: 'AVAILABLE' });
     expect(results[0].score).toBeGreaterThanOrEqual(0.72);
   });
+
+  it('enables the Instagram sales agent on a successful fresh connection', async () => {
+    const upsert = jest.fn().mockResolvedValue({});
+    const prisma = {
+      instagramConnection: {
+        upsert,
+        findUnique: jest.fn().mockResolvedValue({
+          status: 'CONNECTED', instagramUserId: '12345', username: 'shop', displayName: null,
+          profilePictureUrl: null, webhookSubscribed: true, salesAgentEnabled: true,
+          dmEnabled: true, commentsEnabled: true, imageVisionEnabled: true,
+          connectedAt: new Date(), lastValidatedAt: new Date(), lastErrorCode: null,
+        }),
+      },
+    };
+    const graph = {
+      configured: jest.fn(() => true), oauthReady: jest.fn(() => true),
+      verifyProfile: jest.fn().mockResolvedValue({ id: '12345', username: 'shop', name: null, profilePictureUrl: null }),
+      subscribeWebhooks: jest.fn().mockResolvedValue(true),
+    };
+    const crypto = { encrypt: jest.fn(() => 'encrypted') };
+    const service = new InstagramIntegrationService(prisma as never, graph as never, crypto as never);
+
+    await service.connect('u', { instagramUserId: '12345', accessToken: 'x'.repeat(30) });
+
+    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({ salesAgentEnabled: true }),
+      update: expect.objectContaining({ salesAgentEnabled: true }),
+    }));
+  });
+
 });
