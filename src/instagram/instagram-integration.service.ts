@@ -3,6 +3,7 @@ import { InstagramAuthMode, InstagramConnectionStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { InstagramCryptoService } from './instagram-crypto.service';
 import { InstagramGraphService } from './instagram-graph.service';
+import { normalizeInstagramAutomationTrigger } from './instagram-automation-utils';
 
 export type InstagramSettings = {
   configured: boolean;
@@ -159,25 +160,46 @@ export class InstagramIntegrationService {
   }) {
     const media = await this.graph.getMedia(userId, input.mediaId);
     if (!media) throw new BadRequestException('Instagram posti topilmadi');
-    return this.prisma.instagramCommentAutomation.create({
-      data: {
-        userId,
-        mediaId: media.id,
-        mediaCaption: media.caption,
-        mediaPermalink: media.permalink,
-        triggerText: input.triggerText.trim().slice(0, 2000),
-        semanticMatch: input.semanticMatch !== false,
-        dmMessage: input.dmMessage.trim().slice(0, 4000),
-        publicReply: input.publicReply?.trim().slice(0, 1000) || null,
-        sendPrivateReply: input.sendPrivateReply !== false,
-        replyPublicly: input.replyPublicly === true,
-        active: input.active !== false,
+    const normalized = this.automationData(userId, media, input);
+    return this.prisma.instagramCommentAutomation.upsert({
+      where: { userId_mediaId_triggerKey: { userId, mediaId: media.id, triggerKey: normalized.triggerKey } },
+      update: {
+        mediaCaption: normalized.mediaCaption,
+        mediaPermalink: normalized.mediaPermalink,
+        triggerText: normalized.triggerText,
+        semanticMatch: normalized.semanticMatch,
+        dmMessage: normalized.dmMessage,
+        publicReply: normalized.publicReply,
+        sendPrivateReply: normalized.sendPrivateReply,
+        replyPublicly: normalized.replyPublicly,
+        active: normalized.active,
       },
+      create: normalized,
       select: {
         id: true, mediaId: true, mediaCaption: true, mediaPermalink: true, triggerText: true,
         semanticMatch: true, dmMessage: true, publicReply: true, sendPrivateReply: true,
         replyPublicly: true, active: true, createdAt: true, updatedAt: true,
       },
+    });
+  }
+
+  async replaceAutomationsForMedia(userId: string, input: {
+    mediaId: string; triggerText: string; dmMessage: string; publicReply?: string;
+    semanticMatch?: boolean; sendPrivateReply?: boolean; replyPublicly?: boolean; active?: boolean;
+  }) {
+    const media = await this.graph.getMedia(userId, input.mediaId);
+    if (!media) throw new BadRequestException('Instagram posti topilmadi');
+    const data = this.automationData(userId, media, input);
+    return this.prisma.$transaction(async tx => {
+      await tx.instagramCommentAutomation.deleteMany({ where: { userId, mediaId: media.id } });
+      return tx.instagramCommentAutomation.create({
+        data,
+        select: {
+          id: true, mediaId: true, mediaCaption: true, mediaPermalink: true, triggerText: true,
+          semanticMatch: true, dmMessage: true, publicReply: true, sendPrivateReply: true,
+          replyPublicly: true, active: true, createdAt: true, updatedAt: true,
+        },
+      });
     });
   }
 
@@ -190,7 +212,10 @@ export class InstagramIntegrationService {
     return this.prisma.instagramCommentAutomation.update({
       where: { id: automationId },
       data: {
-        ...(typeof input.triggerText === 'string' ? { triggerText: input.triggerText.trim().slice(0, 2000) } : {}),
+        ...(typeof input.triggerText === 'string' ? {
+          triggerText: input.triggerText.trim().slice(0, 2000),
+          triggerKey: this.normalizedTriggerOrThrow(input.triggerText),
+        } : {}),
         ...(typeof input.dmMessage === 'string' ? { dmMessage: input.dmMessage.trim().slice(0, 4000) } : {}),
         ...(input.publicReply === null ? { publicReply: null } : typeof input.publicReply === 'string' ? { publicReply: input.publicReply.trim().slice(0, 1000) || null } : {}),
         ...(typeof input.semanticMatch === 'boolean' ? { semanticMatch: input.semanticMatch } : {}),
@@ -205,6 +230,36 @@ export class InstagramIntegrationService {
     const row = await this.prisma.instagramCommentAutomation.findFirst({ where: { id: automationId, userId }, select: { id: true } });
     if (!row) throw new NotFoundException('Instagram automation topilmadi');
     return this.prisma.instagramCommentAutomation.delete({ where: { id: automationId }, select: { id: true, mediaId: true, triggerText: true } });
+  }
+
+
+  private automationData(userId: string, media: { id: string; caption?: string | null; permalink?: string | null }, input: {
+    triggerText: string; dmMessage: string; publicReply?: string;
+    semanticMatch?: boolean; sendPrivateReply?: boolean; replyPublicly?: boolean; active?: boolean;
+  }) {
+    const triggerText = input.triggerText.trim().slice(0, 2000);
+    const dmMessage = input.dmMessage.trim().slice(0, 4000);
+    if (!dmMessage) throw new BadRequestException('Direct xabari bo‘sh bo‘lishi mumkin emas');
+    return {
+      userId,
+      mediaId: media.id,
+      mediaCaption: media.caption ?? null,
+      mediaPermalink: media.permalink ?? null,
+      triggerText,
+      triggerKey: this.normalizedTriggerOrThrow(triggerText),
+      semanticMatch: input.semanticMatch !== false,
+      dmMessage,
+      publicReply: input.publicReply?.trim().slice(0, 1000) || null,
+      sendPrivateReply: input.sendPrivateReply !== false,
+      replyPublicly: input.replyPublicly === true,
+      active: input.active !== false,
+    };
+  }
+
+  private normalizedTriggerOrThrow(value: string): string {
+    const triggerKey = normalizeInstagramAutomationTrigger(value);
+    if (!triggerKey) throw new BadRequestException('Instagram automation triggeri bo‘sh bo‘lishi mumkin emas');
+    return triggerKey;
   }
 
   private emptyStatus(): InstagramSettings {

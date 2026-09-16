@@ -17,8 +17,8 @@ describe('Instagram sales foundation', () => {
   });
 
   it('stores a comment automation only against a real Instagram post', async () => {
-    const create = jest.fn().mockResolvedValue({ id: 'a1', mediaId: 'm1' });
-    const prisma = { instagramCommentAutomation: { create } };
+    const upsert = jest.fn().mockResolvedValue({ id: 'a1', mediaId: 'm1' });
+    const prisma = { instagramCommentAutomation: { upsert } };
     const graph = {
       configured: () => true,
       getMedia: jest.fn().mockResolvedValue({ id: 'm1', caption: 'Prompt post', permalink: 'https://instagram.com/p/x' }),
@@ -30,8 +30,8 @@ describe('Instagram sales foundation', () => {
     });
 
     expect(graph.getMedia).toHaveBeenCalledWith('u', 'm1');
-    expect(create).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({ userId: 'u', mediaId: 'm1', mediaCaption: 'Prompt post', triggerText: 'prompt', dmMessage: 'Mana promptingiz' }),
+    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({ userId: 'u', mediaId: 'm1', mediaCaption: 'Prompt post', triggerText: 'prompt', triggerKey: 'prompt', dmMessage: 'Mana promptingiz' }),
     }));
   });
 
@@ -54,8 +54,10 @@ describe('Instagram sales foundation', () => {
     const now = new Date().toISOString();
     const prisma = {
       instagramConnection: {
-        findMany: jest.fn().mockResolvedValue([{ userId: 'u', instagramUserId: 'owner-ig' }]),
+        findMany: jest.fn().mockResolvedValue([{ userId: 'u', instagramUserId: 'owner-ig', commentPollCursorAt: new Date(Date.now() - 60_000) }]),
+        update: jest.fn().mockResolvedValue({}),
       },
+      instagramCommentAutomation: { findMany: jest.fn().mockResolvedValue([]) },
     };
     const config = { get: jest.fn((key: string) => key === 'instagram.devCommentPollEnabled' ? true : 60_000) };
     const graph = {
@@ -65,7 +67,7 @@ describe('Instagram sales foundation', () => {
         { id: 'c2', mediaId: 'm1', text: 'self', commenterId: 'owner-ig', username: 'owner', timestamp: now },
       ]),
     };
-    const sales = { handlePolledComment: jest.fn().mockResolvedValue(undefined) };
+    const sales = { handlePolledComment: jest.fn().mockResolvedValue(true) };
     const poller = new InstagramCommentPollerService(config as never, prisma as never, graph as never, sales as never);
 
     await poller.tick();
@@ -74,38 +76,116 @@ describe('Instagram sales foundation', () => {
     expect(sales.handlePolledComment).toHaveBeenCalledWith('u', expect.objectContaining({ commentId: 'c1', mediaId: 'm1', text: 'promt' }));
   });
 
-  it('releases both comment receipts when automation delivery fails so a poll/webhook retry is not dropped forever', async () => {
-    const instagramReceiptDelete = jest.fn().mockResolvedValue({ count: 1 });
-    const salesReceiptDelete = jest.fn().mockResolvedValue({ count: 1 });
+  it('runs exact comment automation before AI credit gating so narx replies do not go silent', async () => {
+    let receipt: any = null;
     const prisma = {
+      salesInboundReceipt: { create: jest.fn().mockResolvedValue({}), deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
       instagramCommentAutomation: {
         findMany: jest.fn().mockResolvedValue([{
-          id: 'a1', triggerText: 'prompt', semanticMatch: true, mediaCaption: null,
-          sendPrivateReply: true, dmMessage: 'Mana promptingiz', replyPublicly: false, publicReply: null,
+          id: 'a1', triggerText: 'narx', semanticMatch: false, mediaCaption: null,
+          sendPrivateReply: true, dmMessage: 'Salom', replyPublicly: true, publicReply: 'Directga yubordik',
         }]),
       },
       instagramAutomationReceipt: {
-        create: jest.fn().mockResolvedValue({ id: 'r1' }),
-        deleteMany: instagramReceiptDelete,
+        findUnique: jest.fn(async () => receipt),
+        create: jest.fn(async () => {
+          receipt = { id: 'r1', privateSentAt: null, publicSentAt: null, completedAt: null, nextRetryAt: null, attemptCount: 0 };
+          return receipt;
+        }),
+        update: jest.fn(async ({ data }: any) => { receipt = { ...receipt, ...data }; return receipt; }),
       },
-      salesInboundReceipt: { deleteMany: salesReceiptDelete },
     };
     const graph = {
-      privateReplyToComment: jest.fn().mockRejectedValue(new Error('META_TEMPORARY')),
-      replyToComment: jest.fn(),
+      privateReplyToComment: jest.fn().mockResolvedValue('dm1'),
+      replyToComment: jest.fn().mockResolvedValue('reply1'),
       safeId: jest.fn(() => 'safe'),
-      errorCode: jest.fn(() => 'META_TEMPORARY'),
+      errorCode: jest.fn(() => 'FAILED'),
+    };
+    const matcher = { matches: jest.fn().mockResolvedValue(true) };
+    const subscriptions = {
+      assertFeatureAllowed: jest.fn().mockResolvedValue(undefined),
+      assertAiAllowed: jest.fn().mockRejectedValue(new Error('AI_CREDIT_BLOCKED')),
+    };
+    const service = new InstagramSalesAgentService(prisma as never, graph as never, {} as never, {} as never, subscriptions as never, matcher as never);
+
+    await (service as any).handleComment('u', { commentId: 'c1', commenterId: 'buyer-1', username: 'buyer', text: 'narx', mediaId: 'm1' });
+
+    expect(graph.privateReplyToComment).toHaveBeenCalledTimes(1);
+    expect(graph.replyToComment).toHaveBeenCalledTimes(1);
+    expect(subscriptions.assertAiAllowed).not.toHaveBeenCalled();
+  });
+
+  it('tracks private and public automation delivery independently so a retry never duplicates the successful DM', async () => {
+    let receipt: any = null;
+    const updates: any[] = [];
+    const prisma = {
+      instagramCommentAutomation: {
+        findMany: jest.fn().mockResolvedValue([{
+          id: 'a1', triggerText: 'narx', semanticMatch: false, mediaCaption: null,
+          sendPrivateReply: true, dmMessage: 'Salom', replyPublicly: true, publicReply: 'Directga yubordik',
+        }]),
+      },
+      instagramAutomationReceipt: {
+        findUnique: jest.fn(async () => receipt),
+        create: jest.fn(async () => {
+          receipt = { id: 'r1', privateSentAt: null, publicSentAt: null, completedAt: null, nextRetryAt: null, attemptCount: 0 };
+          return receipt;
+        }),
+        update: jest.fn(async ({ data }: any) => { updates.push(data); receipt = { ...receipt, ...data }; return receipt; }),
+      },
+    };
+    const graph = {
+      privateReplyToComment: jest.fn().mockResolvedValue('dm1'),
+      replyToComment: jest.fn().mockRejectedValueOnce(new Error('META_TEMPORARY')).mockResolvedValueOnce('reply1'),
+      safeId: jest.fn(() => 'safe'),
+      errorCode: jest.fn((error: any) => error?.message || 'FAILED'),
     };
     const matcher = { matches: jest.fn().mockResolvedValue(true) };
     const service = new InstagramSalesAgentService(prisma as never, graph as never, {} as never, {} as never, {} as never, matcher as never);
-    const event = { commentId: 'c1', commenterId: 'customer-1', username: 'buyer', text: 'promt', mediaId: 'm1' };
+    const event = { commentId: 'c1', commenterId: 'customer-1', username: 'buyer', text: 'narx', mediaId: 'm1' };
 
-    await (service as any).runCommentAutomations('u', event);
+    const first = await (service as any).runCommentAutomations('u', event, false);
+    if (receipt?.nextRetryAt) receipt.nextRetryAt = new Date(0);
+    const second = await (service as any).runCommentAutomations('u', event, false);
 
-    expect(instagramReceiptDelete).toHaveBeenCalledWith({ where: { userId: 'u', automationId: 'a1', commentId: 'c1' } });
-    expect(salesReceiptDelete).toHaveBeenCalledWith({
-      where: { channel: 'INSTAGRAM', userId: 'u', peerId: 'comment:customer-1', messageId: 'c1' },
-    });
+    expect(first.matched).toBe(true);
+    expect(second.complete).toBe(true);
+    expect(graph.privateReplyToComment).toHaveBeenCalledTimes(1);
+    expect(graph.replyToComment).toHaveBeenCalledTimes(2);
+    expect(updates.some(data => data.privateSentAt instanceof Date)).toBe(true);
+    expect(updates.some(data => data.completedAt instanceof Date)).toBe(true);
+  });
+
+  it('upserts duplicate media+trigger automation instead of creating another rule', async () => {
+    const upsert = jest.fn().mockResolvedValue({ id: 'a1', mediaId: 'm1' });
+    const prisma = { instagramCommentAutomation: { upsert } };
+    const graph = { getMedia: jest.fn().mockResolvedValue({ id: 'm1', caption: 'Post', permalink: null }) };
+    const service = new InstagramIntegrationService(prisma as never, graph as never, {} as never);
+
+    await service.createAutomation('u', { mediaId: 'm1', triggerText: ' Narx ', dmMessage: 'Salom' });
+
+    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
+      where: { userId_mediaId_triggerKey: { userId: 'u', mediaId: 'm1', triggerKey: 'narx' } },
+      update: expect.objectContaining({ dmMessage: 'Salom', active: true }),
+      create: expect.objectContaining({ triggerKey: 'narx' }),
+    }));
+  });
+
+  it('replaces all rules for one Instagram media in one transaction', async () => {
+    const tx = {
+      instagramCommentAutomation: {
+        deleteMany: jest.fn().mockResolvedValue({ count: 2 }),
+        create: jest.fn().mockResolvedValue({ id: 'new-rule' }),
+      },
+    };
+    const prisma = { $transaction: jest.fn(async (fn: any) => fn(tx)) };
+    const graph = { getMedia: jest.fn().mockResolvedValue({ id: 'm1', caption: 'Post', permalink: null }) };
+    const service = new InstagramIntegrationService(prisma as never, graph as never, {} as never);
+
+    await service.replaceAutomationsForMedia('u', { mediaId: 'm1', triggerText: 'narx', dmMessage: 'Salom', publicReply: 'Directga yubordik', replyPublicly: true });
+
+    expect(tx.instagramCommentAutomation.deleteMany).toHaveBeenCalledWith({ where: { userId: 'u', mediaId: 'm1' } });
+    expect(tx.instagramCommentAutomation.create).toHaveBeenCalledTimes(1);
   });
 
   it('finds owner-taught off-Bito products by alias/family instead of requiring an exact name', async () => {

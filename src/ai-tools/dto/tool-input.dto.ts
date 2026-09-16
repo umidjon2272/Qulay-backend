@@ -312,6 +312,8 @@ export class SaveInstagramCommentAutomationToolInput {
   @IsOptional() @IsBoolean() active?: boolean;
 }
 
+export class ReplaceInstagramCommentAutomationsToolInput extends SaveInstagramCommentAutomationToolInput {}
+
 export class ListInstagramCommentAutomationsToolInput {
   @IsOptional() @IsBoolean() activeOnly?: boolean;
 }

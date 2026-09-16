@@ -6,10 +6,10 @@ import { AiUsageService } from '../usage/usage.service';
 export class InstagramCommentMatcherService {
   constructor(private readonly provider: AiProviderService, private readonly usage: AiUsageService) {}
 
-  async matches(userId: string, comment: string, trigger: string, semanticMatch: boolean, sourceContext?: string | null): Promise<boolean> {
+  async matches(userId: string, comment: string, trigger: string, semanticMatch: boolean, sourceContext?: string | null, allowAi = true): Promise<boolean> {
     const quick = quickSemanticMatch(comment, trigger);
     if (quick === true) return true;
-    if (!semanticMatch || !comment.trim() || !trigger.trim()) return false;
+    if (!semanticMatch || !allowAi || !comment.trim() || !trigger.trim()) return false;
 
     const tool: ProviderTool = {
       type: 'function',

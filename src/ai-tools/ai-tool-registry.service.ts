@@ -49,7 +49,7 @@ ListFilesToolInput, SearchFilesToolInput, GetFileMetadataToolInput, GetFileConte
   BudgetStatusToolInput, CashflowForecastToolInput, DailyBriefingToolInput,
   SaveSalesPlaybookRuleToolInput, ListSalesPlaybookRulesToolInput, DeleteSalesPlaybookRuleToolInput,
   SaveSalesProductKnowledgeToolInput, ListSalesProductKnowledgeToolInput, DeleteSalesProductKnowledgeToolInput,
-  ListInstagramPostsToolInput, SaveInstagramCommentAutomationToolInput,
+  ListInstagramPostsToolInput, SaveInstagramCommentAutomationToolInput, ReplaceInstagramCommentAutomationsToolInput,
   ListInstagramCommentAutomationsToolInput, DeleteInstagramCommentAutomationToolInput,
   UpdateInstagramSalesSettingsToolInput, UpdateInstagramCommentAutomationToolInput,
 } from './dto/tool-input.dto';
@@ -619,6 +619,23 @@ export class AIToolRegistryService {
           return { post: post ? { id: post.id, caption: post.caption, permalink: post.permalink } : { id: input.mediaId }, triggerText: input.triggerText, dmMessage: input.dmMessage, publicReply: input.publicReply ?? null, semanticMatch: input.semanticMatch !== false, sendPrivateReply: input.sendPrivateReply !== false, replyPublicly: input.replyPublicly === true };
         },
         execute: (context, input) => this.instagramIntegrationService!.createAutomation(context.userId, input),
+      }));
+      this.register(this.base<ReplaceInstagramCommentAutomationsToolInput, unknown>({
+        name: 'replace_instagram_comment_automations_for_media',
+        description: 'Atomically delete all existing comment automations for one REAL Instagram mediaId and replace them with exactly one new rule. Use when the owner says “hammasini o‘chir va bitta yangi qoida yarat” for a post/reel. This future external messaging action requires confirmation.',
+        category: AIToolCategory.INSTAGRAM,
+        sideEffect: 'WRITE',
+        validate: ReplaceInstagramCommentAutomationsToolInput,
+        inputSchema: schema({ mediaId: { type: 'string' }, triggerText: { type: 'string' }, dmMessage: { type: 'string' }, publicReply: { type: 'string' }, semanticMatch: { type: 'boolean' }, sendPrivateReply: { type: 'boolean' }, replyPublicly: { type: 'boolean' }, active: { type: 'boolean' } }, ['mediaId', 'triggerText', 'dmMessage']),
+        authorize: async (context, input) => {
+          const posts = await this.instagramIntegrationService!.listPosts(context.userId, 50);
+          if (!posts.some(post => post.id === input.mediaId)) throw new BadRequestException('Instagram mediaId real postlar orasida topilmadi');
+        },
+        preview: async (context, input) => {
+          const current = (await this.instagramIntegrationService!.listAutomations(context.userId, false)).filter(row => row.mediaId === input.mediaId);
+          return { replaceAllForMediaId: input.mediaId, deleting: current, newRule: input };
+        },
+        execute: (context, input) => this.instagramIntegrationService!.replaceAutomationsForMedia(context.userId, input),
       }));
       this.register(this.base<UpdateInstagramCommentAutomationToolInput, unknown>({
         name: 'update_instagram_comment_automation',

@@ -670,6 +670,7 @@ model InstagramCommentAutomation {
   mediaCaption     String?  @db.Text
   mediaPermalink   String?  @db.Text
   triggerText      String   @db.Text
+  triggerKey       String   @db.VarChar(500)
   semanticMatch    Boolean  @default(true)
   dmMessage        String   @db.Text
   publicReply      String?  @db.Text
@@ -681,22 +682,31 @@ model InstagramCommentAutomation {
   user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   receipts         InstagramAutomationReceipt[]
 
+  @@unique([userId, mediaId, triggerKey])
   @@index([userId, mediaId, active])
   @@index([userId, updatedAt])
 }
 
 model InstagramAutomationReceipt {
-  id           String                       @id @default(uuid()) @db.Uuid
-  userId       String                       @db.Uuid
-  automationId String                       @db.Uuid
-  commentId    String                       @db.VarChar(200)
-  commenterId  String?                      @db.VarChar(120)
-  createdAt    DateTime                     @default(now())
-  user         User                         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  automation   InstagramCommentAutomation   @relation(fields: [automationId], references: [id], onDelete: Cascade)
+  id            String                       @id @default(uuid()) @db.Uuid
+  userId        String                       @db.Uuid
+  automationId  String                       @db.Uuid
+  commentId     String                       @db.VarChar(200)
+  commenterId   String?                      @db.VarChar(120)
+  privateSentAt DateTime?
+  publicSentAt  DateTime?
+  completedAt   DateTime?
+  attemptCount  Int                          @default(0)
+  nextRetryAt   DateTime?
+  lastErrorCode String?                      @db.VarChar(100)
+  createdAt     DateTime                     @default(now())
+  updatedAt     DateTime                     @updatedAt
+  user          User                         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  automation    InstagramCommentAutomation   @relation(fields: [automationId], references: [id], onDelete: Cascade)
 
   @@unique([automationId, commentId])
   @@index([userId, createdAt])
+  @@index([nextRetryAt])
 }
 
 model RefreshToken {

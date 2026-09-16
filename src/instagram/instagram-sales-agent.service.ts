@@ -170,8 +170,12 @@ export class InstagramSalesAgentService {
         await this.graph.sendText(userId, event.senderId, answer);
         await this.prisma.instagramSalesSession.update({ where: { id: session.id }, data: { lastOutboundAt: new Date(), salesContextUntil: state.lastIntent === 'SOFT_EXIT' ? new Date(Date.now() + SOFT_EXIT_MS) : contextUntil } });
       } catch (error) {
-        if (error instanceof ForbiddenException) return;
+        if (error instanceof ForbiddenException) {
+          this.logger.warn({ event: 'instagram_sales_dm_blocked', userId: this.graph.safeId(userId), code: this.graph.errorCode(error) });
+          return;
+        }
         this.logger.warn({ event: 'instagram_sales_dm_failed', userId: this.graph.safeId(userId), code: this.graph.errorCode(error) });
+        await this.graph.sendText(userId, event.senderId, 'Hozir javob berishda vaqtinchalik muammo bo‘ldi. Iltimos, savolni yana bir marta yozib ko‘ring.').catch(() => undefined);
       }
     });
   }
@@ -183,12 +187,22 @@ export class InstagramSalesAgentService {
     if (!turn) return false;
     await runSalesTurnSequential(turn, async () => {
       try {
-        await Promise.all([
-          this.subscriptions.assertFeatureAllowed(userId, 'INSTAGRAM_SALES'),
-          this.subscriptions.assertAiAllowed(userId),
-        ]);
-        const matchedAutomation = await this.runCommentAutomations(userId, event);
-        if (matchedAutomation) return;
+        // Deterministic/typo-tolerant automations must work even when AI credits
+        // are exhausted. Feature entitlement is still required, but AI credit
+        // gating happens only after cheap local matching has had a chance.
+        await this.subscriptions.assertFeatureAllowed(userId, 'INSTAGRAM_SALES');
+        const quickAutomation = await this.runCommentAutomations(userId, event, false);
+        if (quickAutomation.matched) {
+          if (!quickAutomation.complete) await this.releaseCommentInboundReceipt(userId, event);
+          return;
+        }
+
+        await this.subscriptions.assertAiAllowed(userId);
+        const semanticAutomation = await this.runCommentAutomations(userId, event, true);
+        if (semanticAutomation.matched) {
+          if (!semanticAutomation.complete) await this.releaseCommentInboundReceipt(userId, event);
+          return;
+        }
 
         const media = await this.graph.getMedia(userId, event.mediaId);
         const session = await this.ensureSession(userId, event.commenterId, event.username, event.username);
@@ -211,55 +225,152 @@ export class InstagramSalesAgentService {
         if (answer) await this.graph.replyToComment(userId, event.commentId, answer);
         await this.prisma.instagramSalesSession.update({ where: { id: session.id }, data: { lastOutboundAt: new Date(), salesContextUntil: new Date(Date.now() + SALES_CONTEXT_MS) } });
       } catch (error) {
-        if (error instanceof ForbiddenException) return;
+        // A blocked/failed AI comment should not be permanently marked as
+        // consumed by the development poller. Releasing the outer receipt lets
+        // a later poll retry after credits/permissions/reachability recover.
+        await this.releaseCommentInboundReceipt(userId, event);
+        if (error instanceof ForbiddenException) {
+          this.logger.warn({ event: 'instagram_comment_agent_blocked', userId: this.graph.safeId(userId), code: this.graph.errorCode(error) });
+          return;
+        }
         this.logger.warn({ event: 'instagram_comment_agent_failed', userId: this.graph.safeId(userId), code: this.graph.errorCode(error) });
       }
     });
     return true;
   }
 
-  private async runCommentAutomations(userId: string, event: InstagramCommentEvent): Promise<boolean> {
-    const automations = await this.prisma.instagramCommentAutomation.findMany({ where: { userId, mediaId: event.mediaId, active: true }, orderBy: { updatedAt: 'desc' }, take: 30 });
-    let matchedAny = false;
+  private async runCommentAutomations(
+    userId: string,
+    event: InstagramCommentEvent,
+    allowAi: boolean,
+  ): Promise<{ matched: boolean; complete: boolean }> {
+    const automations = await this.prisma.instagramCommentAutomation.findMany({
+      where: { userId, mediaId: event.mediaId, active: true },
+      orderBy: { updatedAt: 'desc' },
+      take: 30,
+    });
     for (const automation of automations) {
-      if (!(await this.matcher.matches(userId, event.text, automation.triggerText, automation.semanticMatch, automation.mediaCaption))) continue;
-      matchedAny = true;
-      const reserved = await this.reserveAutomationReceipt(userId, automation.id, event.commentId, event.commenterId);
-      if (!reserved) continue;
-      try {
-        if (automation.sendPrivateReply) await this.graph.privateReplyToComment(userId, event.commentId, automation.dmMessage);
-        if (automation.replyPublicly) await this.graph.replyToComment(userId, event.commentId, automation.publicReply?.trim() || 'Directga yubordim ✅');
-      } catch (error) {
-        // The receipt reserves a successful delivery, not an attempted one. If
-        // Meta is temporarily unavailable, remove it so a webhook retry can
-        // safely try the automation again without permanently dropping the DM.
-        await Promise.all([
-          this.prisma.instagramAutomationReceipt.deleteMany({
-            where: { userId, automationId: automation.id, commentId: event.commentId },
-          }).catch(() => undefined),
-          // The outer sales receipt is reserved before automation delivery. If
-          // delivery fails and only the automation receipt is removed, a Meta
-          // webhook retry or development poll sees the existing sales receipt
-          // and drops the comment forever. Remove both reservations so the
-          // same real comment can be retried safely on the next delivery.
-          this.prisma.salesInboundReceipt.deleteMany({
-            where: { channel: 'INSTAGRAM', userId, peerId: `comment:${event.commenterId}`, messageId: event.commentId },
-          }).catch(() => undefined),
-        ]);
-        this.logger.warn({ event: 'instagram_comment_automation_send_failed', userId: this.graph.safeId(userId), code: this.graph.errorCode(error) });
+      const matches = await this.matcher.matches(
+        userId,
+        event.text,
+        automation.triggerText,
+        automation.semanticMatch,
+        automation.mediaCaption,
+        allowAi,
+      );
+      if (!matches) continue;
+
+      let receipt = await this.findOrCreateAutomationReceipt(userId, automation.id, event.commentId, event.commenterId);
+      if (receipt.completedAt) return { matched: true, complete: true };
+      if (receipt.nextRetryAt && receipt.nextRetryAt.getTime() > Date.now()) return { matched: true, complete: false };
+
+      const attemptCount = (receipt.attemptCount ?? 0) + 1;
+      receipt = await this.prisma.instagramAutomationReceipt.update({
+        where: { id: receipt.id },
+        data: { attemptCount, nextRetryAt: null, lastErrorCode: null },
+      });
+
+      let privateDone = !automation.sendPrivateReply || Boolean(receipt.privateSentAt);
+      let publicDone = !automation.replyPublicly || Boolean(receipt.publicSentAt);
+      let failureCode: string | null = null;
+
+      if (!privateDone) {
+        try {
+          await this.graph.privateReplyToComment(userId, event.commentId, automation.dmMessage);
+          receipt = await this.prisma.instagramAutomationReceipt.update({
+            where: { id: receipt.id },
+            data: { privateSentAt: new Date() },
+          });
+          privateDone = true;
+        } catch (error) {
+          failureCode = this.graph.errorCode(error);
+          this.logger.warn({
+            event: 'instagram_comment_automation_private_failed',
+            userId: this.graph.safeId(userId),
+            code: failureCode,
+          });
+        }
       }
+
+      // Public reply is deliberately independent from the private reply. A Meta
+      // restriction on one leg must never suppress the other leg, and retries
+      // remember which leg has already succeeded.
+      if (!publicDone) {
+        try {
+          await this.graph.replyToComment(userId, event.commentId, automation.publicReply?.trim() || 'Directga yubordim ✅');
+          receipt = await this.prisma.instagramAutomationReceipt.update({
+            where: { id: receipt.id },
+            data: { publicSentAt: new Date() },
+          });
+          publicDone = true;
+        } catch (error) {
+          failureCode = failureCode || this.graph.errorCode(error);
+          this.logger.warn({
+            event: 'instagram_comment_automation_public_failed',
+            userId: this.graph.safeId(userId),
+            code: this.graph.errorCode(error),
+          });
+        }
+      }
+
+      const complete = privateDone && publicDone;
+      if (complete) {
+        await this.prisma.instagramAutomationReceipt.update({
+          where: { id: receipt.id },
+          data: { completedAt: new Date(), nextRetryAt: null, lastErrorCode: null },
+        });
+        return { matched: true, complete: true };
+      }
+
+      const code = failureCode || 'INSTAGRAM_DELIVERY_INCOMPLETE';
+      await this.prisma.instagramAutomationReceipt.update({
+        where: { id: receipt.id },
+        data: {
+          lastErrorCode: code.slice(0, 100),
+          nextRetryAt: new Date(Date.now() + this.automationRetryDelayMs(code, attemptCount)),
+        },
+      });
+      return { matched: true, complete: false };
     }
-    return matchedAny;
+    return { matched: false, complete: false };
   }
 
-  private async reserveAutomationReceipt(userId: string, automationId: string, commentId: string, commenterId: string): Promise<boolean> {
+  private async findOrCreateAutomationReceipt(userId: string, automationId: string, commentId: string, commenterId: string) {
+    const existing = await this.prisma.instagramAutomationReceipt.findUnique({
+      where: { automationId_commentId: { automationId, commentId } },
+    });
+    if (existing) return existing;
     try {
-      await this.prisma.instagramAutomationReceipt.create({ data: { userId, automationId, commentId, commenterId } });
-      return true;
+      return await this.prisma.instagramAutomationReceipt.create({
+        data: { userId, automationId, commentId, commenterId },
+      });
     } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') return false;
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        const raced = await this.prisma.instagramAutomationReceipt.findUnique({
+          where: { automationId_commentId: { automationId, commentId } },
+        });
+        if (raced) return raced;
+      }
       throw error;
     }
+  }
+
+  private async releaseCommentInboundReceipt(userId: string, event: InstagramCommentEvent): Promise<void> {
+    await this.prisma.salesInboundReceipt.deleteMany({
+      where: {
+        channel: 'INSTAGRAM',
+        userId,
+        peerId: `comment:${event.commenterId}`,
+        messageId: event.commentId,
+      },
+    }).catch(() => undefined);
+  }
+
+  private automationRetryDelayMs(code: string, attemptCount: number): number {
+    // Permission/token/object errors are not transient and should not hammer
+    // Meta every minute. Temporary/rate/network errors back off exponentially.
+    if (/(?:AUTH|TOKEN|PERMISSION|ACCESS|OBJECT|UNSUPPORTED|INVALID)/iu.test(code)) return 5 * 60 * 1000;
+    return Math.min(10 * 60 * 1000, 30_000 * (2 ** Math.min(5, Math.max(0, attemptCount - 1))));
   }
 
   private async ensureSession(userId: string, peerId: string, username: string | null, displayName: string | null) {
