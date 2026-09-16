@@ -1,6 +1,7 @@
 import { InstagramCommentMatcherService } from '../src/instagram/instagram-comment-matcher.service';
 import { InstagramIntegrationService } from '../src/instagram/instagram-integration.service';
 import { InstagramCommentPollerService } from '../src/instagram/instagram-comment-poller.service';
+import { InstagramSalesAgentService } from '../src/instagram/instagram-sales-agent.service';
 import { SalesProductKnowledgeService } from '../src/ai-agent/sales-product-knowledge.service';
 
 describe('Instagram sales foundation', () => {
@@ -70,6 +71,40 @@ describe('Instagram sales foundation', () => {
 
     expect(sales.handlePolledComment).toHaveBeenCalledTimes(1);
     expect(sales.handlePolledComment).toHaveBeenCalledWith('u', expect.objectContaining({ commentId: 'c1', mediaId: 'm1', text: 'promt' }));
+  });
+
+  it('releases both comment receipts when automation delivery fails so a poll/webhook retry is not dropped forever', async () => {
+    const instagramReceiptDelete = jest.fn().mockResolvedValue({ count: 1 });
+    const salesReceiptDelete = jest.fn().mockResolvedValue({ count: 1 });
+    const prisma = {
+      instagramCommentAutomation: {
+        findMany: jest.fn().mockResolvedValue([{
+          id: 'a1', triggerText: 'prompt', semanticMatch: true, mediaCaption: null,
+          sendPrivateReply: true, dmMessage: 'Mana promptingiz', replyPublicly: false, publicReply: null,
+        }]),
+      },
+      instagramAutomationReceipt: {
+        create: jest.fn().mockResolvedValue({ id: 'r1' }),
+        deleteMany: instagramReceiptDelete,
+      },
+      salesInboundReceipt: { deleteMany: salesReceiptDelete },
+    };
+    const graph = {
+      privateReplyToComment: jest.fn().mockRejectedValue(new Error('META_TEMPORARY')),
+      replyToComment: jest.fn(),
+      safeId: jest.fn(() => 'safe'),
+      errorCode: jest.fn(() => 'META_TEMPORARY'),
+    };
+    const matcher = { matches: jest.fn().mockResolvedValue(true) };
+    const service = new InstagramSalesAgentService(prisma as never, graph as never, {} as never, {} as never, {} as never, matcher as never);
+    const event = { commentId: 'c1', commenterId: 'customer-1', username: 'buyer', text: 'promt', mediaId: 'm1' };
+
+    await (service as any).runCommentAutomations('u', event);
+
+    expect(instagramReceiptDelete).toHaveBeenCalledWith({ where: { userId: 'u', automationId: 'a1', commentId: 'c1' } });
+    expect(salesReceiptDelete).toHaveBeenCalledWith({
+      where: { channel: 'INSTAGRAM', userId: 'u', peerId: 'comment:customer-1', messageId: 'c1' },
+    });
   });
 
   it('finds owner-taught off-Bito products by alias/family instead of requiring an exact name', async () => {

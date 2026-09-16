@@ -232,9 +232,19 @@ export class InstagramSalesAgentService {
         // The receipt reserves a successful delivery, not an attempted one. If
         // Meta is temporarily unavailable, remove it so a webhook retry can
         // safely try the automation again without permanently dropping the DM.
-        await this.prisma.instagramAutomationReceipt.deleteMany({
-          where: { userId, automationId: automation.id, commentId: event.commentId },
-        }).catch(() => undefined);
+        await Promise.all([
+          this.prisma.instagramAutomationReceipt.deleteMany({
+            where: { userId, automationId: automation.id, commentId: event.commentId },
+          }).catch(() => undefined),
+          // The outer sales receipt is reserved before automation delivery. If
+          // delivery fails and only the automation receipt is removed, a Meta
+          // webhook retry or development poll sees the existing sales receipt
+          // and drops the comment forever. Remove both reservations so the
+          // same real comment can be retried safely on the next delivery.
+          this.prisma.salesInboundReceipt.deleteMany({
+            where: { channel: 'INSTAGRAM', userId, peerId: `comment:${event.commenterId}`, messageId: event.commentId },
+          }).catch(() => undefined),
+        ]);
         this.logger.warn({ event: 'instagram_comment_automation_send_failed', userId: this.graph.safeId(userId), code: this.graph.errorCode(error) });
       }
     }
