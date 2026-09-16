@@ -117,8 +117,8 @@ export class InstagramSalesAgentService {
     }
   }
 
-  async handlePolledComment(userId: string, event: InstagramCommentEvent): Promise<void> {
-    await this.handleComment(userId, event);
+  async handlePolledComment(userId: string, event: InstagramCommentEvent): Promise<boolean> {
+    return this.handleComment(userId, event);
   }
 
   private async handleDm(userId: string, event: InstagramDmEvent): Promise<void> {
@@ -176,11 +176,11 @@ export class InstagramSalesAgentService {
     });
   }
 
-  private async handleComment(userId: string, event: InstagramCommentEvent): Promise<void> {
+  private async handleComment(userId: string, event: InstagramCommentEvent): Promise<boolean> {
     let turn;
     try { turn = await reserveSalesInboundTurn(this.prisma, 'INSTAGRAM', userId, `comment:${event.commenterId}`, event.commentId); }
-    catch (error) { this.logger.warn({ event: 'instagram_comment_receipt_failed', userId: this.graph.safeId(userId), code: this.graph.errorCode(error) }); return; }
-    if (!turn) return;
+    catch (error) { this.logger.warn({ event: 'instagram_comment_receipt_failed', userId: this.graph.safeId(userId), code: this.graph.errorCode(error) }); return false; }
+    if (!turn) return false;
     await runSalesTurnSequential(turn, async () => {
       try {
         await Promise.all([
@@ -215,6 +215,7 @@ export class InstagramSalesAgentService {
         this.logger.warn({ event: 'instagram_comment_agent_failed', userId: this.graph.safeId(userId), code: this.graph.errorCode(error) });
       }
     });
+    return true;
   }
 
   private async runCommentAutomations(userId: string, event: InstagramCommentEvent): Promise<boolean> {

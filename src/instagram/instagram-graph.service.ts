@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { InstagramCryptoService } from './instagram-crypto.service';
 import { buildPrivateReplyRequest, parseInstagramJson } from './instagram-api-helpers';
+import { InstagramMediaComment, parseInstagramMediaComments } from './instagram-comment-parser';
 
 export type InstagramProfile = {
   id: string;
@@ -23,14 +24,7 @@ export type InstagramMedia = {
   timestamp: string | null;
 };
 
-export type InstagramMediaComment = {
-  id: string;
-  mediaId: string;
-  text: string;
-  commenterId: string;
-  username: string | null;
-  timestamp: string | null;
-};
+
 
 type GraphErrorBody = { error?: { message?: string; code?: number; error_subcode?: number; type?: string } };
 
@@ -171,34 +165,32 @@ export class InstagramGraphService {
     })).filter(item => item.id);
   }
 
-  async listMediaComments(userId: string, mediaId: string, limit = 50): Promise<InstagramMediaComment[]> {
+  async listMediaComments(userId: string, mediaId: string, limit = 100): Promise<InstagramMediaComment[]> {
     const connection = await this.connectionForUser(userId);
     const token = this.crypto.decrypt(connection.encryptedAccessToken);
-    const take = Math.max(1, Math.min(100, limit));
-    const fields = 'id,text,username,timestamp,from';
-    const data = await this.graphJson<{ data?: Array<Record<string, unknown>> }>(
-      `/${encodeURIComponent(mediaId)}/comments?fields=${fields}&limit=${take}`,
-      token,
-      undefined,
-      connection.authMode,
-    );
+    const take = Math.max(1, Math.min(500, limit));
+    const pageSize = Math.min(100, take);
+    const fields = 'id,text,username,timestamp,from,user';
+    const rows: Array<Record<string, unknown>> = [];
+    let after: string | undefined;
+    for (let page = 0; page < 5 && rows.length < take; page += 1) {
+      const cursor = after ? `&after=${encodeURIComponent(after)}` : '';
+      const data = await this.graphJson<{
+        data?: Array<Record<string, unknown>>;
+        paging?: { cursors?: { after?: string }; next?: string };
+      }>(
+        `/${encodeURIComponent(mediaId)}/comments?fields=${fields}&limit=${Math.min(pageSize, take - rows.length)}${cursor}`,
+        token,
+        undefined,
+        connection.authMode,
+      );
+      rows.push(...(data.data ?? []));
+      const nextAfter = data.paging?.cursors?.after?.trim();
+      if (!data.paging?.next || !nextAfter || nextAfter === after) break;
+      after = nextAfter;
+    }
     await this.touch(userId);
-    return (data.data ?? []).map(item => {
-      const from = item.from && typeof item.from === 'object' && !Array.isArray(item.from) ? item.from as Record<string, unknown> : {};
-      const id = String(item.id ?? '').trim();
-      const username = typeof item.username === 'string' && item.username.trim()
-        ? item.username.trim()
-        : typeof from.username === 'string' && from.username.trim() ? from.username.trim() : null;
-      const commenterId = String(from.id ?? item.from_id ?? username ?? '').trim();
-      return {
-        id,
-        mediaId,
-        text: typeof item.text === 'string' ? item.text : '',
-        commenterId,
-        username,
-        timestamp: typeof item.timestamp === 'string' ? item.timestamp : null,
-      };
-    }).filter(item => item.id && item.commenterId);
+    return parseInstagramMediaComments(mediaId, rows.slice(0, take));
   }
 
   async getMedia(userId: string, mediaId: string): Promise<InstagramMedia | null> {
@@ -329,7 +321,7 @@ export class InstagramGraphService {
   }
 
   private async touch(userId: string): Promise<void> {
-    await this.prisma.instagramConnection.update({ where: { userId }, data: { lastUsedAt: new Date(), lastErrorAt: null, lastErrorCode: null } }).catch(() => undefined);
+    await this.prisma.instagramConnection.update({ where: { userId }, data: { lastUsedAt: new Date() } }).catch(() => undefined);
   }
 
   private async graphJson<T>(path: string, accessToken: string, options?: GraphOptions, authMode: InstagramAuthMode = InstagramAuthMode.FACEBOOK_LOGIN): Promise<T> {

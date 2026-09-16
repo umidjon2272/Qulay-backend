@@ -575,6 +575,7 @@ model WhatsAppConnection {
   connectedAt          DateTime?
   lastValidatedAt      DateTime?
   lastUsedAt           DateTime?
+  commentPollCursorAt  DateTime?
   lastErrorAt          DateTime?
   lastErrorCode        String?                   @db.VarChar(100)
   createdAt            DateTime                  @default(now())

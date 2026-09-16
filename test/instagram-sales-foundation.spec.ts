@@ -1,6 +1,7 @@
 import { InstagramCommentMatcherService } from '../src/instagram/instagram-comment-matcher.service';
 import { InstagramIntegrationService } from '../src/instagram/instagram-integration.service';
 import { InstagramCommentPollerService } from '../src/instagram/instagram-comment-poller.service';
+import { parseInstagramMediaComments } from '../src/instagram/instagram-comment-parser';
 import { InstagramSalesAgentService } from '../src/instagram/instagram-sales-agent.service';
 import { SalesProductKnowledgeService } from '../src/ai-agent/sales-product-knowledge.service';
 
@@ -173,6 +174,67 @@ describe('Instagram sales foundation', () => {
 
     expect(wrongModel[0]?.authoritative).toBe(false);
     expect(exactModel[0]?.authoritative).toBe(true);
+  });
+
+
+  it('parses Instagram comments from both from/user actor shapes without losing a valid commenter', () => {
+    const rows = parseInstagramMediaComments('m1', [
+      { id: 'c1', text: 'narx', timestamp: '2026-09-16T12:00:00Z', from: { id: 'u1', username: 'buyer1' } },
+      { id: 'c2', text: 'promt', timestamp: '2026-09-16T12:01:00Z', user: { id: 'u2', username: 'buyer2' } },
+      { id: 'c3', text: 'salom', timestamp: '2026-09-16T12:02:00Z', username: 'buyer3' },
+    ]);
+    expect(rows.map(row => row.commenterId)).toEqual(['u1', 'u2', 'buyer3']);
+  });
+
+  it('initializes a persistent Instagram poll cursor without replaying historical comments', async () => {
+    const update = jest.fn().mockResolvedValue({});
+    const prisma = {
+      instagramConnection: {
+        findMany: jest.fn().mockResolvedValue([{ userId: 'u', instagramUserId: 'owner-ig', commentPollCursorAt: null }]),
+        update,
+      },
+      instagramCommentAutomation: { findMany: jest.fn().mockResolvedValue([]) },
+    };
+    const config = { get: jest.fn((key: string) => key === 'instagram.devCommentPollEnabled' ? true : 60_000) };
+    const graph = { listMedia: jest.fn(), listMediaComments: jest.fn() };
+    const sales = { handlePolledComment: jest.fn() };
+    const poller = new InstagramCommentPollerService(config as never, prisma as never, graph as never, sales as never);
+
+    await poller.tick();
+
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({ where: { userId: 'u' }, data: { commentPollCursorAt: expect.any(Date) } }));
+    expect(graph.listMedia).not.toHaveBeenCalled();
+    expect(sales.handlePolledComment).not.toHaveBeenCalled();
+  });
+
+  it('uses the persistent poll cursor after restart and routes only new non-owner comments', async () => {
+    const cursor = new Date(Date.now() - 60_000);
+    const update = jest.fn().mockResolvedValue({});
+    const prisma = {
+      instagramConnection: {
+        findMany: jest.fn().mockResolvedValue([{ userId: 'u', instagramUserId: 'owner-ig', commentPollCursorAt: cursor }]),
+        update,
+      },
+      instagramCommentAutomation: { findMany: jest.fn().mockResolvedValue([{ mediaId: 'old-automation-post' }]) },
+    };
+    const config = { get: jest.fn((key: string) => key === 'instagram.devCommentPollEnabled' ? true : 60_000) };
+    const graph = {
+      listMedia: jest.fn().mockResolvedValue([{ id: 'm1' }]),
+      listMediaComments: jest.fn(async (_user: string, mediaId: string) => mediaId === 'm1' ? [
+        { id: 'new', mediaId: 'm1', text: 'narx', commenterId: 'customer', username: 'buyer', timestamp: new Date().toISOString() },
+        { id: 'old', mediaId: 'm1', text: 'old', commenterId: 'customer', username: 'buyer', timestamp: new Date(cursor.getTime() - 1).toISOString() },
+        { id: 'self', mediaId: 'm1', text: 'self', commenterId: 'owner-ig', username: 'owner', timestamp: new Date().toISOString() },
+      ] : []),
+    };
+    const sales = { handlePolledComment: jest.fn().mockResolvedValue(true) };
+    const poller = new InstagramCommentPollerService(config as never, prisma as never, graph as never, sales as never);
+
+    await poller.tick();
+
+    expect(graph.listMediaComments).toHaveBeenCalledWith('u', 'old-automation-post', 500);
+    expect(sales.handlePolledComment).toHaveBeenCalledTimes(1);
+    expect(sales.handlePolledComment).toHaveBeenCalledWith('u', expect.objectContaining({ commentId: 'new' }));
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({ where: { userId: 'u' }, data: { commentPollCursorAt: expect.any(Date) } }));
   });
 
 });

@@ -11,10 +11,6 @@ export class InstagramCommentPollerService implements OnModuleInit, OnModuleDest
   private readonly logger = new Logger(InstagramCommentPollerService.name);
   private timer: NodeJS.Timeout | null = null;
   private running = false;
-  // Do not replay a tester account's historical comments when the bridge is
-  // enabled for the first time. A small grace window catches comments sent
-  // during a deploy/restart; durable SalesInboundReceipt rows dedupe replays.
-  private readonly acceptAfter = new Date(Date.now() - 5 * 60 * 1000);
 
   constructor(
     private readonly config: ConfigService,
@@ -57,34 +53,87 @@ export class InstagramCommentPollerService implements OnModuleInit, OnModuleDest
         salesAgentEnabled: true,
         commentsEnabled: true,
       },
-      select: { userId: true, instagramUserId: true },
+      select: { userId: true, instagramUserId: true, commentPollCursorAt: true },
       take: 200,
     });
 
     for (const connection of connections) {
+      const tickStartedAt = new Date();
+      if (!connection.commentPollCursorAt) {
+        // Persistent baseline: historical comments existing before the bridge is
+        // enabled are never replayed, while restarts keep the same durable cursor.
+        await this.prisma.instagramConnection.update({
+          where: { userId: connection.userId },
+          data: { commentPollCursorAt: tickStartedAt },
+        });
+        this.logger.debug({ event: 'instagram_dev_comment_poll_initialized', userId: this.safeId(connection.userId) });
+        continue;
+      }
+
       try {
-        const posts = await this.graph.listMedia(connection.userId, 12);
-        for (const post of posts) {
-          const comments = await this.graph.listMediaComments(connection.userId, post.id, 50);
+        const recentPosts = await this.graph.listMedia(connection.userId, 50);
+        const automationRows = await this.prisma.instagramCommentAutomation.findMany({
+          where: { userId: connection.userId, active: true },
+          select: { mediaId: true },
+          take: 200,
+        });
+        const mediaIds = [...new Set([...recentPosts.map(post => post.id), ...automationRows.map(row => row.mediaId)])].filter(Boolean);
+        let commentsFetched = 0;
+        let commentsAccepted = 0;
+        let skippedOld = 0;
+        let skippedSelf = 0;
+        let skippedNoTimestamp = 0;
+        let handled = 0;
+
+        for (const mediaId of mediaIds) {
+          const comments = await this.graph.listMediaComments(connection.userId, mediaId, 500);
+          commentsFetched += comments.length;
           comments.sort((a, b) => this.timeOf(a.timestamp) - this.timeOf(b.timestamp));
           for (const comment of comments) {
-            // Never replay an old/unknown comment just because the development
-            // bridge was enabled. Meta normally returns timestamp; if it does
-            // not, fail closed and wait for a normal webhook/new poll result.
             const timestampMs = comment.timestamp ? Date.parse(comment.timestamp) : Number.NaN;
-            if (!Number.isFinite(timestampMs) || timestampMs < this.acceptAfter.getTime()) continue;
-            if (comment.commenterId === connection.instagramUserId) continue;
-            await this.sales.handlePolledComment(connection.userId, {
+            if (!Number.isFinite(timestampMs)) {
+              skippedNoTimestamp += 1;
+              continue;
+            }
+            if (timestampMs < connection.commentPollCursorAt.getTime()) {
+              skippedOld += 1;
+              continue;
+            }
+            if (comment.commenterId === connection.instagramUserId) {
+              skippedSelf += 1;
+              continue;
+            }
+            commentsAccepted += 1;
+            const routed = await this.sales.handlePolledComment(connection.userId, {
               commentId: comment.id,
               commenterId: comment.commenterId,
               username: comment.username,
               text: comment.text,
               mediaId: comment.mediaId,
             });
+            if (routed) handled += 1;
           }
         }
-        this.logger.debug({ event: 'instagram_dev_comment_poll_ok', userId: this.safeId(connection.userId), posts: posts.length });
+
+        // Advance to tick start, not "now": comments created while this loop was
+        // running remain eligible next tick. SalesInboundReceipt dedupes overlap.
+        await this.prisma.instagramConnection.update({
+          where: { userId: connection.userId },
+          data: { commentPollCursorAt: tickStartedAt },
+        });
+        this.logger.debug({
+          event: 'instagram_dev_comment_poll_ok',
+          userId: this.safeId(connection.userId),
+          posts: mediaIds.length,
+          commentsFetched,
+          commentsAccepted,
+          skippedOld,
+          skippedSelf,
+          skippedNoTimestamp,
+          handled,
+        });
       } catch (error) {
+        // Cursor is intentionally not advanced: the same interval can retry.
         this.logger.warn({ event: 'instagram_dev_comment_poll_account_failed', userId: this.safeId(connection.userId), code: this.errorCode(error) });
       }
     }
