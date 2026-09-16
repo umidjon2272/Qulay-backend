@@ -1,11 +1,12 @@
 import { BadRequestException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
-import { InstagramConnectionStatus } from '@prisma/client';
+import { InstagramAuthMode, InstagramConnectionStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { InstagramCryptoService } from './instagram-crypto.service';
 import { InstagramGraphService } from './instagram-graph.service';
 
 export type InstagramSettings = {
   configured: boolean;
+  oauthReady: boolean;
   connected: boolean;
   status: 'DISCONNECTED' | 'CONNECTED' | 'DEGRADED' | 'ERROR' | 'not_configured';
   instagramUserId: string | null;
@@ -37,6 +38,7 @@ export class InstagramIntegrationService {
     if (!row) return this.emptyStatus();
     return {
       configured: this.graph.configured(),
+      oauthReady: this.graph.oauthReady(),
       connected: row.status === InstagramConnectionStatus.CONNECTED || row.status === InstagramConnectionStatus.DEGRADED,
       status: row.status,
       instagramUserId: row.instagramUserId,
@@ -54,17 +56,18 @@ export class InstagramIntegrationService {
     };
   }
 
-  async connect(userId: string, input: { instagramUserId: string; accessToken: string }): Promise<InstagramSettings> {
+  async connect(userId: string, input: { instagramUserId: string; accessToken: string; authMode?: InstagramAuthMode }): Promise<InstagramSettings> {
     if (!this.graph.configured()) throw new ServiceUnavailableException('Instagram server sozlamalari hali tayyor emas');
     const token = input.accessToken.trim();
     const instagramUserId = input.instagramUserId.trim();
     if (token.length < 20) throw new BadRequestException('Instagram access token noto‘g‘ri');
-    const profile = await this.graph.verifyProfile(token, instagramUserId);
+    const authMode = input.authMode ?? InstagramAuthMode.FACEBOOK_LOGIN;
+    const profile = await this.graph.verifyProfile(token, instagramUserId, authMode);
     let webhookSubscribed = false;
     let status: InstagramConnectionStatus = InstagramConnectionStatus.CONNECTED;
     let lastErrorCode: string | null = null;
     try {
-      webhookSubscribed = await this.graph.subscribeWebhooks(token, profile.id);
+      webhookSubscribed = await this.graph.subscribeWebhooks(token, profile.id, authMode);
     } catch (error) {
       status = InstagramConnectionStatus.DEGRADED;
       lastErrorCode = this.graph.errorCode(error);
@@ -79,6 +82,7 @@ export class InstagramIntegrationService {
         displayName: profile.name,
         profilePictureUrl: profile.profilePictureUrl,
         encryptedAccessToken: this.crypto.encrypt(token),
+        authMode,
         status,
         webhookSubscribed,
         connectedAt: now,
@@ -93,6 +97,7 @@ export class InstagramIntegrationService {
         displayName: profile.name,
         profilePictureUrl: profile.profilePictureUrl,
         encryptedAccessToken: this.crypto.encrypt(token),
+        authMode,
         status,
         webhookSubscribed,
         connectedAt: now,
@@ -202,7 +207,7 @@ export class InstagramIntegrationService {
 
   private emptyStatus(): InstagramSettings {
     return {
-      configured: this.graph.configured(), connected: false, status: this.graph.configured() ? 'DISCONNECTED' : 'not_configured',
+      configured: this.graph.configured(), oauthReady: this.graph.oauthReady(), connected: false, status: this.graph.configured() ? 'DISCONNECTED' : 'not_configured',
       instagramUserId: null, username: null, displayName: null, profilePictureUrl: null, webhookSubscribed: false,
       enabled: false, dmEnabled: true, commentsEnabled: true, imageVisionEnabled: true,
       connectedAt: null, lastValidatedAt: null, lastErrorCode: null,

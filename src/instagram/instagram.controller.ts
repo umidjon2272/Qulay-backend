@@ -1,12 +1,16 @@
-import { Body, Controller, Delete, Get, Headers, HttpCode, Param, Patch, Post, Query, Req, Res, UnauthorizedException, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, HttpCode, Logger, Param, Patch, Post, Query, Req, Res, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { IsBoolean, IsOptional, IsString, Matches, MaxLength, MinLength } from 'class-validator';
+import { ConfigService } from '@nestjs/config';
 import { Request, Response } from 'express';
 import { AuthenticatedUser } from '../auth/types/jwt-payload.type';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { RateLimitException } from '../common/security/rate-limit.exception';
+import { SecurityRateLimitService } from '../common/security/security-rate-limit.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { InstagramGraphService } from './instagram-graph.service';
 import { InstagramIntegrationService } from './instagram-integration.service';
+import { InstagramOAuthService } from './instagram-oauth.service';
 import { InstagramSalesAgentService } from './instagram-sales-agent.service';
 
 class ConnectInstagramDto {
@@ -44,11 +48,16 @@ class UpdateInstagramAutomationDto {
 
 @Controller('integrations/instagram')
 export class InstagramController {
+  private readonly logger = new Logger(InstagramController.name);
+
   constructor(
     private readonly integration: InstagramIntegrationService,
     private readonly graph: InstagramGraphService,
     private readonly sales: InstagramSalesAgentService,
     private readonly subscriptions: SubscriptionsService,
+    private readonly oauth: InstagramOAuthService,
+    private readonly config: ConfigService,
+    private readonly rateLimiter: SecurityRateLimitService,
   ) {}
 
   @Get('webhook')
@@ -77,6 +86,47 @@ export class InstagramController {
   @Get('status')
   @UseGuards(JwtAuthGuard)
   status(@CurrentUser() user: AuthenticatedUser) { return this.integration.status(user.sub); }
+
+  @Get('auth-url')
+  @UseGuards(JwtAuthGuard)
+  async authUrl(@CurrentUser() user: AuthenticatedUser) {
+    await this.subscriptions.assertFeatureAllowed(user.sub, 'INSTAGRAM_SALES');
+    return { url: this.oauth.connectUrl(user.sub) };
+  }
+
+  @Get('callback')
+  async oauthCallback(
+    @Query('code') rawCode: unknown,
+    @Query('state') rawState: unknown,
+    @Query('error') rawError: unknown,
+    @Req() request: Request,
+    @Res() response: Response,
+  ) {
+    const frontend = this.config.getOrThrow<string>('frontendUrl').split(',')[0].trim();
+    const code = this.providerQueryValue(rawCode, 4096);
+    const state = this.providerQueryValue(rawState, 4096);
+    const oauthError = this.providerQueryValue(rawError, 300);
+    if (!this.rateLimiter.isAllowed('instagram-callback-ip', request.ip ?? 'unknown', 30, 60 * 1000)) {
+      throw new RateLimitException('Too many Instagram OAuth callback attempts. Try again later.');
+    }
+    this.logger.log({ event: 'instagram_oauth_callback_received', codePresent: Boolean(code), statePresent: Boolean(state), providerError: oauthError ?? null });
+    try {
+      await this.oauth.callback(code, state, oauthError);
+      return response.redirect(`${frontend}/settings?tab=integrations&integration=instagram&status=connected&success=true`);
+    } catch (error) {
+      const codeValue = this.oauth.errorCode(error);
+      const cancelled = codeValue === 'INSTAGRAM_OAUTH_CANCELLED';
+      const params = new URLSearchParams({
+        tab: 'integrations',
+        integration: 'instagram',
+        status: cancelled ? 'cancelled' : 'error',
+        reason: cancelled ? 'cancelled' : 'unavailable',
+        errorCode: codeValue,
+      });
+      this.logger.warn({ event: 'instagram_oauth_callback_failed', errorCode: codeValue });
+      return response.redirect(`${frontend}/settings?${params.toString()}`);
+    }
+  }
 
   @Post('connect')
   @UseGuards(JwtAuthGuard)
@@ -137,5 +187,10 @@ export class InstagramController {
   async deleteAutomation(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     await this.subscriptions.assertFeatureAllowed(user.sub, 'INSTAGRAM_SALES');
     return this.integration.deleteAutomation(user.sub, id);
+  }
+
+  private providerQueryValue(value: unknown, maxLength: number): string | undefined {
+    if (typeof value !== 'string' || value.length === 0 || value.length > maxLength) return undefined;
+    return value;
   }
 }

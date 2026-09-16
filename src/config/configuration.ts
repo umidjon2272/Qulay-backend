@@ -13,6 +13,24 @@ function inferBitoRedirectUri(): string | undefined {
   }
 }
 
+
+function inferInstagramRedirectUri(): string | undefined {
+  if (process.env.INSTAGRAM_OAUTH_REDIRECT_URI) return process.env.INSTAGRAM_OAUTH_REDIRECT_URI;
+  for (const candidate of [process.env.BITO_OAUTH_REDIRECT_URI, process.env.GOOGLE_REDIRECT_URI]) {
+    if (!candidate) continue;
+    try {
+      const url = new URL(candidate);
+      const nextPath = url.pathname.replace(/\/integrations\/(?:bito|google)\/callback\/?$/, '/integrations/instagram/callback');
+      if (nextPath === url.pathname) continue;
+      url.pathname = nextPath;
+      return url.toString();
+    } catch {
+      // Ignore malformed optional fallback URLs; env validation handles explicit values.
+    }
+  }
+  return undefined;
+}
+
 export default () => ({
   nodeEnv: process.env.NODE_ENV ?? 'development',
   trustProxy: process.env.TRUST_PROXY === 'true' || process.env.RENDER === 'true' || Boolean(process.env.RENDER_SERVICE_ID),
@@ -66,10 +84,9 @@ export default () => ({
     graphApiVersion: process.env.WHATSAPP_GRAPH_API_VERSION ?? 'v24.0',
   },
   instagram: {
-    // Instagram and WhatsApp can live in the same Meta app. Dedicated
-    // INSTAGRAM_* values override the existing WhatsApp Meta credentials, but
-    // reusing the app secret / verify token / encryption key keeps setup simple
-    // when both channels are configured in one Meta developer app.
+    // Manual/legacy Instagram connections can reuse the existing Meta app
+    // security values. Instagram Business Login itself has a dedicated
+    // Instagram App ID/Secret, so one-click OAuth requires explicit credentials.
     configured: [
       process.env.INSTAGRAM_APP_SECRET ?? process.env.WHATSAPP_APP_SECRET,
       process.env.INSTAGRAM_WEBHOOK_VERIFY_TOKEN ?? process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN,
@@ -79,8 +96,20 @@ export default () => ({
     appSecret: process.env.INSTAGRAM_APP_SECRET ?? process.env.WHATSAPP_APP_SECRET,
     webhookVerifyToken: process.env.INSTAGRAM_WEBHOOK_VERIFY_TOKEN ?? process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN,
     tokenEncryptionKey: process.env.INSTAGRAM_TOKEN_ENCRYPTION_KEY ?? process.env.WHATSAPP_TOKEN_ENCRYPTION_KEY,
+    oauthRedirectUri: inferInstagramRedirectUri(),
+    oauthReady: [
+      process.env.INSTAGRAM_APP_ID,
+      process.env.INSTAGRAM_APP_SECRET,
+      inferInstagramRedirectUri(),
+      process.env.INSTAGRAM_WEBHOOK_VERIFY_TOKEN ?? process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN,
+      process.env.INSTAGRAM_TOKEN_ENCRYPTION_KEY ?? process.env.WHATSAPP_TOKEN_ENCRYPTION_KEY,
+    ].every(Boolean),
+    oauthAuthorizationUrl: process.env.INSTAGRAM_OAUTH_AUTHORIZATION_URL ?? 'https://www.instagram.com/oauth/authorize',
+    oauthTokenUrl: process.env.INSTAGRAM_OAUTH_TOKEN_URL ?? 'https://api.instagram.com/oauth/access_token',
+    oauthLongLivedTokenUrl: process.env.INSTAGRAM_OAUTH_LONG_LIVED_TOKEN_URL ?? 'https://graph.instagram.com/access_token',
     graphApiVersion: process.env.INSTAGRAM_GRAPH_API_VERSION ?? process.env.WHATSAPP_GRAPH_API_VERSION ?? 'v24.0',
     graphBaseUrl: process.env.INSTAGRAM_GRAPH_BASE_URL ?? 'https://graph.facebook.com',
+    loginGraphBaseUrl: process.env.INSTAGRAM_LOGIN_GRAPH_BASE_URL ?? 'https://graph.instagram.com',
   },
   bito: {
     debugShapes: process.env.BITO_DEBUG_SHAPES === 'true',

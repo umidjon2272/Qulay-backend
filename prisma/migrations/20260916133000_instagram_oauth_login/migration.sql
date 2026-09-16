@@ -1,0 +1,4 @@
+CREATE TYPE "InstagramAuthMode" AS ENUM ('FACEBOOK_LOGIN', 'INSTAGRAM_LOGIN');
+
+ALTER TABLE "InstagramConnection"
+ADD COLUMN "authMode" "InstagramAuthMode" NOT NULL DEFAULT 'FACEBOOK_LOGIN';

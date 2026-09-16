@@ -153,6 +153,11 @@ enum InstagramConnectionStatus {
   ERROR
 }
 
+enum InstagramAuthMode {
+  FACEBOOK_LOGIN
+  INSTAGRAM_LOGIN
+}
+
 enum SalesKnowledgeAvailability {
   AVAILABLE
   UNAVAILABLE
@@ -617,6 +622,7 @@ model InstagramConnection {
   displayName          String?                   @db.VarChar(200)
   profilePictureUrl    String?                   @db.Text
   encryptedAccessToken String                    @db.Text
+  authMode             InstagramAuthMode          @default(FACEBOOK_LOGIN)
   status               InstagramConnectionStatus @default(DISCONNECTED)
   webhookSubscribed    Boolean                   @default(false)
   salesAgentEnabled    Boolean                   @default(false)

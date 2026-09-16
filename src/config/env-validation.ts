@@ -63,10 +63,15 @@ export const envValidationSchema = Joi.object({
   WHATSAPP_GRAPH_API_VERSION: Joi.string().pattern(/^v\d+\.\d+$/).default('v24.0'),
   INSTAGRAM_APP_ID: Joi.string().pattern(/^\d{5,30}$/).optional(),
   INSTAGRAM_APP_SECRET: Joi.string().min(8).optional(),
+  INSTAGRAM_OAUTH_REDIRECT_URI: Joi.string().uri({ scheme: ['https'] }).optional(),
+  INSTAGRAM_OAUTH_AUTHORIZATION_URL: Joi.string().uri({ scheme: ['https'] }).optional(),
+  INSTAGRAM_OAUTH_TOKEN_URL: Joi.string().uri({ scheme: ['https'] }).optional(),
+  INSTAGRAM_OAUTH_LONG_LIVED_TOKEN_URL: Joi.string().uri({ scheme: ['https'] }).optional(),
   INSTAGRAM_WEBHOOK_VERIFY_TOKEN: Joi.string().min(16).max(200).optional(),
   INSTAGRAM_TOKEN_ENCRYPTION_KEY: Joi.string().pattern(/^[a-fA-F0-9]{64}$/).optional(),
   INSTAGRAM_GRAPH_API_VERSION: Joi.string().pattern(/^v\d+\.\d+$/).default('v24.0'),
   INSTAGRAM_GRAPH_BASE_URL: Joi.string().uri().default('https://graph.facebook.com'),
+  INSTAGRAM_LOGIN_GRAPH_BASE_URL: Joi.string().uri().default('https://graph.instagram.com'),
   BITO_CREDENTIAL_ENCRYPTION_KEY: Joi.string().pattern(/^[a-fA-F0-9]{64}$/).optional(),
   BITO_MCP_SERVER_URL: Joi.string().uri({ scheme: ['https', 'http'] }).default('https://mcp.bito.online'),
   BITO_MCP_ALLOWED_HOSTS: Joi.string().min(1).default('mcp.bito.online,.bito.online'),
@@ -113,11 +118,29 @@ export const envValidationSchema = Joi.object({
   if (googleResult !== value) return googleResult;
 
   const whatsappKeys = ['WHATSAPP_APP_SECRET', 'WHATSAPP_WEBHOOK_VERIFY_TOKEN', 'WHATSAPP_TOKEN_ENCRYPTION_KEY'];
-  const instagramKeys = ['INSTAGRAM_APP_SECRET', 'INSTAGRAM_WEBHOOK_VERIFY_TOKEN', 'INSTAGRAM_TOKEN_ENCRYPTION_KEY'];
   const whatsappResult = validateOptionalIntegrationGroup(value, whatsappKeys, 'whatsapp', helpers);
   if (whatsappResult !== value) return whatsappResult;
-  const instagramResult = validateOptionalIntegrationGroup(value, instagramKeys, 'instagram', helpers);
-  if (instagramResult !== value) return instagramResult;
+
+  // Instagram may intentionally reuse the already-configured WhatsApp webhook
+  // verify token and encryption key. Validate the effective values instead of
+  // forcing duplicate Instagram-only secrets into Render. One-click Business
+  // Login still requires its own Instagram App ID + matching App Secret.
+  if (value.INSTAGRAM_APP_ID !== undefined && value.INSTAGRAM_APP_SECRET === undefined) {
+    return helpers.error('instagram.oauth.secret');
+  }
+  const instagramSpecificConfigured = [
+    'INSTAGRAM_APP_ID',
+    'INSTAGRAM_APP_SECRET',
+    'INSTAGRAM_WEBHOOK_VERIFY_TOKEN',
+    'INSTAGRAM_TOKEN_ENCRYPTION_KEY',
+  ].some((key) => value[key] !== undefined);
+  if (instagramSpecificConfigured) {
+    const missing: string[] = [];
+    if (value.INSTAGRAM_APP_SECRET === undefined && value.WHATSAPP_APP_SECRET === undefined) missing.push('INSTAGRAM_APP_SECRET');
+    if (value.INSTAGRAM_WEBHOOK_VERIFY_TOKEN === undefined && value.WHATSAPP_WEBHOOK_VERIFY_TOKEN === undefined) missing.push('INSTAGRAM_WEBHOOK_VERIFY_TOKEN');
+    if (value.INSTAGRAM_TOKEN_ENCRYPTION_KEY === undefined && value.WHATSAPP_TOKEN_ENCRYPTION_KEY === undefined) missing.push('INSTAGRAM_TOKEN_ENCRYPTION_KEY');
+    if (missing.length > 0) return helpers.error('integration.instagram.partial', { missing: missing.join(', ') });
+  }
 
   // Embedded Signup is optional and can be configured incrementally. Manual
   // Cloud API connection must keep working even if only one Embedded Signup
@@ -136,7 +159,8 @@ export const envValidationSchema = Joi.object({
   'integration.telegram.partial': 'Telegram integration requires all of: TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_SESSION_ENCRYPTION_KEY. Missing: {{#missing}}',
   'integration.google.partial': 'Google integration requires all of: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI, GOOGLE_TOKEN_ENCRYPTION_KEY. Missing: {{#missing}}',
   'integration.whatsapp.partial': 'WhatsApp integration requires all of: WHATSAPP_APP_SECRET, WHATSAPP_WEBHOOK_VERIFY_TOKEN, WHATSAPP_TOKEN_ENCRYPTION_KEY. Missing: {{#missing}}',
-  'integration.instagram.partial': 'Instagram integration requires all of: INSTAGRAM_APP_SECRET, INSTAGRAM_WEBHOOK_VERIFY_TOKEN, INSTAGRAM_TOKEN_ENCRYPTION_KEY. Missing: {{#missing}}',
+  'integration.instagram.partial': 'Instagram integration is missing required security values (Instagram values may reuse matching WhatsApp values). Missing: {{#missing}}',
+  'instagram.oauth.secret': 'INSTAGRAM_APP_ID requires the matching INSTAGRAM_APP_SECRET for one-click Instagram Login',
   'bito.oauth.client': 'BITO_OAUTH_CLIENT_SECRET requires BITO_OAUTH_CLIENT_ID',
   'jwt.secrets.same': 'JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must be different',
   'telegram.diagnostic.phone': 'TEST_TELEGRAM_PHONE is required when TELEGRAM_LOGIN_DIAGNOSTIC_ENABLED=true',

@@ -1,8 +1,10 @@
 import { BadRequestException, ForbiddenException, Injectable, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { InstagramAuthMode } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { InstagramCryptoService } from './instagram-crypto.service';
+import { buildPrivateReplyRequest, parseInstagramJson } from './instagram-api-helpers';
 
 export type InstagramProfile = {
   id: string;
@@ -37,6 +39,10 @@ export class InstagramGraphService {
     return this.config.get<boolean>('instagram.configured') === true;
   }
 
+  oauthReady(): boolean {
+    return this.config.get<boolean>('instagram.oauthReady') === true;
+  }
+
   graphVersion(): string {
     return this.config.get<string>('instagram.graphApiVersion', 'v24.0');
   }
@@ -53,23 +59,62 @@ export class InstagramGraphService {
     return this.config.get<string>('instagram.appId');
   }
 
-  async verifyProfile(accessToken: string, instagramUserId: string): Promise<InstagramProfile> {
+  async verifyProfile(accessToken: string, instagramUserId: string, authMode: InstagramAuthMode = InstagramAuthMode.FACEBOOK_LOGIN): Promise<InstagramProfile> {
     const cleanId = instagramUserId.trim();
     if (!/^\d{5,40}$/.test(cleanId)) throw new BadRequestException('Instagram User ID noto‘g‘ri');
+
+    if (authMode === InstagramAuthMode.INSTAGRAM_LOGIN) {
+      // Instagram Login exposes the professional account id as `user_id`. Keep
+      // the token-exchange id as the canonical fallback and fetch only fields
+      // guaranteed by the basic business scope first; richer profile fields
+      // are best-effort because Meta rolls them out independently.
+      const basic = await this.graphJson<{ id?: string; user_id?: string | number; username?: string }>(
+        '/me?fields=user_id,username',
+        accessToken,
+        undefined,
+        authMode,
+      );
+      const resolvedId = String(basic.user_id ?? cleanId);
+      if (!/^\d{5,40}$/.test(resolvedId)) throw new ServiceUnavailableException('Instagram akkauntini tekshirib bo‘lmadi');
+
+      let rich: { username?: string; name?: string; profile_picture_url?: string } = {};
+      try {
+        rich = await this.graphJson<{ username?: string; name?: string; profile_picture_url?: string }>(
+          `/${encodeURIComponent(cleanId)}?fields=username,name,profile_picture_url`,
+          accessToken,
+          undefined,
+          authMode,
+        );
+      } catch {
+        // Basic identity already verified; optional display metadata must not
+        // make a valid connection fail.
+      }
+
+      return {
+        id: resolvedId,
+        username: rich.username?.trim() || basic.username?.trim() || null,
+        name: rich.name?.trim() || null,
+        profilePictureUrl: rich.profile_picture_url?.trim() || null,
+      };
+    }
+
     const data = await this.graphJson<{ id?: string; username?: string; name?: string; profile_picture_url?: string }>(
       `/${encodeURIComponent(cleanId)}?fields=id,username,name,profile_picture_url`,
       accessToken,
+      undefined,
+      authMode,
     );
-    if (!data.id) throw new ServiceUnavailableException('Instagram akkauntini tekshirib bo‘lmadi');
+    const resolvedId = String(data.id ?? '');
+    if (!/^\d{5,40}$/.test(resolvedId)) throw new ServiceUnavailableException('Instagram akkauntini tekshirib bo‘lmadi');
     return {
-      id: data.id,
+      id: resolvedId,
       username: data.username?.trim() || null,
       name: data.name?.trim() || null,
       profilePictureUrl: data.profile_picture_url?.trim() || null,
     };
   }
 
-  async subscribeWebhooks(accessToken: string, instagramUserId: string): Promise<boolean> {
+  async subscribeWebhooks(accessToken: string, instagramUserId: string, authMode: InstagramAuthMode = InstagramAuthMode.FACEBOOK_LOGIN): Promise<boolean> {
     const cleanId = instagramUserId.trim();
     const attempts = [
       'messages,messaging_postbacks,message_reactions,comments,mentions',
@@ -83,6 +128,7 @@ export class InstagramGraphService {
           `/${encodeURIComponent(cleanId)}/subscribed_apps?subscribed_fields=${encodeURIComponent(fields)}`,
           accessToken,
           { method: 'POST' },
+          authMode,
         );
         if (result.success === true) return true;
       } catch (error) {
@@ -101,6 +147,8 @@ export class InstagramGraphService {
     const data = await this.graphJson<{ data?: Array<Record<string, unknown>> }>(
       `/${encodeURIComponent(connection.instagramUserId)}/media?fields=${fields}&limit=${take}`,
       token,
+      undefined,
+      connection.authMode,
     );
     await this.touch(userId);
     return (data.data ?? []).slice(0, take).map(item => ({
@@ -121,6 +169,8 @@ export class InstagramGraphService {
       const item = await this.graphJson<Record<string, unknown>>(
         `/${encodeURIComponent(mediaId)}/?fields=id,caption,media_type,media_url,thumbnail_url,permalink,timestamp`,
         token,
+        undefined,
+        connection.authMode,
       );
       await this.touch(userId);
       if (!item.id) return null;
@@ -145,6 +195,7 @@ export class InstagramGraphService {
       `/${encodeURIComponent(connection.instagramUserId)}/messages`,
       token,
       { method: 'POST', body: { recipient: { id: recipientId }, message: { text: text.slice(0, 1000) } } },
+      connection.authMode,
     );
     await this.touch(userId);
     return body.message_id ?? null;
@@ -153,10 +204,12 @@ export class InstagramGraphService {
   async privateReplyToComment(userId: string, commentId: string, message: string): Promise<string | null> {
     const connection = await this.connectionForUser(userId);
     const token = this.crypto.decrypt(connection.encryptedAccessToken);
+    const request = buildPrivateReplyRequest(connection.authMode, connection.instagramUserId, commentId, message.slice(0, 1000));
     const body = await this.graphJson<{ id?: string; message_id?: string }>(
-      `/${encodeURIComponent(commentId)}/private_replies`,
+      request.path,
       token,
-      { method: 'POST', body: { message: message.slice(0, 1000) } },
+      { method: 'POST', body: request.body },
+      connection.authMode,
     );
     await this.touch(userId);
     return body.id ?? body.message_id ?? null;
@@ -169,6 +222,7 @@ export class InstagramGraphService {
       `/${encodeURIComponent(commentId)}/replies`,
       token,
       { method: 'POST', body: { message: message.slice(0, 1000) } },
+      connection.authMode,
     );
     await this.touch(userId);
     return body.id ?? null;
@@ -194,11 +248,11 @@ export class InstagramGraphService {
     const connection = await this.connectionForUser(userId, true);
     const token = this.crypto.decrypt(connection.encryptedAccessToken);
     try {
-      const profile = await this.verifyProfile(token, connection.instagramUserId);
+      const profile = await this.verifyProfile(token, connection.instagramUserId, connection.authMode);
       let webhookSubscribed = connection.webhookSubscribed;
       let status: 'CONNECTED' | 'DEGRADED' = 'CONNECTED';
       let lastErrorCode: string | null = null;
-      try { webhookSubscribed = await this.subscribeWebhooks(token, connection.instagramUserId); }
+      try { webhookSubscribed = await this.subscribeWebhooks(token, connection.instagramUserId, connection.authMode); }
       catch (error) { status = 'DEGRADED'; webhookSubscribed = false; lastErrorCode = this.errorCode(error); }
       await this.prisma.instagramConnection.update({
         where: { userId },
@@ -239,8 +293,10 @@ export class InstagramGraphService {
     await this.prisma.instagramConnection.update({ where: { userId }, data: { lastUsedAt: new Date(), lastErrorAt: null, lastErrorCode: null } }).catch(() => undefined);
   }
 
-  private async graphJson<T>(path: string, accessToken: string, options?: GraphOptions): Promise<T> {
-    const base = this.config.get<string>('instagram.graphBaseUrl', 'https://graph.facebook.com').replace(/\/$/u, '');
+  private async graphJson<T>(path: string, accessToken: string, options?: GraphOptions, authMode: InstagramAuthMode = InstagramAuthMode.FACEBOOK_LOGIN): Promise<T> {
+    const base = authMode === InstagramAuthMode.INSTAGRAM_LOGIN
+      ? this.config.get<string>('instagram.loginGraphBaseUrl', 'https://graph.instagram.com').replace(/\/$/u, '')
+      : this.config.get<string>('instagram.graphBaseUrl', 'https://graph.facebook.com').replace(/\/$/u, '');
     const response = await fetch(`${base}/${this.graphVersion()}${path}`, {
       method: options?.method ?? 'GET',
       headers: {
@@ -252,7 +308,10 @@ export class InstagramGraphService {
     }).catch(() => {
       throw new ServiceUnavailableException({ code: 'INSTAGRAM_GRAPH_UNAVAILABLE', message: 'Instagram API bilan vaqtinchalik ulanib bo‘lmadi' });
     });
-    const body = await response.json().catch(() => ({})) as T & GraphErrorBody;
+    const rawBody = await response.text().catch(() => '');
+    let body: T & GraphErrorBody;
+    try { body = rawBody ? parseInstagramJson<T & GraphErrorBody>(rawBody) : {} as T & GraphErrorBody; }
+    catch { body = {} as T & GraphErrorBody; }
     if (!response.ok) {
       const code = body.error?.code;
       if (code === 190 || response.status === 401) throw new UnauthorizedException({ code: 'INSTAGRAM_ACCESS_TOKEN_INVALID', message: 'Instagram Access Token yaroqsiz yoki muddati tugagan' });
