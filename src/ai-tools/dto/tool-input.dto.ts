@@ -316,6 +316,25 @@ export class ListInstagramCommentAutomationsToolInput {
   @IsOptional() @IsBoolean() activeOnly?: boolean;
 }
 
+
+export class UpdateInstagramSalesSettingsToolInput {
+  @IsOptional() @IsBoolean() enabled?: boolean;
+  @IsOptional() @IsBoolean() dmEnabled?: boolean;
+  @IsOptional() @IsBoolean() commentsEnabled?: boolean;
+  @IsOptional() @IsBoolean() imageVisionEnabled?: boolean;
+}
+
+export class UpdateInstagramCommentAutomationToolInput {
+  @IsUUID('4') automationId!: string;
+  @IsOptional() @IsString() @MinLength(1) @MaxLength(2000) triggerText?: string;
+  @IsOptional() @IsString() @MinLength(1) @MaxLength(4000) dmMessage?: string;
+  @IsOptional() @IsString() @MaxLength(1000) publicReply?: string;
+  @IsOptional() @IsBoolean() semanticMatch?: boolean;
+  @IsOptional() @IsBoolean() sendPrivateReply?: boolean;
+  @IsOptional() @IsBoolean() replyPublicly?: boolean;
+  @IsOptional() @IsBoolean() active?: boolean;
+}
+
 export class DeleteInstagramCommentAutomationToolInput {
   @IsUUID('4') automationId!: string;
 }

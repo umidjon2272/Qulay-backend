@@ -51,6 +51,7 @@ ListFilesToolInput, SearchFilesToolInput, GetFileMetadataToolInput, GetFileConte
   SaveSalesProductKnowledgeToolInput, ListSalesProductKnowledgeToolInput, DeleteSalesProductKnowledgeToolInput,
   ListInstagramPostsToolInput, SaveInstagramCommentAutomationToolInput,
   ListInstagramCommentAutomationsToolInput, DeleteInstagramCommentAutomationToolInput,
+  UpdateInstagramSalesSettingsToolInput, UpdateInstagramCommentAutomationToolInput,
 } from './dto/tool-input.dto';
 import { TelegramIntegrationService } from '../telegram/telegram-integration.service';
 import { GoogleCalendarService } from '../google/google-calendar.service';
@@ -218,7 +219,7 @@ export class AIToolRegistryService {
       inputSchema: ['get_tasks', 'get_reminders', 'get_meetings', 'get_notes'].includes(config.name)
         ? { ...config.inputSchema, properties: { ...config.inputSchema.properties, page: { type: 'integer', description: 'Page number, starting at 1. Fetch further pages when meta.total exceeds returned items.' } } }
         : config.inputSchema,
-      requiresConfirmation: config.sideEffect === 'WRITE' && !['save_memory', 'update_memory', 'save_sales_playbook_rule', 'save_sales_product_knowledge'].includes(config.name),
+      requiresConfirmation: config.sideEffect === 'WRITE' && !['save_memory', 'update_memory', 'save_sales_playbook_rule', 'save_sales_product_knowledge', 'update_instagram_sales_settings'].includes(config.name),
       sideEffect: config.sideEffect,
       permission: 'USER_SCOPED',
       validate: (input) => validateInput(input, config.validate),
@@ -565,6 +566,24 @@ export class AIToolRegistryService {
     }));
 
     if (this.instagramIntegrationService) {
+      this.register(this.base<EmptyToolInput, unknown>({
+        name: 'get_instagram_sales_settings',
+        description: 'Read the authenticated owner Instagram connection and AI sales-agent settings. Use this before changing Instagram sales-agent, Direct, comment or image-understanding toggles.',
+        category: AIToolCategory.INSTAGRAM,
+        sideEffect: 'READ',
+        validate: EmptyToolInput,
+        inputSchema: schema({}),
+        execute: (context) => this.instagramIntegrationService!.status(context.userId),
+      }));
+      this.register(this.base<UpdateInstagramSalesSettingsToolInput, unknown>({
+        name: 'update_instagram_sales_settings',
+        description: 'Turn the authenticated owner Instagram AI sales agent, Direct replies, comment replies, or image understanding on/off. Include only fields the owner explicitly asked to change.',
+        category: AIToolCategory.INSTAGRAM,
+        sideEffect: 'WRITE',
+        validate: UpdateInstagramSalesSettingsToolInput,
+        inputSchema: schema({ enabled: { type: 'boolean' }, dmEnabled: { type: 'boolean' }, commentsEnabled: { type: 'boolean' }, imageVisionEnabled: { type: 'boolean' } }),
+        execute: (context, input) => this.instagramIntegrationService!.updateSettings(context.userId, input),
+      }));
       this.register(this.base<ListInstagramPostsToolInput, unknown>({
         name: 'list_instagram_posts',
         description: 'List REAL posts/reels from the authenticated owner Instagram account, newest first. Always use this before creating a post-specific comment automation; never invent mediaId.',
@@ -600,6 +619,26 @@ export class AIToolRegistryService {
           return { post: post ? { id: post.id, caption: post.caption, permalink: post.permalink } : { id: input.mediaId }, triggerText: input.triggerText, dmMessage: input.dmMessage, publicReply: input.publicReply ?? null, semanticMatch: input.semanticMatch !== false, sendPrivateReply: input.sendPrivateReply !== false, replyPublicly: input.replyPublicly === true };
         },
         execute: (context, input) => this.instagramIntegrationService!.createAutomation(context.userId, input),
+      }));
+      this.register(this.base<UpdateInstagramCommentAutomationToolInput, unknown>({
+        name: 'update_instagram_comment_automation',
+        description: 'Update, pause or resume one existing Instagram comment automation by its real automationId. List automations first when the id is unknown. This changes future external messaging and therefore requires confirmation.',
+        category: AIToolCategory.INSTAGRAM,
+        sideEffect: 'WRITE',
+        validate: UpdateInstagramCommentAutomationToolInput,
+        inputSchema: schema({ automationId: { type: 'string' }, triggerText: { type: 'string' }, dmMessage: { type: 'string' }, publicReply: { type: 'string' }, semanticMatch: { type: 'boolean' }, sendPrivateReply: { type: 'boolean' }, replyPublicly: { type: 'boolean' }, active: { type: 'boolean' } }, ['automationId']),
+        authorize: async (context, input) => {
+          const rows = await this.instagramIntegrationService!.listAutomations(context.userId, false);
+          if (!rows.some(row => row.id === input.automationId)) throw new NotFoundException('Instagram automation not found');
+        },
+        preview: async (context, input) => ({
+          current: (await this.instagramIntegrationService!.listAutomations(context.userId, false)).find(row => row.id === input.automationId) ?? null,
+          changes: input,
+        }),
+        execute: (context, input) => {
+          const { automationId, ...patch } = input;
+          return this.instagramIntegrationService!.updateAutomation(context.userId, automationId, patch);
+        },
       }));
       this.register(this.base<DeleteInstagramCommentAutomationToolInput, unknown>({
         name: 'delete_instagram_comment_automation',

@@ -28,6 +28,7 @@ export class AIToolExecutionService {
     }
     if (request.tool.includes('google_')) await this.subscriptions.assertFeatureAllowed(userId, 'GOOGLE');
     if (request.tool.includes('telegram_')) await this.subscriptions.assertFeatureAllowed(userId, 'TELEGRAM');
+    if (request.tool.includes('instagram_')) await this.subscriptions.assertFeatureAllowed(userId, 'INSTAGRAM_SALES');
     const tool = this.registry.get(request.tool);
     const context: AIToolExecutionContext = {
       userId,
