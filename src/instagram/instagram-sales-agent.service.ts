@@ -23,7 +23,7 @@ type InstagramDmEvent = {
   displayName?: string | null;
 };
 
-type InstagramCommentEvent = {
+export type InstagramCommentEvent = {
   commentId: string;
   commenterId: string;
   username: string | null;
@@ -115,6 +115,10 @@ export class InstagramSalesAgentService {
         }
       }
     }
+  }
+
+  async handlePolledComment(userId: string, event: InstagramCommentEvent): Promise<void> {
+    await this.handleComment(userId, event);
   }
 
   private async handleDm(userId: string, event: InstagramDmEvent): Promise<void> {

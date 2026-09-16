@@ -110,6 +110,8 @@ export default () => ({
     graphApiVersion: process.env.INSTAGRAM_GRAPH_API_VERSION ?? process.env.WHATSAPP_GRAPH_API_VERSION ?? 'v24.0',
     graphBaseUrl: process.env.INSTAGRAM_GRAPH_BASE_URL ?? 'https://graph.facebook.com',
     loginGraphBaseUrl: process.env.INSTAGRAM_LOGIN_GRAPH_BASE_URL ?? 'https://graph.instagram.com',
+    devCommentPollEnabled: process.env.INSTAGRAM_DEV_COMMENT_POLL_ENABLED === 'true',
+    devCommentPollIntervalMs: Number.parseInt(process.env.INSTAGRAM_DEV_COMMENT_POLL_INTERVAL_MS ?? '60000', 10),
   },
   bito: {
     debugShapes: process.env.BITO_DEBUG_SHAPES === 'true',

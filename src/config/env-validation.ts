@@ -72,6 +72,8 @@ export const envValidationSchema = Joi.object({
   INSTAGRAM_GRAPH_API_VERSION: Joi.string().pattern(/^v\d+\.\d+$/).default('v24.0'),
   INSTAGRAM_GRAPH_BASE_URL: Joi.string().uri().default('https://graph.facebook.com'),
   INSTAGRAM_LOGIN_GRAPH_BASE_URL: Joi.string().uri().default('https://graph.instagram.com'),
+  INSTAGRAM_DEV_COMMENT_POLL_ENABLED: Joi.boolean().truthy('true').falsy('false').default(false),
+  INSTAGRAM_DEV_COMMENT_POLL_INTERVAL_MS: Joi.number().integer().min(15000).max(600000).default(60000),
   BITO_CREDENTIAL_ENCRYPTION_KEY: Joi.string().pattern(/^[a-fA-F0-9]{64}$/).optional(),
   BITO_MCP_SERVER_URL: Joi.string().uri({ scheme: ['https', 'http'] }).default('https://mcp.bito.online'),
   BITO_MCP_ALLOWED_HOSTS: Joi.string().min(1).default('mcp.bito.online,.bito.online'),

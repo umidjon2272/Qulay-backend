@@ -7,11 +7,12 @@ import { InstagramCoreModule } from './instagram-core.module';
 import { InstagramController } from './instagram.controller';
 import { InstagramCommentMatcherService } from './instagram-comment-matcher.service';
 import { InstagramSalesAgentService } from './instagram-sales-agent.service';
+import { InstagramCommentPollerService } from './instagram-comment-poller.service';
 
 @Module({
   imports: [PrismaModule, AiAgentModule, SubscriptionsModule, UsageModule, InstagramCoreModule],
   controllers: [InstagramController],
-  providers: [InstagramCommentMatcherService, InstagramSalesAgentService],
+  providers: [InstagramCommentMatcherService, InstagramSalesAgentService, InstagramCommentPollerService],
   exports: [InstagramCoreModule, InstagramSalesAgentService],
 })
 export class InstagramModule {}

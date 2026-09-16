@@ -1,5 +1,6 @@
 import { InstagramCommentMatcherService } from '../src/instagram/instagram-comment-matcher.service';
 import { InstagramIntegrationService } from '../src/instagram/instagram-integration.service';
+import { InstagramCommentPollerService } from '../src/instagram/instagram-comment-poller.service';
 import { SalesProductKnowledgeService } from '../src/ai-agent/sales-product-knowledge.service';
 
 describe('Instagram sales foundation', () => {
@@ -30,6 +31,45 @@ describe('Instagram sales foundation', () => {
     expect(create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ userId: 'u', mediaId: 'm1', mediaCaption: 'Prompt post', triggerText: 'prompt', dmMessage: 'Mana promptingiz' }),
     }));
+  });
+
+  it('pauses and resumes an existing comment automation without replacing unrelated fields', async () => {
+    const update = jest.fn().mockResolvedValue({ id: 'a1', active: false });
+    const prisma = {
+      instagramCommentAutomation: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'a1' }),
+        update,
+      },
+    };
+    const service = new InstagramIntegrationService(prisma as never, {} as never, {} as never);
+
+    await service.updateAutomation('u', 'a1', { active: false });
+
+    expect(update).toHaveBeenCalledWith({ where: { id: 'a1' }, data: { active: false } });
+  });
+
+  it('routes recent development-polled comments through the canonical Instagram sales handler', async () => {
+    const now = new Date().toISOString();
+    const prisma = {
+      instagramConnection: {
+        findMany: jest.fn().mockResolvedValue([{ userId: 'u', instagramUserId: 'owner-ig' }]),
+      },
+    };
+    const config = { get: jest.fn((key: string) => key === 'instagram.devCommentPollEnabled' ? true : 60_000) };
+    const graph = {
+      listMedia: jest.fn().mockResolvedValue([{ id: 'm1' }]),
+      listMediaComments: jest.fn().mockResolvedValue([
+        { id: 'c1', mediaId: 'm1', text: 'promt', commenterId: 'customer-1', username: 'buyer', timestamp: now },
+        { id: 'c2', mediaId: 'm1', text: 'self', commenterId: 'owner-ig', username: 'owner', timestamp: now },
+      ]),
+    };
+    const sales = { handlePolledComment: jest.fn().mockResolvedValue(undefined) };
+    const poller = new InstagramCommentPollerService(config as never, prisma as never, graph as never, sales as never);
+
+    await poller.tick();
+
+    expect(sales.handlePolledComment).toHaveBeenCalledTimes(1);
+    expect(sales.handlePolledComment).toHaveBeenCalledWith('u', expect.objectContaining({ commentId: 'c1', mediaId: 'm1', text: 'promt' }));
   });
 
   it('finds owner-taught off-Bito products by alias/family instead of requiring an exact name', async () => {

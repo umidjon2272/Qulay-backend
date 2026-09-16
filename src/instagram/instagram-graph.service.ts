@@ -23,6 +23,15 @@ export type InstagramMedia = {
   timestamp: string | null;
 };
 
+export type InstagramMediaComment = {
+  id: string;
+  mediaId: string;
+  text: string;
+  commenterId: string;
+  username: string | null;
+  timestamp: string | null;
+};
+
 type GraphErrorBody = { error?: { message?: string; code?: number; error_subcode?: number; type?: string } };
 
 type GraphOptions = { method?: 'GET' | 'POST' | 'DELETE'; body?: unknown };
@@ -160,6 +169,36 @@ export class InstagramGraphService {
       permalink: typeof item.permalink === 'string' ? item.permalink : null,
       timestamp: typeof item.timestamp === 'string' ? item.timestamp : null,
     })).filter(item => item.id);
+  }
+
+  async listMediaComments(userId: string, mediaId: string, limit = 50): Promise<InstagramMediaComment[]> {
+    const connection = await this.connectionForUser(userId);
+    const token = this.crypto.decrypt(connection.encryptedAccessToken);
+    const take = Math.max(1, Math.min(100, limit));
+    const fields = 'id,text,username,timestamp,from';
+    const data = await this.graphJson<{ data?: Array<Record<string, unknown>> }>(
+      `/${encodeURIComponent(mediaId)}/comments?fields=${fields}&limit=${take}`,
+      token,
+      undefined,
+      connection.authMode,
+    );
+    await this.touch(userId);
+    return (data.data ?? []).map(item => {
+      const from = item.from && typeof item.from === 'object' && !Array.isArray(item.from) ? item.from as Record<string, unknown> : {};
+      const id = String(item.id ?? '').trim();
+      const username = typeof item.username === 'string' && item.username.trim()
+        ? item.username.trim()
+        : typeof from.username === 'string' && from.username.trim() ? from.username.trim() : null;
+      const commenterId = String(from.id ?? item.from_id ?? username ?? '').trim();
+      return {
+        id,
+        mediaId,
+        text: typeof item.text === 'string' ? item.text : '',
+        commenterId,
+        username,
+        timestamp: typeof item.timestamp === 'string' ? item.timestamp : null,
+      };
+    }).filter(item => item.id && item.commenterId);
   }
 
   async getMedia(userId: string, mediaId: string): Promise<InstagramMedia | null> {

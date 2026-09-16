@@ -35,4 +35,22 @@ describe('Instagram environment validation', () => {
 
     expect(result.error?.message).toContain('INSTAGRAM_APP_ID');
   });
+  it('keeps development comment polling opt-in and rejects unsafe fast intervals', () => {
+    const safe = envValidationSchema.validate({
+      ...baseEnv,
+      INSTAGRAM_DEV_COMMENT_POLL_ENABLED: 'true',
+      INSTAGRAM_DEV_COMMENT_POLL_INTERVAL_MS: '15000',
+    });
+    expect(safe.error).toBeUndefined();
+    expect(safe.value.INSTAGRAM_DEV_COMMENT_POLL_ENABLED).toBe(true);
+    expect(safe.value.INSTAGRAM_DEV_COMMENT_POLL_INTERVAL_MS).toBe(15000);
+
+    const unsafe = envValidationSchema.validate({
+      ...baseEnv,
+      INSTAGRAM_DEV_COMMENT_POLL_ENABLED: 'true',
+      INSTAGRAM_DEV_COMMENT_POLL_INTERVAL_MS: '5000',
+    });
+    expect(unsafe.error?.message).toContain('INSTAGRAM_DEV_COMMENT_POLL_INTERVAL_MS');
+  });
+
 });
