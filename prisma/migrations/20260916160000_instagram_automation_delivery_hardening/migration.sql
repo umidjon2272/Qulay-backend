@@ -2,10 +2,10 @@ ALTER TABLE "InstagramCommentAutomation"
 ADD COLUMN "triggerKey" VARCHAR(500);
 
 UPDATE "InstagramCommentAutomation"
-SET "triggerKey" = btrim(regexp_replace(
+SET "triggerKey" = left(btrim(regexp_replace(
   regexp_replace(lower("triggerText"), '[^[:alnum:]''’‘ʻʼ`]+', ' ', 'g'),
   '[[:space:]]+', ' ', 'g'
-));
+)), 500);
 
 WITH ranked AS (
   SELECT id,
