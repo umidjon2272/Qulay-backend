@@ -2,6 +2,7 @@ import { ConfigService } from '@nestjs/config';
 import {
   applySalesTurnUnderstanding,
   customerSafeSalesAnswer,
+  deterministicSalesFallbackReply,
   planSalesNextAction,
   reconcileUniversalSalesStateFromInventory,
   salesCatalogLookupQuery,
@@ -26,6 +27,24 @@ import { isWhatsAppSalesRelevant } from '../src/whatsapp/whatsapp-sales-policy';
 import type { BitoMcpTool } from '../src/bito/bito-mcp.client';
 
 describe('universal sales engine hardening', () => {
+  it('returns a deterministic non-empty reply for an exact unavailable model follow-up', () => {
+    let state = updateUniversalSalesState(undefined, 'Ayfon bormi?');
+    state = reconcileUniversalSalesStateFromInventory(state, {
+      availabilityStatus: 'IN_STOCK',
+      items: [{ name: 'iPhone 15 Pro', quantity: 1 }],
+    }, 'FAMILY');
+    state = updateUniversalSalesState(state, '16 Pro bormi?');
+    state = reconcileUniversalSalesStateFromInventory(state, {
+      availabilityStatus: 'NOT_FOUND',
+      items: [],
+      familyAlternatives: [{ name: 'iPhone 15 Pro', quantity: 1 }],
+    });
+    const reply = deterministicSalesFallbackReply(state, 'AVAILABILITY', 'uz');
+    expect(reply.trim()).not.toBe('');
+    expect(reply.toLowerCase()).toContain('16 pro');
+    expect(reply.toLowerCase()).toMatch(/yo['‘’]?q/);
+  });
+
 
   it('keeps the exact Telegram production flow in one coherent sales context', () => {
     let state = updateUniversalSalesState(undefined, 'Salom ayfon bormi?');

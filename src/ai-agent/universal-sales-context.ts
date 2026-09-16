@@ -794,6 +794,50 @@ export function customerSafeSalesAnswer(answer: string, state: UniversalSalesSta
   return sanitized.slice(0, 3900);
 }
 
+
+export function salesSelectionLabel(state: UniversalSalesState | undefined): string | undefined {
+  const value = coerceUniversalSalesState(state);
+  const parts: string[] = [];
+  for (const item of [value.product, value.model, value.storage, value.variant, value.color, value.size]) {
+    const clean = item?.trim();
+    if (!clean) continue;
+    const comparable = canonicalComparable(clean);
+    if (parts.some(part => canonicalComparable(part).includes(comparable) || comparable.includes(canonicalComparable(part)))) continue;
+    parts.push(clean);
+  }
+  return parts.join(' ').replace(/\s+/g, ' ').trim() || undefined;
+}
+
+export function deterministicSalesFallbackReply(
+  state: UniversalSalesState | undefined,
+  intent?: UniversalSalesIntent,
+  language = 'uz',
+): string {
+  const value = coerceUniversalSalesState(state);
+  const selected = salesSelectionLabel(value);
+  const mostSpecific = getMostSpecificCatalogFact(value);
+  const unavailable = mostSpecific?.status === 'UNAVAILABLE';
+  const verified = mostSpecific?.status === 'VERIFIED';
+  const ru = language === 'ru';
+
+  if (unavailable) {
+    return selected
+      ? (ru ? `${selected} сейчас нет в наличии.` : `${selected} hozir yo‘q ekan.`)
+      : (ru ? 'Этого варианта сейчас нет в наличии.' : 'Bu variant hozir yo‘q ekan.');
+  }
+  if ((intent ?? value.lastIntent) === 'AVAILABILITY' && verified) {
+    const hasSpecific = Boolean(value.model || value.storage || value.variant || value.color || value.size);
+    if (selected) {
+      if (hasSpecific) return ru ? `${selected} есть в наличии.` : `${selected} bor.`;
+      return ru ? `${selected} есть. Какая модель вам нужна?` : `${selected} bor. Qaysi model kerak edi?`;
+    }
+  }
+  if ((intent ?? value.lastIntent) === 'PRICE' && selected) {
+    return ru ? `По ${selected} уточню точную цену по актуальным данным.` : `${selected} bo‘yicha aniq narxni real ma’lumotdan tekshirib aytaman.`;
+  }
+  return ru ? 'Помогу. Какой товар или модель вам нужна?' : 'Yordam beraman. Qaysi mahsulot yoki model kerak edi?';
+}
+
 export function likelyNeedsProductLookup(state: UniversalSalesState | undefined, currentText: string): boolean {
   const value = coerceUniversalSalesState(state);
   const normalized = normalizeSalesTextForUnderstanding(currentText);
