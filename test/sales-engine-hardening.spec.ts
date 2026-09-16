@@ -436,4 +436,55 @@ describe('universal sales engine hardening', () => {
     expect(result.availabilityStatus).toBe('IN_STOCK');
     expect(result.items).toEqual([expect.objectContaining({ name: 'Iphone 13 por', quantity: 3 })]);
   });
+
+  it('accepts a verified offered alternative on a short acknowledgement and prices the accepted model on the next quantity question', () => {
+    let state = updateUniversalSalesState(undefined, 'Ayfon bormi?');
+    state = updateUniversalSalesState(state, '16 Pro bormi?');
+    state = reconcileUniversalSalesStateFromInventory(state, {
+      availabilityStatus: 'NOT_FOUND',
+      items: [],
+      familyAlternatives: [{ name: 'iPhone 13 Pro', quantity: 4, price: 4_800_000 }],
+    });
+    expect(state.model).toBe('16 pro');
+    expect(state.factStatus?.model?.status).toBe('UNAVAILABLE');
+    expect(state.offeredAlternative?.name).toBe('iPhone 13 Pro');
+
+    state = applySalesTurnUnderstanding(state, {
+      intent: 'ACKNOWLEDGEMENT', topicSwitch: false, followUp: true, needsCatalogLookup: false,
+      catalogScope: 'NONE', clearUnavailableSelection: false, businessFactRequest: 'NONE',
+      answerGoal: 'taklif qilingan variantni qabul qilish',
+    }, 'Mayli');
+    expect(state.model).toBe('13 pro');
+    expect(state.factStatus?.model?.status).toBe('VERIFIED');
+    expect(state.offeredAlternative).toBeUndefined();
+
+    state = applySalesTurnUnderstanding(state, {
+      intent: 'PRICE', topicSwitch: false, followUp: true, needsCatalogLookup: true,
+      catalogScope: 'SELECTION', clearUnavailableSelection: false, quantity: 2,
+      businessFactRequest: 'NONE', answerGoal: '2 ta uchun narx',
+    }, '2 ta olsamchi? Qancha berasiz?');
+    expect(state.quantity).toBe(2);
+    expect(salesCatalogLookupQueryForUnderstanding(state, {
+      intent: 'PRICE', topicSwitch: false, followUp: true, needsCatalogLookup: true,
+      catalogScope: 'SELECTION', clearUnavailableSelection: false, quantity: 2,
+      businessFactRequest: 'NONE', answerGoal: '2 ta uchun narx',
+    }, '2 ta olsamchi? Qancha berasiz?')).toContain('13 pro');
+  });
+
+  it('implicitly accepts a verified offered alternative when the customer immediately asks quantity/price', () => {
+    let state = updateUniversalSalesState(undefined, 'Ayfon 16 Pro bormi?');
+    state = reconcileUniversalSalesStateFromInventory(state, {
+      availabilityStatus: 'NOT_FOUND',
+      items: [],
+      familyAlternatives: [{ name: 'iPhone 13 Pro', quantity: 4, price: 4_800_000 }],
+    });
+    state = applySalesTurnUnderstanding(state, {
+      intent: 'PRICE', topicSwitch: false, followUp: true, needsCatalogLookup: true,
+      catalogScope: 'SELECTION', clearUnavailableSelection: false, quantity: 2,
+      businessFactRequest: 'NONE', answerGoal: 'taklif qilinganidan 2 ta narx',
+    }, '2 ta olsamchi qancha?');
+    expect(state.model).toBe('13 pro');
+    expect(state.quantity).toBe(2);
+  });
+
 });

@@ -33,6 +33,21 @@ export type SalesFact = {
   checkedAt?: string;
 };
 
+export type SalesOfferedAlternative = {
+  name: string;
+  product?: string;
+  productFamily?: string;
+  model?: string;
+  storage?: string;
+  variant?: string;
+  color?: string;
+  size?: string;
+  unitPrice?: number;
+  stockQuantity?: number;
+  source: 'BITO';
+  offeredAt: string;
+};
+
 export type SalesNextBestAction =
   | 'IDENTIFY_PRODUCT'
   | 'VERIFY_PRODUCT'
@@ -114,6 +129,7 @@ export type UniversalSalesState = {
   requestedCheaper?: boolean;
   requestedAdvice?: boolean;
   factStatus?: Partial<Record<SalesFactKey, SalesFact>>;
+  offeredAlternative?: SalesOfferedAlternative;
   updatedAt?: string;
 };
 
@@ -202,6 +218,25 @@ export function coerceUniversalSalesState(value: unknown): UniversalSalesState {
   if (typeof source.wantsExactStock === 'boolean') state.wantsExactStock = source.wantsExactStock;
   if (typeof source.requestedCheaper === 'boolean') state.requestedCheaper = source.requestedCheaper;
   if (typeof source.requestedAdvice === 'boolean') state.requestedAdvice = source.requestedAdvice;
+
+  if (source.offeredAlternative && typeof source.offeredAlternative === 'object' && !Array.isArray(source.offeredAlternative)) {
+    const raw = source.offeredAlternative as Record<string, unknown>;
+    const name = typeof raw.name === 'string' ? raw.name.trim().slice(0, 300) : '';
+    if (name) {
+      const offered: SalesOfferedAlternative = {
+        name,
+        source: 'BITO',
+        offeredAt: typeof raw.offeredAt === 'string' ? raw.offeredAt.slice(0, 50) : new Date().toISOString(),
+      };
+      for (const key of ['product', 'productFamily', 'model', 'storage', 'variant', 'color', 'size'] as const) {
+        const rawValue = raw[key];
+        if (typeof rawValue === 'string' && rawValue.trim()) offered[key] = rawValue.trim().slice(0, 300);
+      }
+      if (typeof raw.unitPrice === 'number' && Number.isFinite(raw.unitPrice) && raw.unitPrice >= 0) offered.unitPrice = raw.unitPrice;
+      if (typeof raw.stockQuantity === 'number' && Number.isFinite(raw.stockQuantity) && raw.stockQuantity >= 0) offered.stockQuantity = raw.stockQuantity;
+      state.offeredAlternative = offered;
+    }
+  }
 
   if (source.factStatus && typeof source.factStatus === 'object' && !Array.isArray(source.factStatus)) {
     const factStatus: Partial<Record<SalesFactKey, SalesFact>> = {};
@@ -380,7 +415,12 @@ export function applySalesTurnUnderstanding(
   const state = coerceUniversalSalesState(previous);
   const before = coerceUniversalSalesState(previous);
 
-  if (understanding.topicSwitch) clearProductSelectionContext(state);
+  if (understanding.topicSwitch) {
+    clearProductSelectionContext(state);
+    delete state.offeredAlternative;
+  } else if (shouldAcceptOfferedAlternative(state, understanding, rawText)) {
+    acceptOfferedAlternative(state);
+  }
   if (understanding.clearUnavailableSelection) clearUnavailableSelectionFacts(state);
 
   // Keep a conservative deterministic fallback for literal facts (phone,
@@ -395,6 +435,12 @@ export function applySalesTurnUnderstanding(
   const nextVariant = cleanOptional(understanding.variant);
   const nextColor = cleanOptional(understanding.color);
   const nextSize = cleanOptional(understanding.size);
+  const explicitSelection = Boolean(nextProduct || nextFamily || nextModel || nextStorage || nextVariant || nextColor || nextSize);
+  if (explicitSelection && state.offeredAlternative) {
+    const offered = canonicalComparable(state.offeredAlternative.name);
+    const requested = canonicalComparable([nextProduct, nextFamily, nextModel, nextStorage, nextVariant, nextColor, nextSize].filter(Boolean).join(' '));
+    if (requested && !offered.includes(requested) && !requested.includes(offered)) delete state.offeredAlternative;
+  }
 
   if (nextProduct || nextFamily) {
     const product = nextProduct || nextFamily!;
@@ -526,7 +572,7 @@ export function salesCatalogLookupScopeForUnderstanding(
     key => value.factStatus?.[key]?.status === 'UNAVAILABLE',
   );
   if (hasUnavailableSpecific && !introducedNewSelection
-    && ['QUANTITY', 'ORDER', 'CATALOG_OPTIONS', 'ACKNOWLEDGEMENT'].includes(understanding?.intent ?? '')) {
+    && ['QUANTITY', 'PRICE', 'ORDER', 'CATALOG_OPTIONS', 'ACKNOWLEDGEMENT'].includes(understanding?.intent ?? '')) {
     scope = 'FAMILY';
   }
   return scope;
@@ -609,7 +655,10 @@ export function reconcileUniversalSalesStateFromInventory(
     // 1.5L) is not an accepted concrete selection. Never attach an arbitrary
     // family price to the active order or mark an unavailable subvariant as
     // verified merely because some sibling variant exists.
-    if (scope === 'FAMILY') return state;
+    if (scope === 'FAMILY') {
+      if (hasUnavailableSpecificFact(state)) captureOfferedAlternative(state, items, checkedAt);
+      return state;
+    }
 
     // Never choose an arbitrary price when a query still resolves to several
     // real variants (for example storage/color variants of the same phone).
@@ -640,6 +689,7 @@ export function reconcileUniversalSalesStateFromInventory(
       setFact(state, specific, String(state[specific]), 'UNAVAILABLE', 'BITO', checkedAt);
       clearPriceFacts(state);
     }
+    captureOfferedAlternative(state, Array.isArray(snapshot.familyAlternatives) ? snapshot.familyAlternatives : [], checkedAt);
     return state;
   }
 
@@ -652,6 +702,7 @@ export function reconcileUniversalSalesStateFromInventory(
     setFact(state, 'product', state.product, 'UNAVAILABLE', 'BITO', checkedAt);
     clearPriceFacts(state);
   }
+  captureOfferedAlternative(state, Array.isArray(snapshot.familyAlternatives) ? snapshot.familyAlternatives : [], checkedAt);
   return state;
 }
 
@@ -730,6 +781,10 @@ export function salesStatePrompt(state: UniversalSalesState | undefined): string
   if (value.requestedCheaper) known.push('arzonroq_variant_so‘ralgan=true');
   if (value.requestedAdvice) known.push('maslahat_so‘ralgan=true');
   if (value.wantsExactStock) known.push('exact_qoldiq_so‘ralgan=true');
+  if (value.offeredAlternative) {
+    known.push(`taklif_qilingan_real_variant=${value.offeredAlternative.name}`);
+    if (typeof value.offeredAlternative.unitPrice === 'number') known.push(`taklif_narxi=${value.offeredAlternative.unitPrice}`);
+  }
   for (const [key, fact] of Object.entries(value.factStatus ?? {})) {
     if (fact && typeof fact === 'object') known.push(`${key}_status=${fact.status}`);
   }
@@ -821,9 +876,15 @@ export function deterministicSalesFallbackReply(
   const ru = language === 'ru';
 
   if (unavailable) {
-    return selected
+    const unavailableText = selected
       ? (ru ? `${selected} сейчас нет в наличии.` : `${selected} hozir yo‘q ekan.`)
       : (ru ? 'Этого варианта сейчас нет в наличии.' : 'Bu variant hozir yo‘q ekan.');
+    const offer = value.offeredAlternative;
+    if (!offer) return unavailableText;
+    const price = typeof offer.unitPrice === 'number'
+      ? ` — ${new Intl.NumberFormat(ru ? 'ru-RU' : 'uz-UZ').format(offer.unitPrice)} so'm`
+      : '';
+    return ru ? `${unavailableText} Есть ${offer.name}${price}.` : `${unavailableText} ${offer.name} bor${price}.`;
   }
   if ((intent ?? value.lastIntent) === 'AVAILABILITY' && verified) {
     const hasSpecific = Boolean(value.model || value.storage || value.variant || value.color || value.size);
@@ -846,6 +907,81 @@ export function likelyNeedsProductLookup(state: UniversalSalesState | undefined,
   if (explicitProductNeed) return true;
   if (!value.product) return false;
   return /\b(?:qora|oq|qizil|ko['‘’]?k|yashil|xotira|pamyat|gb|tb|xl|xxl|xs|delivery|yetkaz)\b/iu.test(normalized);
+}
+
+
+function hasUnavailableSpecificFact(state: UniversalSalesState): boolean {
+  return (['color', 'storage', 'size', 'variant', 'model', 'product'] as const)
+    .some(key => state.factStatus?.[key]?.status === 'UNAVAILABLE');
+}
+
+function captureOfferedAlternative(state: UniversalSalesState, rawItems: unknown[], checkedAt: string): void {
+  const candidates = rawItems
+    .filter(item => item && typeof item === 'object' && !Array.isArray(item))
+    .map(item => item as Record<string, unknown>)
+    .filter(item => typeof item.name === 'string' && item.name.trim())
+    .filter(item => typeof item.quantity !== 'number' || item.quantity > 0);
+  const item = candidates[0];
+  if (!item) return;
+  const name = String(item.name).trim().slice(0, 300);
+  const parsed = parseProductCandidate(name);
+  const normalized = normalizeSalesTextForUnderstanding(name);
+  const storage = extractStorage(normalized);
+  const color = detectColor(normalized);
+  const size = extractSize(normalized);
+  const volume = extractVolume(normalized);
+  const offered: SalesOfferedAlternative = {
+    name,
+    product: parsed.product,
+    productFamily: parsed.family || inferProductFamily(parsed.product),
+    ...(parsed.model ? { model: parsed.model, variant: parsed.model } : {}),
+    ...(storage ? { storage } : {}),
+    ...(color ? { color } : {}),
+    ...(size ? { size } : {}),
+    ...(volume ? { variant: volume } : {}),
+    ...(typeof item.price === 'number' && Number.isFinite(item.price) && item.price >= 0 ? { unitPrice: item.price } : {}),
+    ...(typeof item.quantity === 'number' && Number.isFinite(item.quantity) && item.quantity >= 0 ? { stockQuantity: item.quantity } : {}),
+    source: 'BITO',
+    offeredAt: checkedAt,
+  };
+  state.offeredAlternative = offered;
+}
+
+function shouldAcceptOfferedAlternative(state: UniversalSalesState, understanding: SalesTurnUnderstanding, rawText: string): boolean {
+  if (!state.offeredAlternative || understanding.topicSwitch) return false;
+  const explicitSelection = Boolean(
+    understanding.product || understanding.productFamily || understanding.model || understanding.storage
+    || understanding.variant || understanding.color || understanding.size,
+  );
+  if (explicitSelection) return false;
+  const normalized = normalizeSalesTextForUnderstanding(rawText);
+  if (/\b(?:yo['‘’]?q|kerak\s+emas|olmayman|boshqa|нет|не\s+надо|no)\b/iu.test(normalized)) return false;
+  if (['QUANTITY', 'PRICE', 'ORDER'].includes(understanding.intent)) return true;
+  if (understanding.intent !== 'ACKNOWLEDGEMENT') return false;
+  return /^(?:ha|xa|mayli|xo['‘’]?p|hop|bo['‘’]?ladi|boladi|ok|okay|да|хорошо|ладно)[!.?,\s]*$/iu.test(normalized);
+}
+
+function acceptOfferedAlternative(state: UniversalSalesState): void {
+  const offer = state.offeredAlternative;
+  if (!offer) return;
+  clearProductSelectionContext(state);
+  state.product = offer.product || offer.productFamily || offer.name;
+  state.productFamily = offer.productFamily || inferProductFamily(state.product);
+  state.model = offer.model;
+  state.storage = offer.storage;
+  state.variant = offer.variant || offer.model;
+  state.color = offer.color;
+  state.size = offer.size;
+  const checkedAt = offer.offeredAt || new Date().toISOString();
+  if (state.product) setFact(state, 'product', state.product, 'VERIFIED', 'BITO', checkedAt);
+  if (state.productFamily) setFact(state, 'productFamily', state.productFamily, 'VERIFIED', 'BITO', checkedAt);
+  if (state.model) setFact(state, 'model', state.model, 'VERIFIED', 'BITO', checkedAt);
+  if (state.variant) setFact(state, 'variant', state.variant, 'VERIFIED', 'BITO', checkedAt);
+  if (state.storage) setFact(state, 'storage', state.storage, 'VERIFIED', 'BITO', checkedAt);
+  if (state.color) setFact(state, 'color', state.color, 'VERIFIED', 'BITO', checkedAt);
+  if (state.size) setFact(state, 'size', state.size, 'VERIFIED', 'BITO', checkedAt);
+  if (typeof offer.unitPrice === 'number') state.unitPrice = offer.unitPrice;
+  delete state.offeredAlternative;
 }
 
 function setFact(

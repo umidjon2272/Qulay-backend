@@ -155,4 +155,24 @@ describe('Instagram sales foundation', () => {
     }));
   });
 
+
+  it('does not treat a different model in the same family as authoritative owner knowledge', async () => {
+    const prisma = {
+      salesProductKnowledge: {
+        findMany: jest.fn().mockResolvedValue([{
+          id: 'k1', canonicalName: 'iPhone 13 Pro 128GB qora', productFamily: 'iPhone',
+          aliases: ['13 Pro'], description: null, publicPrice: 4_800_000, currency: 'UZS',
+          availability: 'AVAILABLE', stockQuantity: 3, unit: 'dona', attributes: { storage: '128GB', color: 'qora' }, note: null,
+        }]),
+      },
+    };
+    const service = new SalesProductKnowledgeService(prisma as never);
+
+    const wrongModel = await service.search('u', 'iPhone 16 Pro', 10);
+    const exactModel = await service.search('u', 'iPhone 13 Pro', 10);
+
+    expect(wrongModel[0]?.authoritative).toBe(false);
+    expect(exactModel[0]?.authoritative).toBe(true);
+  });
+
 });
