@@ -1,8 +1,10 @@
 import { ConfigService } from '@nestjs/config';
+import { AiAgentService } from '../src/ai-agent/ai-agent.service';
 import {
   applySalesTurnUnderstanding,
   customerSafeSalesAnswer,
   deterministicSalesFallbackReply,
+  likelyNeedsProductLookup,
   planSalesNextAction,
   reconcileUniversalSalesStateFromInventory,
   salesCatalogLookupQuery,
@@ -456,6 +458,8 @@ describe('universal sales engine hardening', () => {
     }, 'Mayli');
     expect(state.model).toBe('13 pro');
     expect(state.factStatus?.model?.status).toBe('VERIFIED');
+    expect(state.factStatus?.variant?.status).toBe('VERIFIED');
+    expect(state.unitPrice).toBe(4_800_000);
     expect(state.offeredAlternative).toBeUndefined();
 
     state = applySalesTurnUnderstanding(state, {
@@ -485,6 +489,74 @@ describe('universal sales engine hardening', () => {
     }, '2 ta olsamchi qancha?');
     expect(state.model).toBe('13 pro');
     expect(state.quantity).toBe(2);
+  });
+
+
+  it('treats a bare model selection as a catalog follow-up inside an active product conversation', () => {
+    let state = updateUniversalSalesState(undefined, 'Salom ayfon bormi?');
+    state = updateUniversalSalesState(state, 'Ayfon 16');
+    expect(state.product).toBe('iphone');
+    expect(state.model).toBe('16');
+    expect(state.lastIntent).toBe('VARIANT');
+    expect(likelyNeedsProductLookup(state, 'Ayfon 16')).toBe(true);
+  });
+
+  it('keeps the selected product when a delivery address contains words and a house number', () => {
+    let state = updateUniversalSalesState(undefined, 'Ayfon 13 pro kerak');
+    state = updateUniversalSalesState(state, 'Dastafka qberasizmi?');
+    expect(state.product).toBe('iphone');
+    expect(state.model).toBe('13 pro');
+    state = updateUniversalSalesState(state, 'Toshkent chilonzor 12');
+    expect(state.address).toBe('Toshkent chilonzor 12');
+    expect(state.fulfillment).toBe('DELIVERY');
+    expect(state.product).toBe('iphone');
+    expect(state.model).toBe('13 pro');
+    expect(state.variant).toBe('13 pro');
+    expect(state.lastIntent).toBe('ADDRESS');
+  });
+
+  it('keeps product context through delivery address phone and payment follow-ups', () => {
+    let state = updateUniversalSalesState(undefined, 'Ayfon 13 pro kerak');
+    state = updateUniversalSalesState(state, 'Dastafka qberasizmi?');
+    state = updateUniversalSalesState(state, 'Toshkent chilonzor 12');
+    state = updateUniversalSalesState(state, '+998901234567');
+    state = updateUniversalSalesState(state, 'Click qilaman');
+    expect(state.product).toBe('iphone');
+    expect(state.model).toBe('13 pro');
+    expect(state.address).toBe('Toshkent chilonzor 12');
+    expect(state.phone).toBe('+998901234567');
+    expect(state.paymentMethod).toBe('CLICK');
+  });
+
+
+  it('repairs a weak semantic classification for a bare model follow-up instead of going silent', () => {
+    const service = Object.create(AiAgentService.prototype) as any;
+    let state = updateUniversalSalesState(undefined, 'Salom ayfon bormi?');
+    const guarded = service.guardExternalSalesUnderstanding(state, 'Ayfon 16', {
+      intent: 'GENERAL', topicSwitch: false, followUp: false, needsCatalogLookup: false,
+      catalogScope: 'NONE', clearUnavailableSelection: false, businessFactRequest: 'NONE',
+      answerGoal: 'generic',
+    });
+    expect(guarded.intent).toBe('VARIANT');
+    expect(guarded.needsCatalogLookup).toBe(true);
+    expect(guarded.followUp).toBe(true);
+  });
+
+  it('repairs a weak Mayli classification into acceptance of the verified offered alternative', () => {
+    const service = Object.create(AiAgentService.prototype) as any;
+    let state = updateUniversalSalesState(undefined, 'Ayfon 16 Pro bormi?');
+    state = reconcileUniversalSalesStateFromInventory(state, {
+      availabilityStatus: 'NOT_FOUND', items: [],
+      familyAlternatives: [{ name: 'iPhone 13 Pro', quantity: 3, price: 4_800_000 }],
+    });
+    const guarded = service.guardExternalSalesUnderstanding(state, 'Mayli', {
+      intent: 'GENERAL', topicSwitch: false, followUp: false, needsCatalogLookup: false,
+      catalogScope: 'NONE', clearUnavailableSelection: false, businessFactRequest: 'NONE',
+      answerGoal: 'generic',
+    });
+    expect(guarded.intent).toBe('ACKNOWLEDGEMENT');
+    const accepted = applySalesTurnUnderstanding(state, guarded, 'Mayli');
+    expect(accepted.model).toBe('13 pro');
   });
 
 });

@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException, OnModuleInit, ServiceUnavailableException } from '@nestjs/common';
 import { Prisma, WhatsAppConnectionStatus } from '@prisma/client';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
@@ -71,7 +71,7 @@ const FOLLOWUP_WINDOW_MS = 60 * 60 * 1000;
 const SOFT_EXIT_WINDOW_MS = 15 * 60 * 1000;
 
 @Injectable()
-export class WhatsAppSalesAgentService {
+export class WhatsAppSalesAgentService implements OnModuleInit {
   private readonly logger = new Logger(WhatsAppSalesAgentService.name);
   private readonly processing = new Set<string>();
 
@@ -84,6 +84,38 @@ export class WhatsAppSalesAgentService {
     private readonly vision: SalesVisionService,
     private readonly subscriptions: SubscriptionsService,
   ) {}
+
+  onModuleInit(): void {
+    // Repair stale WABA subscriptions after deploy without asking the owner to
+    // reconnect. Run out-of-band so API startup is never blocked by Meta.
+    setTimeout(() => void this.reconcileWebhookSubscriptions(), 5_000).unref?.();
+  }
+
+  private async reconcileWebhookSubscriptions(): Promise<void> {
+    const staleBefore = new Date(Date.now() - 6 * 60 * 60 * 1000);
+    const rows = await this.prisma.whatsAppConnection.findMany({
+      where: {
+        status: { in: [WhatsAppConnectionStatus.CONNECTED, WhatsAppConnectionStatus.DEGRADED] },
+        salesAgentEnabled: true,
+        OR: [
+          { webhookSubscribed: false },
+          { status: WhatsAppConnectionStatus.DEGRADED },
+          { lastValidatedAt: null },
+          { lastValidatedAt: { lt: staleBefore } },
+        ],
+      },
+      select: { userId: true },
+      take: 200,
+    });
+    for (const row of rows) {
+      try {
+        await this.cloud.testConnection(row.userId);
+        this.logger.log({ event: 'whatsapp_webhook_reconciled', userId: this.safeId(row.userId) });
+      } catch (error) {
+        this.logger.warn({ event: 'whatsapp_webhook_reconcile_failed', userId: this.safeId(row.userId), code: this.errorCode(error) });
+      }
+    }
+  }
 
   async getSettings(userId: string): Promise<WhatsAppSalesAgentSettings> {
     const connection = await this.prisma.whatsAppConnection.findUnique({ where: { userId } });
@@ -243,11 +275,27 @@ export class WhatsAppSalesAgentService {
         if (change.field !== 'messages') continue;
         const value = change.value;
         const phoneNumberId = value?.metadata?.phone_number_id;
-        if (!phoneNumberId) continue;
+        const messages = value?.messages ?? [];
+        if (!phoneNumberId) {
+          if (messages.length) this.logger.warn({ event: 'whatsapp_webhook_missing_phone_number_id', messages: messages.length });
+          continue;
+        }
         const connection = await this.prisma.whatsAppConnection.findUnique({ where: { phoneNumberId } });
-        if (!connection || !(connection.status === WhatsAppConnectionStatus.CONNECTED || connection.status === WhatsAppConnectionStatus.DEGRADED) || !connection.salesAgentEnabled) continue;
+        if (!connection) {
+          if (messages.length) this.logger.warn({ event: 'whatsapp_webhook_connection_not_found', phone: this.safeId(phoneNumberId), messages: messages.length });
+          continue;
+        }
+        if (!(connection.status === WhatsAppConnectionStatus.CONNECTED || connection.status === WhatsAppConnectionStatus.DEGRADED)) {
+          if (messages.length) this.logger.warn({ event: 'whatsapp_webhook_connection_inactive', userId: this.safeId(connection.userId), status: connection.status, messages: messages.length });
+          continue;
+        }
+        if (!connection.salesAgentEnabled) {
+          if (messages.length) this.logger.warn({ event: 'whatsapp_webhook_agent_disabled', userId: this.safeId(connection.userId), messages: messages.length });
+          continue;
+        }
+        if (messages.length) this.logger.log({ event: 'whatsapp_webhook_messages_received', userId: this.safeId(connection.userId), messages: messages.length });
         const contactNames = new Map((value?.contacts ?? []).filter(c => c.wa_id).map(c => [c.wa_id!, c.profile?.name ?? null]));
-        for (const message of value?.messages ?? []) {
+        for (const message of messages) {
           if (!message.id || !message.from) continue;
           void this.handleIncoming(connection.userId, message as IncomingWhatsAppMessage, contactNames.get(message.from) ?? null);
         }

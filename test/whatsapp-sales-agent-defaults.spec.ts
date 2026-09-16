@@ -28,4 +28,19 @@ describe('WhatsApp sales agent connection defaults', () => {
       update: expect.objectContaining({ salesAgentEnabled: true }),
     }));
   });
+
+  it('revalidates an enabled connected WhatsApp account when webhook subscription is stale', async () => {
+    const prisma = {
+      whatsAppConnection: {
+        findMany: jest.fn().mockResolvedValue([{ userId: 'u' }]),
+      },
+    };
+    const cloud = { testConnection: jest.fn().mockResolvedValue({}) };
+    const service = new WhatsAppSalesAgentService(prisma as never, cloud as never, {} as never, {} as never, {} as never, {} as never, {} as never);
+
+    await (service as any).reconcileWebhookSubscriptions();
+
+    expect(cloud.testConnection).toHaveBeenCalledWith('u');
+  });
+
 });

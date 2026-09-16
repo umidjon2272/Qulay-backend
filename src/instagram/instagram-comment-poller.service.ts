@@ -6,6 +6,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import { InstagramGraphService } from './instagram-graph.service';
 import { InstagramSalesAgentService } from './instagram-sales-agent.service';
 
+const INITIAL_LOOKBACK_MS = 10 * 60 * 1000;
+
 @Injectable()
 export class InstagramCommentPollerService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(InstagramCommentPollerService.name);
@@ -59,15 +61,17 @@ export class InstagramCommentPollerService implements OnModuleInit, OnModuleDest
 
     for (const connection of connections) {
       const tickStartedAt = new Date();
+      // On the first poll, look back a small bounded window instead of placing
+      // the cursor at `now`. This prevents a message/comment sent during deploy
+      // or just before the first timer tick from being lost forever, while still
+      // avoiding a replay of the account's full historical inbox.
+      const pollCursor = connection.commentPollCursorAt ?? new Date(tickStartedAt.getTime() - INITIAL_LOOKBACK_MS);
       if (!connection.commentPollCursorAt) {
-        // Persistent baseline: historical comments existing before the bridge is
-        // enabled are never replayed, while restarts keep the same durable cursor.
         await this.prisma.instagramConnection.update({
           where: { userId: connection.userId },
-          data: { commentPollCursorAt: tickStartedAt },
+          data: { commentPollCursorAt: pollCursor },
         });
-        this.logger.debug({ event: 'instagram_dev_comment_poll_initialized', userId: this.safeId(connection.userId) });
-        continue;
+        this.logger.debug({ event: 'instagram_dev_comment_poll_initialized', userId: this.safeId(connection.userId), lookbackMs: INITIAL_LOOKBACK_MS });
       }
 
       try {
@@ -96,7 +100,7 @@ export class InstagramCommentPollerService implements OnModuleInit, OnModuleDest
               skippedNoTimestamp += 1;
               continue;
             }
-            if (timestampMs < connection.commentPollCursorAt.getTime()) {
+            if (timestampMs < pollCursor.getTime()) {
               skippedOld += 1;
               continue;
             }

@@ -283,14 +283,20 @@ export function updateUniversalSalesState(previous: UniversalSalesState | undefi
   const color = detectColor(normalized);
   const storage = extractStorage(normalized);
   const size = extractSize(normalized);
-  const compactModel = extractCompactModel(rawText);
+  const rawCompactModel = extractCompactModel(rawText);
   const budget = extractBudget(normalized);
   const timing = extractTiming(rawText, normalized);
   const address = phone ? undefined : detectAddress(rawText, normalized, delivery || state.fulfillment === 'DELIVERY');
+  // Once delivery is selected, a plain locality/street/house-number reply is
+  // fulfillment data, not a new catalog product. Without this guard phrases
+  // like `Toshkent Chilonzor 12` were interpreted as product=`toshkent chilonzor`
+  // model=`12`, destroying the selected phone right before checkout.
+  const addressTurn = Boolean(address && state.fulfillment === 'DELIVERY' && !delivery && !pickup);
+  const compactModel = addressTurn ? undefined : rawCompactModel;
 
   const hadProduct = Boolean(state.product);
   const previousProduct = state.product;
-  const productCandidate = bitoInventorySearchTerm(normalized)?.trim();
+  const productCandidate = addressTurn ? undefined : bitoInventorySearchTerm(normalized)?.trim();
   const followUpSignals = Boolean(volume || color || storage || size || compactModel || quantity !== undefined || delivery || pickup || payment || priceObjection || cheaper || advice || phone || address);
 
   if (productCandidate && isUsefulProductCandidate(productCandidate, normalized)) {
@@ -415,13 +421,18 @@ export function applySalesTurnUnderstanding(
   const state = coerceUniversalSalesState(previous);
   const before = coerceUniversalSalesState(previous);
 
+  const acceptingOfferedAlternative = !understanding.topicSwitch
+    && shouldAcceptOfferedAlternative(state, understanding, rawText);
   if (understanding.topicSwitch) {
     clearProductSelectionContext(state);
     delete state.offeredAlternative;
-  } else if (shouldAcceptOfferedAlternative(state, understanding, rawText)) {
-    acceptOfferedAlternative(state);
+  } else {
+    // Clear the rejected/unavailable selection BEFORE accepting a verified
+    // alternative. Doing it afterwards erased the accepted variant's verified
+    // price/facts and could make the next `2 ta olsamchi?` fall back to stale data.
+    if (understanding.clearUnavailableSelection || acceptingOfferedAlternative) clearUnavailableSelectionFacts(state);
+    if (acceptingOfferedAlternative) acceptOfferedAlternative(state);
   }
-  if (understanding.clearUnavailableSelection) clearUnavailableSelectionFacts(state);
 
   // Keep a conservative deterministic fallback for literal facts (phone,
   // quantity, payment, obvious volume/color) if the semantic brain omitted
@@ -501,19 +512,19 @@ export function applySalesTurnUnderstanding(
   // Literal fallbacks are safe only for attributes that are explicitly present
   // in this turn. They must never resurrect a product selection cleared by a
   // semantic topic switch.
-  if (!nextVariant && fallback.variant && fallback.variant !== before.variant && state.product) {
+  if (!acceptingOfferedAlternative && !nextVariant && fallback.variant && fallback.variant !== before.variant && state.product) {
     state.variant = fallback.variant;
     setFact(state, 'variant', fallback.variant, 'PROPOSED', 'CUSTOMER');
   }
-  if (!nextStorage && fallback.storage && fallback.storage !== before.storage) {
+  if (!acceptingOfferedAlternative && !nextStorage && fallback.storage && fallback.storage !== before.storage) {
     state.storage = fallback.storage;
     setFact(state, 'storage', fallback.storage, 'PROPOSED', 'CUSTOMER');
   }
-  if (!nextColor && fallback.color && fallback.color !== before.color) {
+  if (!acceptingOfferedAlternative && !nextColor && fallback.color && fallback.color !== before.color) {
     state.color = fallback.color;
     setFact(state, 'color', fallback.color, 'PROPOSED', 'CUSTOMER');
   }
-  if (!nextSize && fallback.size && fallback.size !== before.size) {
+  if (!acceptingOfferedAlternative && !nextSize && fallback.size && fallback.size !== before.size) {
     state.size = fallback.size;
     setFact(state, 'size', fallback.size, 'PROPOSED', 'CUSTOMER');
   }
@@ -906,6 +917,19 @@ export function likelyNeedsProductLookup(state: UniversalSalesState | undefined,
     || /\b\d+(?:[.,]\d+)?\s*(?:ta|dona|kg|g|litr|ltr|ml|шт)\b/iu.test(normalized);
   if (explicitProductNeed) return true;
   if (!value.product) return false;
+
+  // Customers often answer a seller's `Qaysi model?` with only `Ayfon 16`,
+  // `13 Pro`, `S24 Ultra`, etc. That is a catalog selection even though it
+  // contains no literal `bormi/narx/model` keyword. Tie the compact phrase to
+  // the active product family instead of treating it as generic chatter.
+  const directCandidate = bitoInventorySearchTerm(normalized)?.trim();
+  if (directCandidate) {
+    const direct = canonicalComparable(directCandidate);
+    const family = canonicalComparable(value.productFamily || value.product);
+    if (family && direct.includes(family) && /\d/u.test(directCandidate)) return true;
+    if (isModelOnlyCandidate(directCandidate) && /\d/u.test(directCandidate)) return true;
+  }
+
   return /\b(?:qora|oq|qizil|ko['‘’]?k|yashil|xotira|pamyat|gb|tb|xl|xxl|xs|delivery|yetkaz)\b/iu.test(normalized);
 }
 

@@ -6,6 +6,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import { InstagramGraphService } from './instagram-graph.service';
 import { InstagramSalesAgentService } from './instagram-sales-agent.service';
 
+const INITIAL_LOOKBACK_MS = 10 * 60 * 1000;
+
 @Injectable()
 export class InstagramDmPollerService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(InstagramDmPollerService.name);
@@ -58,10 +60,10 @@ export class InstagramDmPollerService implements OnModuleInit, OnModuleDestroy {
 
     for (const connection of connections) {
       const tickStartedAt = new Date();
+      const pollCursor = connection.dmPollCursorAt ?? new Date(tickStartedAt.getTime() - INITIAL_LOOKBACK_MS);
       if (!connection.dmPollCursorAt) {
-        await this.prisma.instagramConnection.update({ where: { userId: connection.userId }, data: { dmPollCursorAt: tickStartedAt } });
-        this.logger.debug({ event: 'instagram_dev_dm_poll_initialized', userId: this.safeId(connection.userId) });
-        continue;
+        await this.prisma.instagramConnection.update({ where: { userId: connection.userId }, data: { dmPollCursorAt: pollCursor } });
+        this.logger.debug({ event: 'instagram_dev_dm_poll_initialized', userId: this.safeId(connection.userId), lookbackMs: INITIAL_LOOKBACK_MS });
       }
 
       try {
@@ -77,7 +79,7 @@ export class InstagramDmPollerService implements OnModuleInit, OnModuleDestroy {
 
         for (const conversation of conversations) {
           const updated = this.timeOf(conversation.updatedTime);
-          if (updated > 0 && updated < connection.dmPollCursorAt.getTime()) continue;
+          if (updated > 0 && updated < pollCursor.getTime()) continue;
           conversationsChecked += 1;
           const messages = await this.graph.listConversationMessages(connection.userId, conversation.id);
           messagesFetched += messages.length;
@@ -85,7 +87,7 @@ export class InstagramDmPollerService implements OnModuleInit, OnModuleDestroy {
           for (const message of messages) {
             const createdAt = this.timeOf(message.createdTime);
             if (!createdAt) { skippedNoTimestamp += 1; continue; }
-            if (createdAt < connection.dmPollCursorAt.getTime()) { skippedOld += 1; continue; }
+            if (createdAt < pollCursor.getTime()) { skippedOld += 1; continue; }
             if (message.fromId === connection.instagramUserId) { skippedSelf += 1; continue; }
             messagesAccepted += 1;
             const routed = await this.sales.handlePolledDm(connection.userId, {
