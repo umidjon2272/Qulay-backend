@@ -1,6 +1,6 @@
 import { BadRequestException, ForbiddenException, Injectable, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { InstagramAuthMode } from '@prisma/client';
+import { InstagramAuthMode, InstagramConnection } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { InstagramCryptoService } from './instagram-crypto.service';
@@ -38,6 +38,8 @@ type GraphOptions = { method?: 'GET' | 'POST' | 'DELETE'; body?: unknown };
 
 @Injectable()
 export class InstagramGraphService {
+  private readonly tokenRefreshes = new Map<string, Promise<InstagramConnection>>();
+
   constructor(
     private readonly config: ConfigService,
     private readonly prisma: PrismaService,
@@ -387,12 +389,82 @@ export class InstagramGraphService {
     return createHash('sha256').update(value).digest('hex').slice(0, 10);
   }
 
-  private async connectionForUser(userId: string, includeError = false) {
-    const connection = await this.prisma.instagramConnection.findUnique({ where: { userId } });
+  private async connectionForUser(userId: string, includeError = false): Promise<InstagramConnection> {
+    let connection = await this.prisma.instagramConnection.findUnique({ where: { userId } });
     if (!connection?.encryptedAccessToken || (!includeError && !['CONNECTED', 'DEGRADED'].includes(connection.status))) {
       throw new ServiceUnavailableException('Instagram ulanmagan');
     }
+    if (connection.authMode === InstagramAuthMode.INSTAGRAM_LOGIN && connection.tokenExpiresAt && connection.tokenExpiresAt.getTime() <= Date.now()) {
+      const error = new UnauthorizedException({ code: 'INSTAGRAM_ACCESS_TOKEN_INVALID', message: 'Instagram Access Token yaroqsiz yoki muddati tugagan' });
+      await this.prisma.instagramConnection.update({
+        where: { userId },
+        data: { status: 'ERROR', lastErrorAt: new Date(), lastErrorCode: 'INSTAGRAM_ACCESS_TOKEN_INVALID' },
+      }).catch(() => undefined);
+      throw error;
+    }
+    if (this.shouldRefreshToken(connection)) {
+      try { connection = await this.refreshConnectionToken(connection); }
+      catch (error) {
+        if (this.errorCode(error) === 'INSTAGRAM_ACCESS_TOKEN_INVALID') {
+          await this.prisma.instagramConnection.update({
+            where: { userId },
+            data: { status: 'ERROR', lastErrorAt: new Date(), lastErrorCode: 'INSTAGRAM_ACCESS_TOKEN_INVALID' },
+          }).catch(() => undefined);
+          throw error;
+        }
+        // Keep the still-valid token on a temporary refresh failure; the
+        // actual Graph call will determine whether it remains usable.
+      }
+    }
     return connection;
+  }
+
+  private shouldRefreshToken(connection: InstagramConnection): boolean {
+    if (connection.authMode !== InstagramAuthMode.INSTAGRAM_LOGIN || !connection.tokenExpiresAt) return false;
+    const expiresAt = connection.tokenExpiresAt.getTime();
+    const now = Date.now();
+    return expiresAt > now && expiresAt <= now + 7 * 24 * 60 * 60_000;
+  }
+
+  private async refreshConnectionToken(connection: InstagramConnection): Promise<InstagramConnection> {
+    const existing = this.tokenRefreshes.get(connection.userId);
+    if (existing) return existing;
+    const task = this.performTokenRefresh(connection).finally(() => {
+      if (this.tokenRefreshes.get(connection.userId) === task) this.tokenRefreshes.delete(connection.userId);
+    });
+    this.tokenRefreshes.set(connection.userId, task);
+    return task;
+  }
+
+  private async performTokenRefresh(connection: InstagramConnection): Promise<InstagramConnection> {
+    const currentToken = this.crypto.decrypt(connection.encryptedAccessToken);
+    const base = this.config.get<string>('instagram.loginGraphBaseUrl', 'https://graph.instagram.com').replace(/\/$/u, '');
+    const url = new URL(`${base}/refresh_access_token`);
+    url.searchParams.set('grant_type', 'ig_refresh_token');
+    url.searchParams.set('access_token', currentToken);
+    const response = await fetch(url.toString(), { signal: AbortSignal.timeout(15_000) }).catch(() => {
+      throw new ServiceUnavailableException({ code: 'INSTAGRAM_TOKEN_REFRESH_UNAVAILABLE', message: 'Instagram tokenini yangilab bo‘lmadi' });
+    });
+    const rawBody = await response.text().catch(() => '');
+    let body: { access_token?: string; token_type?: string; expires_in?: number } & GraphErrorBody;
+    try { body = rawBody ? parseInstagramJson<typeof body>(rawBody) : {}; }
+    catch { body = {}; }
+    if (!response.ok || !body.access_token) {
+      const code = body.error?.code;
+      if (code === 190 || response.status === 401) {
+        throw new UnauthorizedException({ code: 'INSTAGRAM_ACCESS_TOKEN_INVALID', message: 'Instagram Access Token yaroqsiz yoki muddati tugagan' });
+      }
+      throw new ServiceUnavailableException({ code: 'INSTAGRAM_TOKEN_REFRESH_FAILED', message: 'Instagram tokenini yangilab bo‘lmadi' });
+    }
+    const refreshedAt = new Date();
+    const expiresIn = typeof body.expires_in === 'number' && Number.isFinite(body.expires_in) && body.expires_in > 0 ? body.expires_in : 60 * 24 * 60 * 60;
+    const tokenExpiresAt = new Date(refreshedAt.getTime() + expiresIn * 1000);
+    const encryptedAccessToken = this.crypto.encrypt(body.access_token);
+    await this.prisma.instagramConnection.update({
+      where: { userId: connection.userId },
+      data: { encryptedAccessToken, tokenExpiresAt, tokenRefreshedAt: refreshedAt },
+    });
+    return { ...connection, encryptedAccessToken, tokenExpiresAt, tokenRefreshedAt: refreshedAt };
   }
 
   private async touch(userId: string): Promise<void> {

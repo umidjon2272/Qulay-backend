@@ -57,7 +57,13 @@ export class InstagramIntegrationService {
     };
   }
 
-  async connect(userId: string, input: { instagramUserId: string; accessToken: string; authMode?: InstagramAuthMode }): Promise<InstagramSettings> {
+  async connect(userId: string, input: {
+    instagramUserId: string;
+    accessToken: string;
+    authMode?: InstagramAuthMode;
+    tokenExpiresAt?: Date;
+    tokenRefreshedAt?: Date;
+  }): Promise<InstagramSettings> {
     if (!this.graph.configured()) throw new ServiceUnavailableException('Instagram server sozlamalari hali tayyor emas');
     const token = input.accessToken.trim();
     const instagramUserId = input.instagramUserId.trim();
@@ -87,6 +93,8 @@ export class InstagramIntegrationService {
         status,
         webhookSubscribed,
         salesAgentEnabled: true,
+        tokenExpiresAt: input.tokenExpiresAt ?? null,
+        tokenRefreshedAt: input.tokenRefreshedAt ?? null,
         connectedAt: now,
         lastValidatedAt: now,
         lastErrorAt: lastErrorCode ? now : null,
@@ -103,6 +111,8 @@ export class InstagramIntegrationService {
         status,
         webhookSubscribed,
         salesAgentEnabled: true,
+        tokenExpiresAt: input.tokenExpiresAt ?? null,
+        tokenRefreshedAt: input.tokenRefreshedAt ?? null,
         connectedAt: now,
         lastValidatedAt: now,
         lastErrorAt: lastErrorCode ? now : null,

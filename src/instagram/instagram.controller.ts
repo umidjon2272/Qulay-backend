@@ -91,7 +91,7 @@ export class InstagramController {
   @UseGuards(JwtAuthGuard)
   async authUrl(@CurrentUser() user: AuthenticatedUser) {
     await this.subscriptions.assertFeatureAllowed(user.sub, 'INSTAGRAM_SALES');
-    return { url: this.oauth.connectUrl(user.sub) };
+    return { url: await this.oauth.connectUrl(user.sub) };
   }
 
   @Get('callback')

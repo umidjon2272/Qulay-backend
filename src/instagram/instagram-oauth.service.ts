@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InstagramAuthMode } from '@prisma/client';
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { InstagramIntegrationService } from './instagram-integration.service';
 import { parseInstagramJson } from './instagram-api-helpers';
@@ -19,8 +19,6 @@ type OAuthErrorBody = { error_message?: string; error_type?: string; code?: numb
 
 @Injectable()
 export class InstagramOAuthService {
-  private readonly usedStates = new Map<string, number>();
-
   constructor(
     private readonly config: ConfigService,
     private readonly prisma: PrismaService,
@@ -31,10 +29,22 @@ export class InstagramOAuthService {
     return this.config.get<boolean>('instagram.oauthReady') === true;
   }
 
-  connectUrl(userId: string): string {
+  async connectUrl(userId: string): Promise<string> {
     this.assertReady();
-    this.purgeStates();
-    const state = this.signState({ userId, nonce: randomBytes(18).toString('base64url'), expiresAt: Date.now() + 10 * 60_000 });
+    const now = new Date();
+    const payload: OAuthState = { userId, nonce: randomBytes(18).toString('base64url'), expiresAt: now.getTime() + 10 * 60_000 };
+    await this.prisma.instagramOAuthState.deleteMany({
+      where: {
+        OR: [
+          { expiresAt: { lt: now } },
+          { consumedAt: { not: null }, createdAt: { lt: new Date(now.getTime() - 24 * 60 * 60_000) } },
+        ],
+      },
+    }).catch(() => undefined);
+    await this.prisma.instagramOAuthState.create({
+      data: { userId, nonceHash: this.nonceHash(payload.nonce), expiresAt: new Date(payload.expiresAt) },
+    });
+    const state = this.signState(payload);
     const params = new URLSearchParams({
       client_id: this.config.getOrThrow<string>('instagram.appId'),
       redirect_uri: this.config.getOrThrow<string>('instagram.oauthRedirectUri'),
@@ -50,6 +60,7 @@ export class InstagramOAuthService {
   async callback(code: string | undefined, stateValue: string | undefined, oauthError?: string): Promise<void> {
     this.assertReady();
     const state = this.verifyState(stateValue);
+    await this.consumeState(state);
     const owner = await this.prisma.user.findUnique({ where: { id: state.userId }, select: { id: true } });
     if (!owner) throw this.failure('INSTAGRAM_OAUTH_USER_NOT_FOUND', 'QULAY AI foydalanuvchisi topilmadi');
     if (oauthError) throw this.failure('INSTAGRAM_OAUTH_CANCELLED', 'Instagram ulanishi bekor qilindi');
@@ -59,7 +70,17 @@ export class InstagramOAuthService {
     if (!short.access_token || !short.user_id) throw this.failure('INSTAGRAM_OAUTH_TOKEN_INVALID', 'Instagram token javobi to‘liq emas');
     const longLived = await this.exchangeLongLivedToken(short.access_token);
     if (!longLived.access_token) throw this.failure('INSTAGRAM_OAUTH_LONG_LIVED_TOKEN_INVALID', 'Instagram uzoq muddatli token bermadi');
-    await this.integration.connect(state.userId, { instagramUserId: String(short.user_id), accessToken: longLived.access_token, authMode: InstagramAuthMode.INSTAGRAM_LOGIN });
+    const tokenRefreshedAt = new Date();
+    const expiresInSeconds = typeof longLived.expires_in === 'number' && Number.isFinite(longLived.expires_in) && longLived.expires_in > 0
+      ? longLived.expires_in
+      : undefined;
+    await this.integration.connect(state.userId, {
+      instagramUserId: String(short.user_id),
+      accessToken: longLived.access_token,
+      authMode: InstagramAuthMode.INSTAGRAM_LOGIN,
+      tokenExpiresAt: expiresInSeconds ? new Date(tokenRefreshedAt.getTime() + expiresInSeconds * 1000) : undefined,
+      tokenRefreshedAt,
+    });
   }
 
   private async exchangeCode(code: string): Promise<ShortTokenResponse> {
@@ -113,8 +134,7 @@ export class InstagramOAuthService {
       const expected = createHmac('sha256', this.stateSecret()).update(encoded).digest('base64url');
       if (signature.length !== expected.length || !timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) throw new Error('signature');
       const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as OAuthState;
-      if (!payload.userId || !payload.nonce || payload.expiresAt < Date.now() || this.usedStates.has(payload.nonce)) throw new Error('expired');
-      this.usedStates.set(payload.nonce, payload.expiresAt);
+      if (!payload.userId || !payload.nonce || payload.expiresAt < Date.now()) throw new Error('expired');
       return payload;
     } catch {
       throw this.failure('INSTAGRAM_OAUTH_INVALID_STATE', 'Instagram login sessiyasi yaroqsiz yoki muddati tugagan');
@@ -125,9 +145,24 @@ export class InstagramOAuthService {
     return `${this.config.getOrThrow<string>('instagram.appSecret')}:${this.config.getOrThrow<string>('jwt.accessSecret')}`;
   }
 
-  private purgeStates(): void {
-    const now = Date.now();
-    for (const [nonce, expiresAt] of this.usedStates) if (expiresAt < now) this.usedStates.delete(nonce);
+  private async consumeState(state: OAuthState): Promise<void> {
+    const now = new Date();
+    const consumed = await this.prisma.instagramOAuthState.updateMany({
+      where: {
+        userId: state.userId,
+        nonceHash: this.nonceHash(state.nonce),
+        consumedAt: null,
+        expiresAt: { gt: now },
+      },
+      data: { consumedAt: now },
+    });
+    if (consumed.count !== 1) {
+      throw this.failure('INSTAGRAM_OAUTH_INVALID_STATE', 'Instagram login sessiyasi yaroqsiz yoki muddati tugagan');
+    }
+  }
+
+  private nonceHash(nonce: string): string {
+    return createHash('sha256').update(nonce).digest('hex');
   }
 
   private assertReady(): void {

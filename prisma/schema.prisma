@@ -288,6 +288,7 @@ model User {
   instagramConnection    InstagramConnection?
   instagramSalesSessions InstagramSalesSession[]
   instagramAutomations   InstagramCommentAutomation[]
+  instagramOAuthStates   InstagramOAuthState[]
   instagramAutomationReceipts InstagramAutomationReceipt[]
   googleConnection       GoogleConnection?
   bitoConnection         BitoConnection?
@@ -634,6 +635,8 @@ model InstagramConnection {
   lastUsedAt           DateTime?
   commentPollCursorAt  DateTime?
   dmPollCursorAt       DateTime?
+  tokenExpiresAt       DateTime?
+  tokenRefreshedAt     DateTime?
   lastErrorAt          DateTime?
   lastErrorCode        String?                   @db.VarChar(100)
   createdAt            DateTime                  @default(now())
@@ -642,6 +645,19 @@ model InstagramConnection {
 
   @@index([status])
   @@index([username])
+}
+
+model InstagramOAuthState {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @db.Uuid
+  nonceHash  String    @unique @db.Char(64)
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@index([expiresAt, consumedAt])
 }
 
 model InstagramSalesSession {
