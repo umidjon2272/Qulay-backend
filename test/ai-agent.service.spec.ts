@@ -15,11 +15,12 @@ describe('AiAgentService', () => {
   const usage = { logTextUsage: jest.fn(), logToolUsage: jest.fn() } as any;
   const subscriptions = { assertAiAllowed: jest.fn() } as any;
   const activityLog = { record: jest.fn() } as any;
+  const productKnowledge = { search: jest.fn().mockResolvedValue([]) } as any;
   let service: AiAgentService;
 
   beforeEach(() => {
     jest.clearAllMocks();
-    service = new AiAgentService(prisma, provider, registry, execution, usage, subscriptions, activityLog, { listModelTools: jest.fn().mockResolvedValue([]) } as any);
+    service = new AiAgentService(prisma, provider, registry, execution, usage, subscriptions, activityLog, { listRelevantModelTools: jest.fn().mockResolvedValue([]) } as any, productKnowledge);
   });
 
   describe('expireStale', () => {
@@ -72,4 +73,84 @@ describe('AiAgentService', () => {
       expect(execution.execute).not.toHaveBeenCalled();
     });
   });
+
+  describe('product capability surface', () => {
+    it('keeps WhatsApp and Instagram out of the active owner AI capability prompt', () => {
+      const prompt = (service as any).systemPrompt(
+        { firstName: 'Owner', lastName: 'Test', timezone: 'Asia/Tashkent', language: 'uz', memoryEnabled: true },
+        [],
+        null,
+      ) as string;
+
+      expect(prompt).toContain('Hozir faol sotuv kanali — Telegram Sales Agent');
+      expect(prompt).toContain('WhatsApp va Instagram product sifatida vaqtincha to‘xtatilgan');
+      expect(prompt).not.toContain('INSTAGRAM SALES BOSHQARUVI');
+      expect(prompt).not.toContain('Telegram, WhatsApp va Instagram sales agent uchun biznes playbook');
+      expect(prompt).not.toContain('Telegram/WhatsApp sales agent ishlatadigan Business Sales Profile');
+    });
+
+    it('never exposes paused WhatsApp or Instagram tools to the owner AI selector', () => {
+      registry.getToolDefinitionsForModel.mockReturnValueOnce([
+        { name: 'get_instagram_sales_settings' },
+        { name: 'update_instagram_sales_settings' },
+        { name: 'send_whatsapp_message' },
+        { name: 'create_task' },
+      ]);
+
+      const selected = (service as any).selectToolsForMessage('Instagram sotuv agentini yoq va WhatsApp xabar yubor', true, []) as Set<string>;
+      expect([...selected]).not.toEqual(expect.arrayContaining([
+        'get_instagram_sales_settings',
+        'update_instagram_sales_settings',
+        'send_whatsapp_message',
+      ]));
+    });
+  });
+
+  describe('new external sales privacy classifier', () => {
+    it('keeps a greeting eligible for the professional inbox when semantic AI is temporarily unavailable', async () => {
+      provider.complete.mockRejectedValueOnce(new Error('provider down'));
+      await expect(service.classifyNewExternalSalesTurn('user-a', 'Salom')).resolves.toMatchObject({ sales: true });
+    });
+
+    it('does not convert an ambiguous general DM into a customer when semantic AI is temporarily unavailable', async () => {
+      provider.complete.mockRejectedValueOnce(new Error('provider down'));
+      await expect(service.classifyNewExternalSalesTurn('user-a', 'kanalga reklama tashlab ber')).resolves.toMatchObject({ sales: false });
+      provider.complete.mockRejectedValueOnce(new Error('provider down'));
+      await expect(service.classifyNewExternalSalesTurn('user-a', 'ha')).resolves.toMatchObject({ sales: false });
+    });
+
+    it('does not convert a semantic GENERAL or ACKNOWLEDGEMENT turn into a new customer', async () => {
+      const semantic = (intent: string) => ({
+        message: {
+          role: 'assistant',
+          content: '',
+          tool_calls: [{ function: { name: 'understand_sales_turn', arguments: JSON.stringify({
+            intent, topicSwitch: false, followUp: false, needsCatalogLookup: false, catalogScope: 'NONE',
+            clearUnavailableSelection: false, businessFactRequest: 'NONE', answerGoal: 'classify opening',
+          }) } }],
+        },
+        model: 'fixture',
+        usage: {},
+      });
+      provider.complete.mockResolvedValueOnce(semantic('GENERAL'));
+      await expect(service.classifyNewExternalSalesTurn('user-a', 'kanalga reklama tashlab ber')).resolves.toMatchObject({ sales: false, intent: 'GENERAL' });
+      provider.complete.mockResolvedValueOnce(semantic('ACKNOWLEDGEMENT'));
+      await expect(service.classifyNewExternalSalesTurn('user-a', 'ha')).resolves.toMatchObject({ sales: false, intent: 'ACKNOWLEDGEMENT' });
+    });
+
+    it('allows a semantic GREETING to open a professional non-contact inbox thread', async () => {
+      provider.complete.mockResolvedValueOnce({
+        message: {
+          role: 'assistant', content: '',
+          tool_calls: [{ function: { name: 'understand_sales_turn', arguments: JSON.stringify({
+            intent: 'GREETING', topicSwitch: false, followUp: false, needsCatalogLookup: false, catalogScope: 'NONE',
+            clearUnavailableSelection: false, businessFactRequest: 'NONE', answerGoal: 'greet naturally',
+          }) } }],
+        },
+        model: 'fixture', usage: {},
+      });
+      await expect(service.classifyNewExternalSalesTurn('user-a', 'Salom')).resolves.toMatchObject({ sales: true, intent: 'GREETING' });
+    });
+  });
+
 });

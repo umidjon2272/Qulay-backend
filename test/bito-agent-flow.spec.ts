@@ -2,7 +2,7 @@ import { AiAgentService } from '../src/ai-agent/ai-agent.service';
 import { BITO_INVENTORY_TOOL_NAME } from '../src/bito/bito-tool-bridge.service';
 
 describe('Bito chat orchestration (mock provider/ERP)', () => {
-  let prisma: any, provider: any, execution: any, bridge: any, service: AiAgentService;
+  let prisma: any, provider: any, execution: any, bridge: any, productKnowledge: any, service: AiAgentService;
   const inventory = { name: BITO_INVENTORY_TOOL_NAME, description: 'Inventory', sideEffect: 'READ', requiresConfirmation: false, parameters: { type: 'object', properties: {} } };
   beforeEach(() => {
     prisma = {
@@ -11,12 +11,15 @@ describe('Bito chat orchestration (mock provider/ERP)', () => {
       conversation: { findFirst: jest.fn().mockResolvedValue({ id: 'c' }), update: jest.fn().mockResolvedValue({}) },
       message: { findMany: jest.fn().mockResolvedValue([]), create: jest.fn().mockResolvedValue({}) },
       pendingAgentAction: { findFirst: jest.fn().mockResolvedValue(null) },
+      salesPlaybookRule: { findMany: jest.fn().mockResolvedValue([]) },
+      businessSalesProfile: { findUnique: jest.fn().mockResolvedValue(null) },
     };
     provider = { complete: jest.fn().mockResolvedValue({ message: { role: 'assistant', content: 'Cola — 12 dona.' }, model: 'fixture', usage: {} }) };
     execution = { execute: jest.fn().mockResolvedValue({ status: 'success', data: { source: 'BITO', complete: true, totalPositions: 46, matchedCount: 46, items: [{ name: 'Cola', quantity: 12, unit: 'dona' }] } }) };
     bridge = { listRelevantModelTools: jest.fn().mockResolvedValue([inventory, { ...inventory, name: 'bito__get_sales' }, { ...inventory, name: 'bito__get_profit' }]) };
     const registry = { getToolDefinitionsForModel: () => ['search_files', 'search_google_drive_files', 'get_today_finance', 'create_task', 'create_reminder', 'bito_connection_status'].map(name => ({ name, description: name, inputSchema: {} })) };
-    service = new AiAgentService(prisma, provider, registry as any, execution, { logToolUsage: jest.fn().mockResolvedValue({}), logTextUsage: jest.fn().mockResolvedValue({}) } as any, { assertAiAllowed: jest.fn() } as any, { record: jest.fn().mockResolvedValue({}) } as any, bridge);
+    productKnowledge = { search: jest.fn().mockResolvedValue([]) };
+    service = new AiAgentService(prisma, provider, registry as any, execution, { logToolUsage: jest.fn().mockResolvedValue({}), logTextUsage: jest.fn().mockResolvedValue({}) } as any, { assertAiAllowed: jest.fn() } as any, { record: jest.fn().mockResolvedValue({}) } as any, bridge, productKnowledge as any);
   });
   it.each(['Omborda nimalar bor?', 'Bitoda qidir omborda nimalar bor', 'Omborda nechta mahsulot bor?', 'Cola qancha qoldi?'])('prefetches inventory without file tools or confirmation: %s', async message => {
     const result = await service.chat('u', { conversationId: 'c', message });
@@ -124,6 +127,38 @@ describe('Bito chat orchestration (mock provider/ERP)', () => {
     const [, tools] = provider.complete.mock.calls[0];
     expect(tools.map((tool: any) => tool.function.name)).toEqual(['bito_connection_status']);
     expect(execution.execute).not.toHaveBeenCalled();
+  });
+
+  it('does not let iPhone 13 Pro owner knowledge revive a Bito NOT_FOUND iPhone 16 Pro request', async () => {
+    productKnowledge.search.mockResolvedValue([{
+      authoritative: false, name: 'iPhone 13 Pro', canonicalName: 'iPhone 13 Pro', availability: 'AVAILABLE',
+      publicPrice: 4_800_000, currency: 'UZS',
+    }]);
+    execution.execute.mockResolvedValueOnce({
+      status: 'success',
+      data: { availabilityStatus: 'NOT_FOUND', items: [], familyAlternatives: [{ name: 'iPhone 13 Pro', quantity: 3, price: 4_800_000 }] },
+    });
+    const salesState: any = { version: 1, customer: true, conversationMode: 'SALES', product: 'iphone', productFamily: 'iphone', model: '16 pro', variant: '16 pro' };
+
+    await service.chat('u', { conversationId: 'c', message: '16 pro bormi?' }, undefined, undefined, {
+      externalSales: true, professionalInbox: true, newSalesEpoch: false, channel: 'TELEGRAM', salesState,
+    });
+
+    expect(salesState.factStatus?.model?.status).toBe('UNAVAILABLE');
+    expect(salesState.model).toBe('16 pro');
+    expect(salesState.offeredAlternatives?.[0]?.name).toContain('13 Pro');
+    expect(salesState.acceptedOffer).toBeUndefined();
+  });
+
+  it('gives an honest natural no-silence reply when live Bito stock cannot be checked for a Telegram customer', async () => {
+    execution.execute.mockRejectedValueOnce(new Error('BITO_MCP_HTTP_500 secret'));
+    const salesState = { version: 1 as const, customer: true, conversationMode: 'SALES' as const, product: 'cola' };
+    const result = await service.chat('u', { conversationId: 'c', message: 'Cola bormi?' }, undefined, undefined, {
+      externalSales: true, professionalInbox: true, newSalesEpoch: false, channel: 'TELEGRAM', salesState,
+    });
+    expect(result.message).toContain('Qoldiqni hozir tekshira olmadim');
+    expect(result.message).not.toContain('secret');
+    expect(result.message.trim()).not.toBe('');
   });
 
 });

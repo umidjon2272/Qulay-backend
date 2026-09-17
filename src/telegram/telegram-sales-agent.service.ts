@@ -241,11 +241,30 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
     }
     if ((this.agentSendInFlight.get(peerKey) ?? 0) > now) return;
 
-    this.ownerPauseUntil.set(peerKey, now + OWNER_TAKEOVER_PAUSE_MS);
-    await this.prisma.telegramSalesSession.updateMany({
-      where: { userId, peerId: outgoing.peer.peerId },
-      data: { ownerPausedUntil: new Date(now + OWNER_TAKEOVER_PAUSE_MS), lastOutboundAt: new Date(outgoing.sentAt) },
-    }).catch(() => undefined);
+    const pauseUntil = new Date(now + OWNER_TAKEOVER_PAUSE_MS);
+    this.ownerPauseUntil.set(peerKey, pauseUntil.getTime());
+    const existing = await this.prisma.telegramSalesSession.findUnique({
+      where: { userId_peerId: { userId, peerId: outgoing.peer.peerId } },
+    }).catch(() => null);
+    if (existing) {
+      const state = coerceUniversalSalesState(existing.salesState);
+      if (this.isPersistentCustomerSalesState(state)) {
+        state.customer = true;
+        state.conversationMode = 'SALES';
+        state.handoffState = 'OWNER_PAUSED';
+        state.ownerPauseUntil = pauseUntil.toISOString();
+        state.salesStage = 'HANDOFF';
+      }
+      await this.prisma.telegramSalesSession.update({
+        where: { id: existing.id },
+        data: { ownerPausedUntil: pauseUntil, lastOutboundAt: new Date(outgoing.sentAt), salesState: state as unknown as Prisma.InputJsonValue },
+      }).catch(() => undefined);
+    } else {
+      await this.prisma.telegramSalesSession.updateMany({
+        where: { userId, peerId: outgoing.peer.peerId },
+        data: { ownerPausedUntil: pauseUntil, lastOutboundAt: new Date(outgoing.sentAt) },
+      }).catch(() => undefined);
+    }
   }
 
   private async handleIncoming(userId: string, incoming: TelegramIncomingMessage): Promise<void> {
@@ -285,6 +304,7 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
     const key = `${userId}:${incoming.peer.peerId}:${incoming.messageId}`;
     if (this.processing.has(key)) return;
     this.processing.add(key);
+    let customerThreadConfirmed = false;
     try {
       await Promise.all([
         this.subscriptions.assertFeatureAllowed(userId, 'TELEGRAM_SALES'),
@@ -325,7 +345,17 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
       if (incoming.peer.type === 'USER' && salesSession?.ownerPausedUntil && salesSession.ownerPausedUntil.getTime() > Date.now()) return;
 
       const addressed = incoming.mentioned || incoming.replyToOwnMessage;
-      const activeSalesContext = incoming.peer.type === 'USER' ? Boolean(salesSession) : Boolean(salesSession?.salesContextUntil && salesSession.salesContextUntil.getTime() > Date.now());
+      const persistedState = coerceUniversalSalesState(salesSession?.salesState);
+      const persistentPrivateCustomer = incoming.peer.type === 'USER' && this.isPersistentCustomerSalesState(persistedState);
+      if (persistentPrivateCustomer) customerThreadConfirmed = true;
+      const activeSalesContext = incoming.peer.type === 'USER'
+        ? persistentPrivateCustomer
+        : Boolean(salesSession?.salesContextUntil && salesSession.salesContextUntil.getTime() > Date.now());
+
+      // Privacy is strict for owner's saved Telegram contacts: a normal personal
+      // chat must never become a customer merely because it contains a sales-like
+      // word. Only an already-persistent SALES session may continue for contacts.
+      if (incoming.peer.type === 'USER' && incoming.senderIsContact && !persistentPrivateCustomer) return;
 
       // Never spend STT/AI credits on an arbitrary personal voice note. A voice
       // starts/continues sales only in a selected group, an active sales DM, or
@@ -354,6 +384,7 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
         text = [text, transcript.text].filter(Boolean).join('\n').trim();
       }
       let imageUnderstanding: SalesImageUnderstanding | undefined;
+      let openingClassifierText = text;
       if (incoming.image) {
         const imageEligible = incoming.peer.type === 'GROUP'
           ? addressed || activeSalesContext
@@ -371,7 +402,17 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
         } catch (error) {
           this.logger.warn({ event: 'telegram_sales_image_understanding_failed', userId: this.safeUserId(userId), code: this.errorCode(error) });
         }
-        text = text || 'Shunaqasi bormi?';
+        if (!text) {
+          const visualSummary = [imageUnderstanding?.summary, imageUnderstanding?.searchQuery]
+            .filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+            .join(' | ')
+            .slice(0, 1200);
+          openingClassifierText = visualSummary ? `Mijoz rasm yubordi. Rasm tahlili: ${visualSummary}` : 'Mijoz faqat rasm yubordi.';
+          // Once routing confirms this is a real customer turn, keep the natural
+          // sales-facing wording while the visualProductHint carries the actual
+          // observed product details into the shared sales brain.
+          text = 'Shunaqasi bormi?';
+        }
       }
       if (!text) return;
 
@@ -382,10 +423,13 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
         // like “ha”, “mayli”, “rahmat”, “boshqasi-chi?” can be meaningful and
         // must not be killed by regexes. Truly unrelated chatter is classified
         // as NON_SALES by AiAgent and gets no reply.
-      } else {
-        // salesPrivateChats=true is an explicit Professional Sales Inbox opt-in.
-        // Every inbound USER message is therefore a customer turn; semantic AI
-        // decides what it means instead of regex/privacy gates silently dropping it.
+      } else if (!persistentPrivateCustomer) {
+        // New non-contact DMs are classified semantically before any durable
+        // customer session is created. A greeting may open a professional inbox
+        // conversation; irrelevant/personal/spam turns stay completely untouched.
+        const opening = await this.ai.classifyNewExternalSalesTurn(userId, openingClassifierText || text, turn.signal);
+        if (!opening.sales) return;
+        customerThreadConfirmed = true;
       }
 
       if (!salesSession) salesSession = await this.ensureSalesSession(userId, incoming);
@@ -394,9 +438,21 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
       // The AI sales brain, not a regex parser, owns semantic state updates.
       // The backend state remains a verified guardrail and Bito truth cache.
       const salesState = coerceUniversalSalesState(salesSession.salesState);
+      salesState.customer = true;
+      salesState.conversationMode = 'SALES';
+      salesState.handoffState = 'AI_ACTIVE';
+      delete salesState.ownerPauseUntil;
+      // Persist the CUSTOMER/SALES marker before calling the model. If the AI
+      // provider fails on this very first accepted lead turn, the next short
+      // message must still continue the same customer thread instead of being
+      // reclassified as an unrelated new DM.
       await this.prisma.telegramSalesSession.update({
         where: { id: salesSession.id },
-        data: { salesContextUntil: contextUntil, ownerPausedUntil: null },
+        data: {
+          salesContextUntil: contextUntil,
+          ownerPausedUntil: null,
+          salesState: salesState as unknown as Prisma.InputJsonValue,
+        },
       });
 
       const result = await this.ai.chat(
@@ -438,13 +494,32 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
       }
       if (result.pendingConfirmation) answer = 'Bu qadam uchun sotuvchi tasdig‘i kerak. Hozircha buyurtma ma’lumotlarini tayyorlab turaman.';
       answer = customerSafeSalesAnswer(answer, salesState);
+      const lastSellerQuestion = this.extractLastSellerQuestion(answer);
+      if (lastSellerQuestion) {
+        salesState.lastSellerQuestion = lastSellerQuestion;
+        await this.prisma.telegramSalesSession.update({
+          where: { id: salesSession.id },
+          data: { salesState: salesState as unknown as Prisma.InputJsonValue },
+        });
+      }
       await this.safeReply(userId, incoming.peer.peerId, answer);
       const replyContextUntil = salesState.lastIntent === 'SOFT_EXIT' ? new Date(Date.now() + SALES_SOFT_EXIT_WINDOW_MS) : contextUntil;
       await this.markProcessed(salesSession.id, incoming.messageId, true, replyContextUntil);
     } catch (error) {
       if (error instanceof ForbiddenException) {
         this.logger.warn({ event: 'telegram_sales_message_blocked', userId: this.safeUserId(userId), code: this.errorCode(error) });
-        if (incoming.peer.type === 'USER') await this.safeReply(userId, incoming.peer.peerId, 'Salom 🙂 Hozir AI javobida vaqtinchalik cheklov bor. Savolingizni yozib qoldiring, yordam berishga harakat qilaman.').catch(() => undefined);
+        if (incoming.peer.type === 'USER') {
+          let confirmed = customerThreadConfirmed;
+          if (!confirmed) {
+            const existing = await this.prisma.telegramSalesSession.findUnique({
+              where: { userId_peerId: { userId, peerId: this.salesSessionPeerId(incoming) } },
+            }).catch(() => null);
+            confirmed = Boolean(existing && this.isPersistentCustomerSalesState(existing.salesState));
+          }
+          if (confirmed) {
+            await this.safeReply(userId, incoming.peer.peerId, 'Salom 🙂 Hozir AI javobida vaqtinchalik cheklov bor. Savolingizni yozib qoldiring, yordam berishga harakat qilaman.').catch(() => undefined);
+          }
+        }
         return;
       }
       this.logger.warn({
@@ -457,7 +532,7 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
       // Only an already-active customer conversation gets a fallback. An
       // uncertain personal chat must never receive an automated error message.
       const existing = await this.prisma.telegramSalesSession.findUnique({ where: { userId_peerId: { userId, peerId: this.salesSessionPeerId(incoming) } } }).catch(() => null);
-      if (incoming.peer.type === 'USER' || (existing?.salesContextUntil && existing.salesContextUntil.getTime() > Date.now())) {
+      if ((incoming.peer.type === 'USER' && customerThreadConfirmed) || (incoming.peer.type === 'GROUP' && existing?.salesContextUntil && existing.salesContextUntil.getTime() > Date.now())) {
         await this.safeReply(userId, incoming.peer.peerId, 'Hozir javob tayyorlashda kichik uzilish bo‘ldi. Savolingizni yana bir marta yozib yuboring, davom etaman.').catch(() => undefined);
       }
     } finally {
@@ -549,6 +624,25 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
     }
   }
 
+  private extractLastSellerQuestion(answer: string): string | undefined {
+    const matches = answer.match(/[^?\n]{1,300}\?/gu);
+    const question = matches?.length ? matches[matches.length - 1].replace(/^[\s.!]+/u, '').trim() : undefined;
+    return question ? question.slice(0, 300) : undefined;
+  }
+
+  private isPersistentCustomerSalesState(value: unknown): boolean {
+    const state = coerceUniversalSalesState(value);
+    if (state.customer === true && state.conversationMode === 'SALES') return true;
+    // Backward compatibility for customer threads created before the explicit
+    // CUSTOMER/SALES marker existed. A substantive sales fact is enough; a bare
+    // historical session or greeting is not.
+    return Boolean(
+      state.product || state.productFamily || state.model || state.storage || state.variant || state.color || state.size
+      || state.quantity || state.budget || state.fulfillment || state.address || state.phone || state.paymentMethod
+      || state.acceptedOffer || state.offeredAlternative || state.offeredAlternatives?.length,
+    );
+  }
+
   private async ensureSalesSession(userId: string, incoming: TelegramIncomingMessage) {
     const sessionPeerId = this.salesSessionPeerId(incoming);
     const existing = await this.prisma.telegramSalesSession.findUnique({
@@ -585,6 +679,7 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
           peerName: incoming.peer.displayName,
           conversationId: conversation.id,
           salesContextUntil: new Date(Date.now() + SALES_CONTEXT_WINDOW_MS),
+          salesState: { version: 1, customer: true, conversationMode: 'SALES', salesStage: 'DISCOVERY', handoffState: 'AI_ACTIVE' },
         },
       });
     });

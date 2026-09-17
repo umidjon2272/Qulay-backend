@@ -130,6 +130,18 @@ export type UniversalSalesState = {
   requestedAdvice?: boolean;
   factStatus?: Partial<Record<SalesFactKey, SalesFact>>;
   offeredAlternative?: SalesOfferedAlternative;
+  offeredAlternatives?: SalesOfferedAlternative[];
+  customer?: boolean;
+  conversationMode?: 'SALES';
+  salesStage?: 'DISCOVERY' | 'QUALIFYING' | 'OFFER' | 'NEGOTIATION' | 'FULFILLMENT' | 'CHECKOUT' | 'HANDOFF';
+  lastSellerQuestion?: string;
+  lastOfferedProducts?: string[];
+  acceptedOffer?: string;
+  quotedPrice?: number;
+  previousQuote?: number;
+  priceObjection?: boolean;
+  handoffState?: 'AI_ACTIVE' | 'OWNER_PAUSED' | 'OWNER_ACTIVE' | 'BLOCKED';
+  ownerPauseUntil?: string;
   updatedAt?: string;
 };
 
@@ -172,7 +184,7 @@ export function normalizeSalesTextForUnderstanding(input: string): string {
     .toLocaleLowerCase();
 
   const replacements: Array<[RegExp, string]> = [
-    [/\b(?:dastaf?ka|dostaf?ka|dostavka|доставк\p{L}*)\b/giu, ' delivery '],
+    [/\b(?:dastaf?ka|dastavka|dostaf?ka|dostavka|доставк\p{L}*)\b/giu, ' delivery '],
     [/\b(?:qmat|qimmatku|qimmatmi|qimmat)\b/giu, ' qimmat '],
     [/\b(?:arzonro|arzonroq|arzonrogi|arzonrog'i|arzonrog)\b/giu, ' arzonroq '],
     [/\b(?:qanca|qanch|qancha)\b/giu, ' qancha '],
@@ -204,7 +216,7 @@ export function coerceUniversalSalesState(value: unknown): UniversalSalesState {
     const raw = source[key as string];
     if (typeof raw === 'string' && raw.trim()) (state as Record<string, unknown>)[key as string] = raw.trim().slice(0, max);
   };
-  for (const key of ['product', 'productFamily', 'variant', 'model', 'storage', 'color', 'size', 'budget', 'address', 'phone', 'timing', 'updatedAt'] as const) {
+  for (const key of ['product', 'productFamily', 'variant', 'model', 'storage', 'color', 'size', 'budget', 'address', 'phone', 'timing', 'lastSellerQuestion', 'acceptedOffer', 'ownerPauseUntil', 'updatedAt'] as const) {
     stringField(key, key === 'address' ? 500 : 300);
   }
   if (typeof source.quantity === 'number' && Number.isFinite(source.quantity) && source.quantity > 0) state.quantity = Math.min(source.quantity, 1_000_000);
@@ -218,24 +230,41 @@ export function coerceUniversalSalesState(value: unknown): UniversalSalesState {
   if (typeof source.wantsExactStock === 'boolean') state.wantsExactStock = source.wantsExactStock;
   if (typeof source.requestedCheaper === 'boolean') state.requestedCheaper = source.requestedCheaper;
   if (typeof source.requestedAdvice === 'boolean') state.requestedAdvice = source.requestedAdvice;
+  if (typeof source.customer === 'boolean') state.customer = source.customer;
+  if (source.conversationMode === 'SALES') state.conversationMode = 'SALES';
+  if (['DISCOVERY', 'QUALIFYING', 'OFFER', 'NEGOTIATION', 'FULFILLMENT', 'CHECKOUT', 'HANDOFF'].includes(String(source.salesStage))) state.salesStage = source.salesStage as UniversalSalesState['salesStage'];
+  if (typeof source.quotedPrice === 'number' && Number.isFinite(source.quotedPrice) && source.quotedPrice >= 0) state.quotedPrice = source.quotedPrice;
+  if (typeof source.previousQuote === 'number' && Number.isFinite(source.previousQuote) && source.previousQuote >= 0) state.previousQuote = source.previousQuote;
+  if (typeof source.priceObjection === 'boolean') state.priceObjection = source.priceObjection;
+  if (['AI_ACTIVE', 'OWNER_PAUSED', 'OWNER_ACTIVE', 'BLOCKED'].includes(String(source.handoffState))) state.handoffState = source.handoffState as UniversalSalesState['handoffState'];
+  if (Array.isArray(source.lastOfferedProducts)) state.lastOfferedProducts = source.lastOfferedProducts.filter((item): item is string => typeof item === 'string' && Boolean(item.trim())).slice(0, 10).map(item => item.trim().slice(0, 300));
 
-  if (source.offeredAlternative && typeof source.offeredAlternative === 'object' && !Array.isArray(source.offeredAlternative)) {
-    const raw = source.offeredAlternative as Record<string, unknown>;
+  const coerceOffer = (value: unknown): SalesOfferedAlternative | undefined => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const raw = value as Record<string, unknown>;
     const name = typeof raw.name === 'string' ? raw.name.trim().slice(0, 300) : '';
-    if (name) {
-      const offered: SalesOfferedAlternative = {
-        name,
-        source: 'BITO',
-        offeredAt: typeof raw.offeredAt === 'string' ? raw.offeredAt.slice(0, 50) : new Date().toISOString(),
-      };
-      for (const key of ['product', 'productFamily', 'model', 'storage', 'variant', 'color', 'size'] as const) {
-        const rawValue = raw[key];
-        if (typeof rawValue === 'string' && rawValue.trim()) offered[key] = rawValue.trim().slice(0, 300);
-      }
-      if (typeof raw.unitPrice === 'number' && Number.isFinite(raw.unitPrice) && raw.unitPrice >= 0) offered.unitPrice = raw.unitPrice;
-      if (typeof raw.stockQuantity === 'number' && Number.isFinite(raw.stockQuantity) && raw.stockQuantity >= 0) offered.stockQuantity = raw.stockQuantity;
-      state.offeredAlternative = offered;
+    if (!name) return undefined;
+    const offered: SalesOfferedAlternative = {
+      name, source: 'BITO', offeredAt: typeof raw.offeredAt === 'string' ? raw.offeredAt.slice(0, 50) : new Date().toISOString(),
+    };
+    for (const key of ['product', 'productFamily', 'model', 'storage', 'variant', 'color', 'size'] as const) {
+      const rawValue = raw[key];
+      if (typeof rawValue === 'string' && rawValue.trim()) offered[key] = rawValue.trim().slice(0, 300);
     }
+    if (typeof raw.unitPrice === 'number' && Number.isFinite(raw.unitPrice) && raw.unitPrice >= 0) offered.unitPrice = raw.unitPrice;
+    if (typeof raw.stockQuantity === 'number' && Number.isFinite(raw.stockQuantity) && raw.stockQuantity >= 0) offered.stockQuantity = raw.stockQuantity;
+    return offered;
+  };
+  const legacyOffer = coerceOffer(source.offeredAlternative);
+  if (legacyOffer) state.offeredAlternative = legacyOffer;
+  if (Array.isArray(source.offeredAlternatives)) {
+    const offers = source.offeredAlternatives.map(coerceOffer).filter((item): item is SalesOfferedAlternative => Boolean(item)).slice(0, 5);
+    if (offers.length) {
+      state.offeredAlternatives = offers;
+      state.offeredAlternative = state.offeredAlternative ?? offers[0];
+    }
+  } else if (legacyOffer) {
+    state.offeredAlternatives = [legacyOffer];
   }
 
   if (source.factStatus && typeof source.factStatus === 'object' && !Array.isArray(source.factStatus)) {
@@ -281,7 +310,7 @@ export function updateUniversalSalesState(previous: UniversalSalesState | undefi
   const quantity = extractQuantity(normalized);
   const volume = extractVolume(normalized);
   const color = detectColor(normalized);
-  const storage = extractStorage(normalized);
+  const storage = extractStorage(normalized) ?? extractBareStorageReply(normalized, state.lastSellerQuestion);
   const size = extractSize(normalized);
   const rawCompactModel = extractCompactModel(rawText);
   const budget = extractBudget(normalized);
@@ -421,17 +450,19 @@ export function applySalesTurnUnderstanding(
   const state = coerceUniversalSalesState(previous);
   const before = coerceUniversalSalesState(previous);
 
-  const acceptingOfferedAlternative = !understanding.topicSwitch
-    && shouldAcceptOfferedAlternative(state, understanding, rawText);
+  const acceptedOfferedAlternative = !understanding.topicSwitch
+    ? resolveOfferedAlternative(state, understanding, rawText)
+    : undefined;
   if (understanding.topicSwitch) {
     clearProductSelectionContext(state);
     delete state.offeredAlternative;
+    delete state.offeredAlternatives;
   } else {
     // Clear the rejected/unavailable selection BEFORE accepting a verified
     // alternative. Doing it afterwards erased the accepted variant's verified
     // price/facts and could make the next `2 ta olsamchi?` fall back to stale data.
-    if (understanding.clearUnavailableSelection || acceptingOfferedAlternative) clearUnavailableSelectionFacts(state);
-    if (acceptingOfferedAlternative) acceptOfferedAlternative(state);
+    if (understanding.clearUnavailableSelection || acceptedOfferedAlternative) clearUnavailableSelectionFacts(state);
+    if (acceptedOfferedAlternative) acceptOfferedAlternative(state, acceptedOfferedAlternative);
   }
 
   // Keep a conservative deterministic fallback for literal facts (phone,
@@ -447,10 +478,13 @@ export function applySalesTurnUnderstanding(
   const nextColor = cleanOptional(understanding.color);
   const nextSize = cleanOptional(understanding.size);
   const explicitSelection = Boolean(nextProduct || nextFamily || nextModel || nextStorage || nextVariant || nextColor || nextSize);
-  if (explicitSelection && state.offeredAlternative) {
-    const offered = canonicalComparable(state.offeredAlternative.name);
+  if (explicitSelection && !acceptedOfferedAlternative && state.offeredAlternatives?.length) {
     const requested = canonicalComparable([nextProduct, nextFamily, nextModel, nextStorage, nextVariant, nextColor, nextSize].filter(Boolean).join(' '));
-    if (requested && !offered.includes(requested) && !requested.includes(offered)) delete state.offeredAlternative;
+    const matching = state.offeredAlternatives.filter(item => {
+      const offered = canonicalComparable(item.name);
+      return requested && (offered.includes(requested) || requested.includes(offered));
+    });
+    if (!matching.length) { delete state.offeredAlternative; delete state.offeredAlternatives; }
   }
 
   if (nextProduct || nextFamily) {
@@ -512,19 +546,19 @@ export function applySalesTurnUnderstanding(
   // Literal fallbacks are safe only for attributes that are explicitly present
   // in this turn. They must never resurrect a product selection cleared by a
   // semantic topic switch.
-  if (!acceptingOfferedAlternative && !nextVariant && fallback.variant && fallback.variant !== before.variant && state.product) {
+  if (!acceptedOfferedAlternative && !nextVariant && fallback.variant && fallback.variant !== before.variant && state.product) {
     state.variant = fallback.variant;
     setFact(state, 'variant', fallback.variant, 'PROPOSED', 'CUSTOMER');
   }
-  if (!acceptingOfferedAlternative && !nextStorage && fallback.storage && fallback.storage !== before.storage) {
+  if (!acceptedOfferedAlternative && !nextStorage && fallback.storage && fallback.storage !== before.storage) {
     state.storage = fallback.storage;
     setFact(state, 'storage', fallback.storage, 'PROPOSED', 'CUSTOMER');
   }
-  if (!acceptingOfferedAlternative && !nextColor && fallback.color && fallback.color !== before.color) {
+  if (!acceptedOfferedAlternative && !nextColor && fallback.color && fallback.color !== before.color) {
     state.color = fallback.color;
     setFact(state, 'color', fallback.color, 'PROPOSED', 'CUSTOMER');
   }
-  if (!acceptingOfferedAlternative && !nextSize && fallback.size && fallback.size !== before.size) {
+  if (!acceptedOfferedAlternative && !nextSize && fallback.size && fallback.size !== before.size) {
     state.size = fallback.size;
     setFact(state, 'size', fallback.size, 'PROPOSED', 'CUSTOMER');
   }
@@ -554,10 +588,25 @@ export function applySalesTurnUnderstanding(
   if (typeof state.unitPrice === 'number' && state.quantity) state.totalPrice = roundMoney(state.unitPrice * state.quantity);
   else if (!state.quantity) delete state.totalPrice;
 
+  state.customer = true;
+  state.conversationMode = 'SALES';
   state.lastIntent = understanding.intent;
   state.wantsExactStock = understanding.intent === 'EXACT_STOCK';
   state.requestedCheaper = understanding.intent === 'CHEAPER_ALTERNATIVE';
   state.requestedAdvice = understanding.intent === 'ADVICE';
+  state.priceObjection = understanding.intent === 'PRICE_OBJECTION';
+  if (typeof state.unitPrice === 'number') {
+    if (state.quotedPrice !== undefined && state.quotedPrice !== state.unitPrice) state.previousQuote = state.quotedPrice;
+    state.quotedPrice = state.unitPrice;
+  }
+  state.salesStage = state.handoffState === 'OWNER_PAUSED' || state.handoffState === 'OWNER_ACTIVE'
+    ? 'HANDOFF'
+    : state.paymentMethod ? 'CHECKOUT'
+      : state.fulfillment || state.address || state.phone ? 'FULFILLMENT'
+        : understanding.intent === 'PRICE_OBJECTION' || understanding.intent === 'CHEAPER_ALTERNATIVE' ? 'NEGOTIATION'
+          : state.acceptedOffer ? 'OFFER'
+            : state.product ? 'QUALIFYING'
+              : 'DISCOVERY';
   state.updatedAt = new Date().toISOString();
   return state;
 }
@@ -679,6 +728,10 @@ export function reconcileUniversalSalesStateFromInventory(
       if (typeof publicPrice === 'number') {
         state.unitPrice = publicPrice;
         if (state.quantity) state.totalPrice = roundMoney(publicPrice * state.quantity);
+        if (state.lastIntent === 'PRICE') {
+          if (state.quotedPrice !== undefined && state.quotedPrice !== publicPrice) state.previousQuote = state.quotedPrice;
+          state.quotedPrice = publicPrice;
+        }
       }
     } else if (publicPrices.length > 1) {
       clearPriceFacts(state);
@@ -788,14 +841,25 @@ export function salesStatePrompt(state: UniversalSalesState | undefined): string
   if (value.phone) known.push(`telefon=${value.phone}`);
   if (value.paymentMethod) known.push(`to'lov=${value.paymentMethod}`);
   if (value.timing) known.push(`vaqt=${value.timing}`);
+  if (value.customer) known.push('customer=true');
+  if (value.conversationMode) known.push(`conversation_mode=${value.conversationMode}`);
+  if (value.salesStage) known.push(`sales_stage=${value.salesStage}`);
   if (value.lastIntent) known.push(`oxirgi_intent=${value.lastIntent}`);
   if (value.requestedCheaper) known.push('arzonroq_variant_so‘ralgan=true');
   if (value.requestedAdvice) known.push('maslahat_so‘ralgan=true');
   if (value.wantsExactStock) known.push('exact_qoldiq_so‘ralgan=true');
-  if (value.offeredAlternative) {
+  if (value.offeredAlternatives?.length) {
+    known.push(`taklif_qilingan_real_variantlar=${value.offeredAlternatives.map((item, index) => `${index + 1}) ${item.name}${typeof item.unitPrice === 'number' ? ` (${item.unitPrice})` : ''}`).join(' | ')}`);
+  } else if (value.offeredAlternative) {
     known.push(`taklif_qilingan_real_variant=${value.offeredAlternative.name}`);
     if (typeof value.offeredAlternative.unitPrice === 'number') known.push(`taklif_narxi=${value.offeredAlternative.unitPrice}`);
   }
+  if (value.acceptedOffer) known.push(`qabul_qilingan_taklif=${value.acceptedOffer}`);
+  if (typeof value.quotedPrice === 'number') known.push(`oxirgi_taklif_narxi=${value.quotedPrice}`);
+  if (typeof value.previousQuote === 'number') known.push(`oldingi_taklif_narxi=${value.previousQuote}`);
+  if (value.lastSellerQuestion) known.push(`oxirgi_sotuvchi_savoli=${value.lastSellerQuestion}`);
+  if (value.handoffState) known.push(`handoff=${value.handoffState}`);
+  if (value.priceObjection) known.push('narx_e’tirozi=true');
   for (const [key, fact] of Object.entries(value.factStatus ?? {})) {
     if (fact && typeof fact === 'object') known.push(`${key}_status=${fact.status}`);
   }
@@ -893,6 +957,12 @@ export function professionalSalesFallbackReply(
     if (selected) return ru ? `Хорошо, продолжаем по ${selected}. Что уточнить?` : `Mayli, ${selected} bo‘yicha davom etamiz 🙂 Nimasini aniqlashtiray?`;
     return ru ? 'Хорошо 🙂 Слушаю вас.' : 'Mayli 🙂 Eshitaman.';
   }
+  if (/^(?:a+|aa+)[!.?,\s]*$/iu.test(normalized)) {
+    return ru ? 'Да 🙂 Слушаю вас.' : 'Ha 🙂 Eshitaman.';
+  }
+  if (/^(?:😂|😄|😁|🙂|😊|👍|👌|🤝|❤️|❤)+[!.?,\s]*$/u.test(normalized)) {
+    return ru ? '😄 Я на связи.' : '😄 Eshitaman.';
+  }
   return deterministicSalesFallbackReply(state, coerceUniversalSalesState(state).lastIntent, language);
 }
 
@@ -966,58 +1036,137 @@ function captureOfferedAlternative(state: UniversalSalesState, rawItems: unknown
     .filter(item => item && typeof item === 'object' && !Array.isArray(item))
     .map(item => item as Record<string, unknown>)
     .filter(item => typeof item.name === 'string' && item.name.trim())
-    .filter(item => typeof item.quantity !== 'number' || item.quantity > 0);
-  const item = candidates[0];
-  if (!item) return;
-  const name = String(item.name).trim().slice(0, 300);
-  const parsed = parseProductCandidate(name);
-  const normalized = normalizeSalesTextForUnderstanding(name);
-  const storage = extractStorage(normalized);
-  const color = detectColor(normalized);
-  const size = extractSize(normalized);
-  const volume = extractVolume(normalized);
-  const offered: SalesOfferedAlternative = {
-    name,
-    product: parsed.product,
-    productFamily: parsed.family || inferProductFamily(parsed.product),
-    ...(parsed.model ? { model: parsed.model, variant: parsed.model } : {}),
-    ...(storage ? { storage } : {}),
-    ...(color ? { color } : {}),
-    ...(size ? { size } : {}),
-    ...(volume ? { variant: volume } : {}),
-    ...(typeof item.price === 'number' && Number.isFinite(item.price) && item.price >= 0 ? { unitPrice: item.price } : {}),
-    ...(typeof item.quantity === 'number' && Number.isFinite(item.quantity) && item.quantity >= 0 ? { stockQuantity: item.quantity } : {}),
-    source: 'BITO',
-    offeredAt: checkedAt,
-  };
-  state.offeredAlternative = offered;
+    .filter(item => typeof item.quantity !== 'number' || item.quantity > 0)
+    .slice(0, 25);
+  const offers = candidates.map(item => {
+    const name = String(item.name).trim().slice(0, 300);
+    const parsed = parseProductCandidate(name);
+    const normalized = normalizeSalesTextForUnderstanding(name);
+    const storage = extractStorage(normalized);
+    const color = detectColor(normalized);
+    const size = extractSize(normalized);
+    const volume = extractVolume(normalized);
+    return {
+      name, product: parsed.product, productFamily: parsed.family || inferProductFamily(parsed.product),
+      ...(parsed.model ? { model: parsed.model, variant: parsed.model } : {}),
+      ...(storage ? { storage } : {}), ...(color ? { color } : {}), ...(size ? { size } : {}), ...(volume ? { variant: volume } : {}),
+      ...(typeof item.price === 'number' && Number.isFinite(item.price) && item.price >= 0 ? { unitPrice: item.price } : {}),
+      ...(typeof item.quantity === 'number' && Number.isFinite(item.quantity) && item.quantity >= 0 ? { stockQuantity: item.quantity } : {}),
+      source: 'BITO' as const, offeredAt: checkedAt,
+    } satisfies SalesOfferedAlternative;
+  }).sort((left, right) => alternativeRankScore(state, right) - alternativeRankScore(state, left)).slice(0, 5);
+  if (!offers.length) return;
+  state.offeredAlternatives = offers;
+  state.offeredAlternative = offers[0];
+  state.lastOfferedProducts = offers.map(item => item.name);
 }
 
-function shouldAcceptOfferedAlternative(state: UniversalSalesState, understanding: SalesTurnUnderstanding, rawText: string): boolean {
-  if (!state.offeredAlternative || understanding.topicSwitch) return false;
-  const explicitSelection = Boolean(
-    understanding.product || understanding.productFamily || understanding.model || understanding.storage
-    || understanding.variant || understanding.color || understanding.size,
-  );
-  if (explicitSelection) return false;
+function alternativeRankScore(state: UniversalSalesState, offer: SalesOfferedAlternative): number {
+  let score = 0;
+  const desiredModel = canonicalComparable(state.model || state.variant || '');
+  const offeredModel = canonicalComparable(offer.model || offer.variant || offer.name);
+  const desiredNumber = desiredModel.match(/\b(\d{1,3})\b/u)?.[1];
+  const offeredNumber = offeredModel.match(/\b(\d{1,3})\b/u)?.[1];
+  if (desiredModel && offeredModel) {
+    const desiredTokens = desiredModel.split(' ').filter(token => token.length >= 2 && !/^\d+$/u.test(token));
+    score += desiredTokens.reduce((sum, token) => sum + (offeredModel.includes(token) ? 10 : 0), 0);
+    if (desiredNumber && offeredNumber) score += Math.max(0, 36 - Math.abs(Number(desiredNumber) - Number(offeredNumber)) * 8);
+  }
+  for (const [wanted, actual, weight] of [
+    [state.storage, offer.storage || offer.name, 20],
+    [state.color, offer.color || offer.name, 10],
+    [state.size, offer.size || offer.name, 10],
+  ] as const) {
+    if (wanted && actual && canonicalComparable(actual).includes(canonicalComparable(wanted))) score += weight;
+  }
+
+  const budget = parseComparableBudget(state.budget);
+  if (budget !== undefined && typeof offer.unitPrice === 'number') {
+    if (offer.unitPrice <= budget) {
+      // Prefer a close fit under budget over an arbitrary cheapest/first row.
+      const ratio = budget > 0 ? Math.max(0, 1 - (budget - offer.unitPrice) / budget) : 0;
+      score += 45 + ratio * 15;
+    } else {
+      const overRatio = budget > 0 ? (offer.unitPrice - budget) / budget : 1;
+      score -= 30 + Math.min(overRatio, 2) * 20;
+    }
+  }
+  if (state.requestedCheaper && typeof offer.unitPrice === 'number') score += Math.max(0, 20_000_000 - offer.unitPrice) / 1_000_000;
+  if (typeof offer.stockQuantity === 'number' && offer.stockQuantity > 0) score += Math.min(offer.stockQuantity, 20) * 0.25;
+  return score;
+}
+
+function parseComparableBudget(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const normalized = normalizeSalesTextForUnderstanding(value);
+  if (/\b(?:usd|dollar|\$|доллар)\b/iu.test(normalized)) return undefined;
+  const match = normalized.match(/(\d+(?:[.,]\d+)?)\s*(mln|million|млн|ming|k|тыс)?/iu);
+  if (!match) return undefined;
+  const number = Number(match[1].replace(',', '.'));
+  if (!Number.isFinite(number) || number <= 0) return undefined;
+  const unit = match[2]?.toLocaleLowerCase();
+  if (unit === 'mln' || unit === 'million' || unit === 'млн') return number * 1_000_000;
+  if (unit === 'ming' || unit === 'k' || unit === 'тыс') return number * 1_000;
+  return number;
+}
+
+function resolveOfferedAlternative(state: UniversalSalesState, understanding: SalesTurnUnderstanding, rawText: string): SalesOfferedAlternative | undefined {
+  const offers = state.offeredAlternatives?.length ? state.offeredAlternatives : state.offeredAlternative ? [state.offeredAlternative] : [];
+  if (!offers.length || understanding.topicSwitch) return undefined;
   const normalized = normalizeSalesTextForUnderstanding(rawText);
-  if (/\b(?:yo['‘’]?q|kerak\s+emas|olmayman|boshqa|нет|не\s+надо|no)\b/iu.test(normalized)) return false;
-  if (['QUANTITY', 'PRICE', 'ORDER'].includes(understanding.intent)) return true;
-  if (understanding.intent !== 'ACKNOWLEDGEMENT') return false;
-  return /^(?:ha|xa|mayli|xo['‘’]?p|hop|bo['‘’]?ladi|boladi|ok|okay|да|хорошо|ладно)[!.?,\s]*$/iu.test(normalized);
+  if (/\b(?:yo['‘’]?q|kerak\s+emas|olmayman|нет|не\s+надо|no)\b/iu.test(normalized)) return undefined;
+
+  const ordinal = normalized.match(/(?:^|\b)(?:([1-5])\s*[-.]?\s*(?:chi(?:si)?(?:ni)?|variant(?:i)?(?:ni)?)|birinchi(?:si)?(?:ni)?|ikkinchi(?:si)?(?:ni)?|uchinchi(?:si)?(?:ni)?|to['‘’]?rtinchi(?:si)?(?:ni)?|beshinchi(?:si)?(?:ni)?)(?:\b|$)/iu);
+  if (ordinal) {
+    const ordinalText = normalizeSalesTextForUnderstanding(ordinal[0]).replace(/[^\p{L}'0-9]/gu, '');
+    const index = ordinal[1] ? Number(ordinal[1])
+      : ordinalText.startsWith('birinchi') ? 1
+        : ordinalText.startsWith('ikkinchi') ? 2
+          : ordinalText.startsWith('uchinchi') ? 3
+            : ordinalText.startsWith("to'rtinchi") || ordinalText.startsWith('tortinchi') ? 4
+              : ordinalText.startsWith('beshinchi') ? 5
+                : undefined;
+    if (index && offers[index - 1]) return offers[index - 1];
+  }
+
+  const requested = canonicalComparable([understanding.product, understanding.productFamily, understanding.model, understanding.storage, understanding.variant, understanding.color, understanding.size].filter(Boolean).join(' '));
+  if (requested) {
+    const exact = offers.find(item => {
+      const label = canonicalComparable([item.name, item.product, item.productFamily, item.model, item.storage, item.variant, item.color, item.size].filter(Boolean).join(' '));
+      return label.includes(requested) || requested.includes(label);
+    });
+    if (exact) return exact;
+    const tokens = requested.split(' ').filter(token => token.length >= 2);
+    const scored = offers.map(item => {
+      const label = canonicalComparable([item.name, item.model, item.storage, item.variant, item.color, item.size].filter(Boolean).join(' '));
+      return { item, score: tokens.reduce((sum, token) => sum + (label.includes(token) ? 1 : 0), 0) };
+    }).sort((a, b) => b.score - a.score);
+    if (scored[0]?.score > 0 && scored[0].score > (scored[1]?.score ?? -1)) return scored[0].item;
+  }
+
+  if (/\b(?:arzonroq|eng\s+arzon|дешев)\p{L}*/iu.test(normalized)) {
+    const priced = offers.filter(item => typeof item.unitPrice === 'number').sort((a, b) => (a.unitPrice ?? Infinity) - (b.unitPrice ?? Infinity));
+    if (priced[0]) return priced[0];
+  }
+  const explicitSelection = Boolean(understanding.product || understanding.productFamily || understanding.model || understanding.storage || understanding.variant || understanding.color || understanding.size);
+  if (explicitSelection) return undefined;
+  if (offers.length === 1 && ['QUANTITY', 'PRICE', 'ORDER'].includes(understanding.intent)) return offers[0];
+  if (offers.length === 1 && understanding.intent === 'ACKNOWLEDGEMENT' && /^(?:ha|xa|mayli|xo['‘’]?p|hop|bo['‘’]?ladi|boladi|ok|okay|да|хорошо|ладно)[!.?,\s]*$/iu.test(normalized)) return offers[0];
+  return undefined;
 }
 
-function acceptOfferedAlternative(state: UniversalSalesState): void {
-  const offer = state.offeredAlternative;
-  if (!offer) return;
+function acceptOfferedAlternative(state: UniversalSalesState, offer: SalesOfferedAlternative): void {
+  const recentOffers = state.offeredAlternatives?.length
+    ? state.offeredAlternatives.map(item => ({ ...item }))
+    : state.offeredAlternative ? [{ ...state.offeredAlternative }] : [];
+  const recentProducts = state.lastOfferedProducts?.length
+    ? [...state.lastOfferedProducts]
+    : recentOffers.map(item => item.name);
   clearProductSelectionContext(state);
   state.product = offer.product || offer.productFamily || offer.name;
   state.productFamily = offer.productFamily || inferProductFamily(state.product);
-  state.model = offer.model;
-  state.storage = offer.storage;
-  state.variant = offer.variant || offer.model;
-  state.color = offer.color;
-  state.size = offer.size;
+  state.model = offer.model; state.storage = offer.storage; state.variant = offer.variant || offer.model; state.color = offer.color; state.size = offer.size;
+  state.acceptedOffer = offer.name;
   const checkedAt = offer.offeredAt || new Date().toISOString();
   if (state.product) setFact(state, 'product', state.product, 'VERIFIED', 'BITO', checkedAt);
   if (state.productFamily) setFact(state, 'productFamily', state.productFamily, 'VERIFIED', 'BITO', checkedAt);
@@ -1027,7 +1176,13 @@ function acceptOfferedAlternative(state: UniversalSalesState): void {
   if (state.color) setFact(state, 'color', state.color, 'VERIFIED', 'BITO', checkedAt);
   if (state.size) setFact(state, 'size', state.size, 'VERIFIED', 'BITO', checkedAt);
   if (typeof offer.unitPrice === 'number') state.unitPrice = offer.unitPrice;
-  delete state.offeredAlternative;
+  // Keep the last real offer set until a product topic switch. Customers often
+  // compare one option and then say “yo‘q, birinchisini olaman”. Retaining the
+  // verified Bito alternatives makes that reference deterministic without
+  // resurrecting an unrelated catalog family.
+  if (recentOffers.length) state.offeredAlternatives = recentOffers;
+  state.offeredAlternative = offer;
+  if (recentProducts.length) state.lastOfferedProducts = recentProducts;
 }
 
 function markEquivalentSelectionUnavailable(
@@ -1070,6 +1225,11 @@ function clearProductSelectionContext(state: UniversalSalesState): void {
   for (const key of ['product', 'productFamily', 'variant', 'model', 'storage', 'color', 'size'] as const) delete state[key];
   delete state.quantity;
   delete state.budget;
+  delete state.acceptedOffer;
+  delete state.lastOfferedProducts;
+  delete state.priceObjection;
+  delete state.quotedPrice;
+  delete state.previousQuote;
   clearPriceFacts(state);
   if (state.factStatus) {
     const next = { ...state.factStatus };
@@ -1216,6 +1376,17 @@ function extractStorage(text: string): string | undefined {
   const match = text.match(/\b(\d{1,4})\s*(gb|tb)\b/iu);
   if (!match) return undefined;
   return `${Number(match[1])}${match[2].toUpperCase()}`;
+}
+
+function extractBareStorageReply(text: string, lastSellerQuestion: string | undefined): string | undefined {
+  if (!lastSellerQuestion) return undefined;
+  const question = normalizeSalesTextForUnderstanding(lastSellerQuestion);
+  if (!/\b(?:xotira|storage|memory|pamyat|памят|gb|tb)\b/iu.test(question)) return undefined;
+  const match = text.trim().match(/^(\d{2,4})$/u);
+  if (!match) return undefined;
+  const amount = Number(match[1]);
+  if (!Number.isFinite(amount) || amount < 16 || amount > 4096) return undefined;
+  return `${amount}GB`;
 }
 
 function extractSize(text: string): string | undefined {
