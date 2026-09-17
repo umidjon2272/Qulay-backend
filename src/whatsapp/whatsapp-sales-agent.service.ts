@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException, OnModuleInit, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException, OnModuleDestroy, OnModuleInit, ServiceUnavailableException } from '@nestjs/common';
 import { Prisma, WhatsAppConnectionStatus } from '@prisma/client';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
@@ -8,9 +8,9 @@ import { SalesVisionService, SalesImageUnderstanding } from '../ai-agent/sales-v
 import { WhatsAppCloudService } from './whatsapp-cloud.service';
 import { WhatsAppCryptoService } from './whatsapp-crypto.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
-import { isWhatsAppSalesRelevant, oggOpusDurationSeconds, shouldActivateWhatsAppSalesContext } from './whatsapp-sales-policy';
+import { oggOpusDurationSeconds } from './whatsapp-sales-policy';
 import { APP_ERROR_CODES } from '../common/errors/app-error-codes';
-import { coerceUniversalSalesState, customerSafeSalesAnswer, normalizeSalesTextForUnderstanding } from '../ai-agent/universal-sales-context';
+import { coerceUniversalSalesState, customerSafeSalesAnswer, normalizeSalesTextForUnderstanding, professionalSalesFallbackReply } from '../ai-agent/universal-sales-context';
 import {
   SalesTurnHandle,
   bufferSalesTextFragment,
@@ -71,9 +71,10 @@ const FOLLOWUP_WINDOW_MS = 60 * 60 * 1000;
 const SOFT_EXIT_WINDOW_MS = 15 * 60 * 1000;
 
 @Injectable()
-export class WhatsAppSalesAgentService implements OnModuleInit {
+export class WhatsAppSalesAgentService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(WhatsAppSalesAgentService.name);
   private readonly processing = new Set<string>();
+  private webhookReconcileTimer: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -89,6 +90,13 @@ export class WhatsAppSalesAgentService implements OnModuleInit {
     // Repair stale WABA subscriptions after deploy without asking the owner to
     // reconnect. Run out-of-band so API startup is never blocked by Meta.
     setTimeout(() => void this.reconcileWebhookSubscriptions(), 5_000).unref?.();
+    this.webhookReconcileTimer = setInterval(() => void this.reconcileWebhookSubscriptions(), 30 * 60_000);
+    this.webhookReconcileTimer.unref?.();
+  }
+
+  onModuleDestroy(): void {
+    if (this.webhookReconcileTimer) clearInterval(this.webhookReconcileTimer);
+    this.webhookReconcileTimer = null;
   }
 
   private async reconcileWebhookSubscriptions(): Promise<void> {
@@ -343,7 +351,7 @@ export class WhatsAppSalesAgentService implements OnModuleInit {
 
       const session = await this.ensureSession(userId, message.from, displayName);
       let text = combinedText?.trim() || this.messageText(message);
-      const recentSalesContext = Boolean(session.salesContextUntil && session.salesContextUntil.getTime() > Date.now());
+      const recentSalesContext = Boolean(session.lastInboundAt || session.salesState || session.salesContextUntil);
 
       if (message.type === 'audio' && message.audio?.id) {
         if (!connection.salesVoiceEnabled) return;
@@ -386,15 +394,16 @@ export class WhatsAppSalesAgentService implements OnModuleInit {
       }
 
       if (!text) return;
-      const salesRelevant = message.type === 'image' || isWhatsAppSalesRelevant(text, recentSalesContext, message.type);
-      if (connection.salesOnly && !salesRelevant) return;
-      const activateUntil = (message.type === 'image' || shouldActivateWhatsAppSalesContext(text, recentSalesContext)) ? new Date(Date.now() + FOLLOWUP_WINDOW_MS) : session.salesContextUntil;
+      // A connected WhatsApp Business number is a professional customer inbox.
+      // Once the owner enables the Sales Agent, every inbound customer message
+      // reaches the semantic Sales Brain instead of being dropped by keyword gates.
+      const activateUntil = new Date(Date.now() + FOLLOWUP_WINDOW_MS);
       if (activateUntil?.getTime() !== session.salesContextUntil?.getTime()) {
         await this.prisma.whatsAppSalesSession.update({ where: { id: session.id }, data: { salesContextUntil: activateUntil } });
       }
 
       const normalizedCustomerText = normalizeSalesTextForUnderstanding(text);
-      const salesState = recentSalesContext ? coerceUniversalSalesState(session.salesState) : { version: 1 as const };
+      const salesState = coerceUniversalSalesState(session.salesState);
 
       const result = await this.ai.chat(
         userId,
@@ -403,6 +412,7 @@ export class WhatsAppSalesAgentService implements OnModuleInit {
         turn.signal,
         {
           externalSales: true,
+          professionalInbox: true,
           newSalesEpoch: !recentSalesContext,
           channel: 'WHATSAPP',
           customer: { peerName: displayName, peerType: 'USER', senderName: displayName },
@@ -415,11 +425,10 @@ export class WhatsAppSalesAgentService implements OnModuleInit {
         where: { id: session.id },
         data: { salesState: salesState as unknown as Prisma.InputJsonValue, lastInboundAt: new Date(), customerName: displayName ?? session.customerName },
       });
+      let answer = result.message?.trim() || professionalSalesFallbackReply(salesState, text);
       if ('suppressReply' in result && result.suppressReply === true) {
-        await this.prisma.whatsAppSalesSession.update({ where: { id: session.id }, data: { salesContextUntil: null } });
-        return;
+        answer = professionalSalesFallbackReply(salesState, text);
       }
-      let answer = result.message?.trim() || 'Yordam beraman. Qaysi mahsulot kerak edi?';
       if (result.pendingConfirmation) answer = 'Bu qadam uchun sotuvchi tasdig‘i kerak. Hozircha buyurtma ma’lumotlarini tayyorlab turaman.';
       answer = customerSafeSalesAnswer(answer, salesState);
       await this.cloud.sendText(userId, message.from, answer);
@@ -428,6 +437,7 @@ export class WhatsAppSalesAgentService implements OnModuleInit {
     } catch (error) {
       if (error instanceof ForbiddenException) {
         this.logger.warn({ event: 'whatsapp_sales_message_blocked', userId: this.safeId(userId), type: message?.type, code: this.errorCode(error) });
+        await this.cloud.sendText(userId, message?.from ?? '', 'Salom 🙂 Hozir AI javobida vaqtinchalik cheklov bor. Savolingizni yozib qoldiring.').catch(() => undefined);
         return;
       }
       this.logger.warn({ event: 'whatsapp_sales_message_failed', userId: this.safeId(userId), type: message?.type, code: this.errorCode(error) });

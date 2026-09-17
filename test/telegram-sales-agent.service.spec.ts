@@ -17,6 +17,7 @@ describe('TelegramSalesAgentService', () => {
       create: jest.fn(),
     },
     conversation: { create: jest.fn() },
+    salesInboundReceipt: { create: jest.fn().mockResolvedValue({}) },
     $transaction: jest.fn(async (fn: any) => fn({
       telegramSalesSession: prisma.telegramSalesSession,
       conversation: prisma.conversation,
@@ -150,56 +151,45 @@ describe('TelegramSalesAgentService', () => {
       'owner-a',
       expect.objectContaining({ message: 'Coladan 20 ta bormi?', conversationId: 'conversation', voice: true }),
       undefined,
-      undefined,
+      expect.anything(),
       expect.objectContaining({ externalSales: true, channel: 'TELEGRAM' }),
     );
     expect(telegram.sendMessage).toHaveBeenCalledWith('owner-a', '55', 'Ha, mavjud.');
   });
 
-  it('ignores greetings and personal chat from an existing contact', async () => {
+  it('treats every private inbound turn as a professional customer inbox message when private sales is enabled', async () => {
     prisma.telegramSalesSession.findUnique.mockResolvedValue(null);
-    await (service as any).handleIncoming('owner-a', {
-      peer: { peerId: '77', type: 'USER', displayName: 'Friend', username: '@friend', lastActivity: null },
-      messageId: 7,
-      senderId: '77',
-      senderUsername: '@friend',
-      senderDisplayName: 'Friend',
-      senderIsBot: false,
-      senderIsContact: true,
-      hadPriorConversation: true,
-      recentOutgoingCount: 5,
-      recentIncomingCount: 5,
-      text: 'Salom brat, qalesan?',
-      mentioned: false,
-      replyToOwnMessage: false,
-      voice: null,
-      receivedAt: new Date().toISOString(),
+    jest.spyOn(service as any, 'ensureSalesSession').mockResolvedValue({
+      id: 'sales-session-personal', conversationId: 'conversation-personal', salesState: null, salesContextUntil: null, ownerPausedUntil: null,
     });
-    expect(ai.chat).not.toHaveBeenCalled();
-    expect(telegram.sendMessage).not.toHaveBeenCalled();
+    prisma.telegramSalesSession.update.mockResolvedValue({});
+    await (service as any).handleIncoming('owner-a', {
+      peer: { peerId: '77', type: 'USER', displayName: 'Customer', username: '@customer', lastActivity: null },
+      messageId: 7, senderId: '77', senderUsername: '@customer', senderDisplayName: 'Customer', senderIsBot: false,
+      senderIsContact: true, hadPriorConversation: true, recentOutgoingCount: 5, recentIncomingCount: 5,
+      text: 'ha', mentioned: false, replyToOwnMessage: false, voice: null, receivedAt: new Date().toISOString(),
+    });
+    expect(ai.chat).toHaveBeenCalledWith('owner-a', expect.objectContaining({ message: 'ha' }), undefined, expect.anything(), expect.objectContaining({
+      externalSales: true, professionalInbox: true, channel: 'TELEGRAM',
+    }));
+    expect(telegram.sendMessage).toHaveBeenCalledWith('owner-a', '77', 'Ha, mavjud.');
   });
 
-  it('does not hijack an established personal contact on a vague availability phrase', async () => {
-    prisma.telegramSalesSession.findUnique.mockResolvedValue(null);
-    await (service as any).handleIncoming('owner-a', {
-      peer: { peerId: '88', type: 'USER', displayName: 'Friend', username: '@friend', lastActivity: null },
-      messageId: 8,
-      senderId: '88',
-      senderUsername: '@friend',
-      senderDisplayName: 'Friend',
-      senderIsBot: false,
-      senderIsContact: true,
-      hadPriorConversation: true,
-      recentOutgoingCount: 2,
-      recentIncomingCount: 3,
-      text: 'Coca Cola bormi?',
-      mentioned: false,
-      replyToOwnMessage: false,
-      voice: null,
-      receivedAt: new Date().toISOString(),
+  it('keeps a persistent private customer thread even after the old time window expires', async () => {
+    prisma.telegramSalesSession.findUnique.mockResolvedValue({
+      id: 'sales-session-old', conversationId: 'conversation-old', salesState: { version: 1, product: 'iphone', model: '13 pro' },
+      salesContextUntil: new Date(Date.now() - 86_400_000), ownerPausedUntil: null,
     });
-    expect(ai.chat).not.toHaveBeenCalled();
-    expect(telegram.sendMessage).not.toHaveBeenCalled();
+    prisma.telegramSalesSession.update.mockResolvedValue({});
+    await (service as any).handleIncoming('owner-a', {
+      peer: { peerId: '88', type: 'USER', displayName: 'Customer', username: '@customer', lastActivity: null },
+      messageId: 8, senderId: '88', senderUsername: '@customer', senderDisplayName: 'Customer', senderIsBot: false,
+      senderIsContact: false, hadPriorConversation: true, recentOutgoingCount: 0, recentIncomingCount: 3,
+      text: '2 ta', mentioned: false, replyToOwnMessage: false, voice: null, receivedAt: new Date().toISOString(),
+    });
+    expect(ai.chat).toHaveBeenCalledWith('owner-a', expect.objectContaining({ message: '2 ta' }), undefined, expect.anything(), expect.objectContaining({
+      newSalesEpoch: false, professionalInbox: true, salesState: expect.objectContaining({ product: 'iphone', model: '13 pro' }),
+    }));
   });
 
   it('activates for strong commercial intent even when the customer is saved as a contact', async () => {

@@ -43,4 +43,28 @@ describe('WhatsApp sales agent connection defaults', () => {
     expect(cloud.testConnection).toHaveBeenCalledWith('u');
   });
 
+
+  it('routes every short inbound business message to the professional sales brain', async () => {
+    const prisma = {
+      whatsAppConnection: {
+        findUnique: jest.fn().mockResolvedValue({ status: 'CONNECTED', salesAgentEnabled: true, salesOnly: true, salesVoiceEnabled: true }),
+      },
+      whatsAppSalesSession: {
+        findUnique: jest.fn().mockResolvedValue({ id: 's1', conversationId: 'c1', customerName: 'Buyer', salesContextUntil: null, lastInboundAt: null, salesState: null }),
+        update: jest.fn().mockResolvedValue({}),
+      },
+    };
+    const cloud = { sendText: jest.fn().mockResolvedValue({}) };
+    const ai = { chat: jest.fn().mockResolvedValue({ message: 'Eshitaman 🙂', pendingConfirmation: null }) };
+    const subscriptions = { assertFeatureAllowed: jest.fn().mockResolvedValue(undefined), assertAiAllowed: jest.fn().mockResolvedValue(undefined) };
+    const service = new WhatsAppSalesAgentService(prisma as never, cloud as never, {} as never, ai as never, {} as never, {} as never, subscriptions as never);
+
+    await (service as any).processIncoming('u', { id: 'm1', from: '99890', type: 'text', text: { body: 'ha' } }, 'Buyer', { signal: undefined }, 'ha');
+
+    expect(ai.chat).toHaveBeenCalledWith('u', expect.objectContaining({ message: 'ha' }), undefined, undefined, expect.objectContaining({
+      externalSales: true, professionalInbox: true, channel: 'WHATSAPP',
+    }));
+    expect(cloud.sendText).toHaveBeenCalledWith('u', '99890', 'Eshitaman 🙂');
+  });
+
 });

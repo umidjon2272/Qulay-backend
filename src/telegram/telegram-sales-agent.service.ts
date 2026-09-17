@@ -11,7 +11,7 @@ import { TelegramIntegrationService } from './telegram-integration.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { bitoInventorySearchTerm } from '../bito/bito-intent';
 import { BitoToolBridgeService } from '../bito/bito-tool-bridge.service';
-import { coerceUniversalSalesState, customerSafeSalesAnswer, normalizeSalesTextForUnderstanding } from '../ai-agent/universal-sales-context';
+import { coerceUniversalSalesState, customerSafeSalesAnswer, normalizeSalesTextForUnderstanding, professionalSalesFallbackReply } from '../ai-agent/universal-sales-context';
 import {
   SalesTurnHandle,
   bufferSalesTextFragment,
@@ -325,7 +325,7 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
       if (incoming.peer.type === 'USER' && salesSession?.ownerPausedUntil && salesSession.ownerPausedUntil.getTime() > Date.now()) return;
 
       const addressed = incoming.mentioned || incoming.replyToOwnMessage;
-      const activeSalesContext = Boolean(salesSession?.salesContextUntil && salesSession.salesContextUntil.getTime() > Date.now());
+      const activeSalesContext = incoming.peer.type === 'USER' ? Boolean(salesSession) : Boolean(salesSession?.salesContextUntil && salesSession.salesContextUntil.getTime() > Date.now());
 
       // Never spend STT/AI credits on an arbitrary personal voice note. A voice
       // starts/continues sales only in a selected group, an active sales DM, or
@@ -334,7 +334,7 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
       if (incoming.voice) {
         const voiceEligible = incoming.peer.type === 'GROUP'
           ? addressed
-          : activeSalesContext || (!incoming.senderIsContact && !incoming.hadPriorConversation);
+          : true;
         if (!voiceEligible || !connection.salesVoiceEnabled) return;
         const maxSeconds = Math.min(60, Math.max(1, connection.salesVoiceMaxSeconds || 60));
         if (!incoming.voice.durationSeconds || incoming.voice.durationSeconds > maxSeconds) {
@@ -357,7 +357,7 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
       if (incoming.image) {
         const imageEligible = incoming.peer.type === 'GROUP'
           ? addressed || activeSalesContext
-          : activeSalesContext || (!incoming.senderIsContact && !incoming.hadPriorConversation);
+          : true;
         if (!imageEligible) return;
         try {
           const buffer = await incoming.image.download();
@@ -382,19 +382,10 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
         // like “ha”, “mayli”, “rahmat”, “boshqasi-chi?” can be meaningful and
         // must not be killed by regexes. Truly unrelated chatter is classified
         // as NON_SALES by AiAgent and gets no reply.
-      } else if (!activeSalesContext && !imageUnderstanding && !(await this.isPrivateSalesIntent(userId, text, incoming))) {
-        // Privacy-first: greetings, personal banter and existing friend/contact
-        // conversations never reach the model unless a real commercial intent
-        // appears. Contact status is a signal, not a hard block, so saved
-        // customers can still ask about price/stock naturally.
-        this.logger.log({
-          event: 'telegram_sales_dm_ignored',
-          userId: this.safeUserId(userId),
-          contact: incoming.senderIsContact,
-          priorConversation: incoming.hadPriorConversation,
-          recentOutgoingCount: incoming.recentOutgoingCount,
-        });
-        return;
+      } else {
+        // salesPrivateChats=true is an explicit Professional Sales Inbox opt-in.
+        // Every inbound USER message is therefore a customer turn; semantic AI
+        // decides what it means instead of regex/privacy gates silently dropping it.
       }
 
       if (!salesSession) salesSession = await this.ensureSalesSession(userId, incoming);
@@ -402,7 +393,7 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
       const normalizedCustomerText = normalizeSalesTextForUnderstanding(text);
       // The AI sales brain, not a regex parser, owns semantic state updates.
       // The backend state remains a verified guardrail and Bito truth cache.
-      const salesState = activeSalesContext ? coerceUniversalSalesState(salesSession.salesState) : { version: 1 as const };
+      const salesState = coerceUniversalSalesState(salesSession.salesState);
       await this.prisma.telegramSalesSession.update({
         where: { id: salesSession.id },
         data: { salesContextUntil: contextUntil, ownerPausedUntil: null },
@@ -415,6 +406,7 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
         turn.signal,
         {
           externalSales: true,
+          professionalInbox: incoming.peer.type === 'USER',
           newSalesEpoch: !activeSalesContext,
           channel: 'TELEGRAM',
           customer: {
@@ -435,12 +427,15 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
         where: { id: salesSession.id },
         data: { salesState: salesState as unknown as Prisma.InputJsonValue },
       });
+      let answer = result.message?.trim() || professionalSalesFallbackReply(salesState, text);
       if ('suppressReply' in result && result.suppressReply === true) {
-        await this.markProcessed(salesSession.id, incoming.messageId, false);
-        await this.prisma.telegramSalesSession.update({ where: { id: salesSession.id }, data: { salesContextUntil: null } });
-        return;
+        if (incoming.peer.type !== 'USER') {
+          await this.markProcessed(salesSession.id, incoming.messageId, false);
+          await this.prisma.telegramSalesSession.update({ where: { id: salesSession.id }, data: { salesContextUntil: null } });
+          return;
+        }
+        answer = professionalSalesFallbackReply(salesState, text);
       }
-      let answer = result.message?.trim() || 'Yordam beraman. Qaysi mahsulot kerak edi?';
       if (result.pendingConfirmation) answer = 'Bu qadam uchun sotuvchi tasdig‘i kerak. Hozircha buyurtma ma’lumotlarini tayyorlab turaman.';
       answer = customerSafeSalesAnswer(answer, salesState);
       await this.safeReply(userId, incoming.peer.peerId, answer);
@@ -449,6 +444,7 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
     } catch (error) {
       if (error instanceof ForbiddenException) {
         this.logger.warn({ event: 'telegram_sales_message_blocked', userId: this.safeUserId(userId), code: this.errorCode(error) });
+        if (incoming.peer.type === 'USER') await this.safeReply(userId, incoming.peer.peerId, 'Salom 🙂 Hozir AI javobida vaqtinchalik cheklov bor. Savolingizni yozib qoldiring, yordam berishga harakat qilaman.').catch(() => undefined);
         return;
       }
       this.logger.warn({
@@ -461,8 +457,8 @@ export class TelegramSalesAgentService implements OnModuleInit, OnModuleDestroy 
       // Only an already-active customer conversation gets a fallback. An
       // uncertain personal chat must never receive an automated error message.
       const existing = await this.prisma.telegramSalesSession.findUnique({ where: { userId_peerId: { userId, peerId: this.salesSessionPeerId(incoming) } } }).catch(() => null);
-      if (existing?.salesContextUntil && existing.salesContextUntil.getTime() > Date.now()) {
-        await this.safeReply(userId, incoming.peer.peerId, 'Bu joyini hozir aniq ayta olmayman. Iltimos, savolni bir marta qayta yozib ko‘ring.').catch(() => undefined);
+      if (incoming.peer.type === 'USER' || (existing?.salesContextUntil && existing.salesContextUntil.getTime() > Date.now())) {
+        await this.safeReply(userId, incoming.peer.peerId, 'Hozir javob tayyorlashda kichik uzilish bo‘ldi. Savolingizni yana bir marta yozib yuboring, davom etaman.').catch(() => undefined);
       }
     } finally {
       this.processing.delete(key);

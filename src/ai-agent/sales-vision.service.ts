@@ -61,7 +61,7 @@ export class SalesVisionService {
           ],
         }],
         store: false,
-        ...(/^gpt-5(?:-|$)/.test(model) ? { reasoning: { effort: 'low' as const } } : {}),
+        ...(/^gpt-5(?:-|$)/.test(model) ? { reasoning: { effort: 'medium' as const } } : {}),
       });
       void this.usage.logTextUsage({
         userId,

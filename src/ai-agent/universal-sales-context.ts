@@ -874,6 +874,28 @@ export function salesSelectionLabel(state: UniversalSalesState | undefined): str
   return parts.join(' ').replace(/\s+/g, ' ').trim() || undefined;
 }
 
+
+export function professionalSalesFallbackReply(
+  state: UniversalSalesState | undefined,
+  customerText = '',
+  language = 'uz',
+): string {
+  const normalized = normalizeSalesTextForUnderstanding(customerText);
+  const ru = language === 'ru';
+  if (/^(?:salom+|assalomu\s+alaykum|alaykum\s+assalom|hello+|hi+|privet|привет|здравствуйте)[!.?,\s]*$/iu.test(normalized)) {
+    return ru ? 'Здравствуйте! Чем помочь?' : 'Salom! Yordam beraman 🙂 Nima kerak edi?';
+  }
+  if (/^(?:rahmat|rhm|spasibo|спасибо|thanks?|thank\s+you)[!.?,\s]*$/iu.test(normalized)) {
+    return ru ? 'Пожалуйста 🙂 Если что-то понадобится — пишите.' : 'Arzimaydi 🙂 Yana nimadir kerak bo‘lsa, yozavering.';
+  }
+  if (/^(?:ha|xa|haa|mayli|xo['‘’]?p|hop|ok+|okay|да|ладно|хорошо)[!.?,\s]*$/iu.test(normalized)) {
+    const selected = salesSelectionLabel(state);
+    if (selected) return ru ? `Хорошо, продолжаем по ${selected}. Что уточнить?` : `Mayli, ${selected} bo‘yicha davom etamiz 🙂 Nimasini aniqlashtiray?`;
+    return ru ? 'Хорошо 🙂 Слушаю вас.' : 'Mayli 🙂 Eshitaman.';
+  }
+  return deterministicSalesFallbackReply(state, coerceUniversalSalesState(state).lastIntent, language);
+}
+
 export function deterministicSalesFallbackReply(
   state: UniversalSalesState | undefined,
   intent?: UniversalSalesIntent,

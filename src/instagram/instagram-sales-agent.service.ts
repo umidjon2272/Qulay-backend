@@ -5,7 +5,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AiAgentService } from '../ai-agent/ai-agent.service';
 import { SalesVisionService, SalesImageUnderstanding } from '../ai-agent/sales-vision.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
-import { coerceUniversalSalesState, customerSafeSalesAnswer, normalizeSalesTextForUnderstanding } from '../ai-agent/universal-sales-context';
+import { coerceUniversalSalesState, customerSafeSalesAnswer, normalizeSalesTextForUnderstanding, professionalSalesFallbackReply } from '../ai-agent/universal-sales-context';
 import { reserveSalesInboundTurn, runSalesTurnSequential } from '../ai-agent/sales-turn-coordinator';
 import { InstagramGraphService } from './instagram-graph.service';
 import { InstagramCommentMatcherService } from './instagram-comment-matcher.service';
@@ -144,7 +144,7 @@ export class InstagramSalesAgentService {
         const connection = await this.prisma.instagramConnection.findUnique({ where: { userId } });
         if (!connection?.salesAgentEnabled || !connection.dmEnabled || !['CONNECTED', 'DEGRADED'].includes(connection.status)) return true;
         const session = await this.ensureSession(userId, event.senderId, event.username ?? null, event.displayName ?? null);
-        const active = Boolean(session.salesContextUntil && session.salesContextUntil.getTime() > Date.now());
+        const active = Boolean(session.lastInboundAt || session.salesState || session.salesContextUntil);
         let imageUnderstanding: SalesImageUnderstanding | undefined;
         if (connection.imageVisionEnabled && event.imageUrls[0]) {
           try {
@@ -155,11 +155,12 @@ export class InstagramSalesAgentService {
           }
         }
         const text = event.text.trim() || (imageUnderstanding ? 'Shunaqasi bormi?' : 'Salom');
-        const state = active ? coerceUniversalSalesState(session.salesState) : { version: 1 as const };
+        const state = coerceUniversalSalesState(session.salesState);
         const contextUntil = new Date(Date.now() + SALES_CONTEXT_MS);
         await this.prisma.instagramSalesSession.update({ where: { id: session.id }, data: { salesContextUntil: contextUntil, lastInboundAt: new Date() } });
         const result = await this.ai.chat(userId, { message: text, conversationId: session.conversationId }, undefined, turn.signal, {
           externalSales: true,
+          professionalInbox: true,
           newSalesEpoch: !active,
           channel: 'INSTAGRAM',
           surface: 'DM',
@@ -169,11 +170,12 @@ export class InstagramSalesAgentService {
           visualProductHint: imageUnderstanding,
         });
         await this.prisma.instagramSalesSession.update({ where: { id: session.id }, data: { salesState: state as unknown as Prisma.InputJsonValue } });
+        let answer = result.message?.trim() || (imageUnderstanding
+          ? 'Rasmdagiga o‘xshash variantlarni ko‘rib beraman. Qaysi xususiyati siz uchun muhim?'
+          : professionalSalesFallbackReply(state, text));
         if ('suppressReply' in result && result.suppressReply === true) {
-          await this.prisma.instagramSalesSession.update({ where: { id: session.id }, data: { salesContextUntil: null } });
-          return true;
+          answer = professionalSalesFallbackReply(state, text);
         }
-        let answer = result.message?.trim() || (imageUnderstanding ? 'Rasmdagiga o‘xshash variantlarni ko‘rib beraman. Qaysi xususiyati siz uchun muhim?' : 'Yordam beraman. Qaysi mahsulot kerak edi?');
         if (result.pendingConfirmation) answer = 'Buyurtma ma’lumotlarini tayyorlab turaman. Yakunlash uchun kerakli ma’lumotni birga aniqlaymiz.';
         answer = customerSafeSalesAnswer(answer, state).slice(0, 950);
         await this.graph.sendText(userId, event.senderId, answer);
@@ -181,16 +183,16 @@ export class InstagramSalesAgentService {
         return true;
       } catch (error) {
         const code = this.graph.errorCode(error);
-        // The receipt represents completed processing, not merely an attempt.
-        // Release it so a webhook retry or the development poller can retry
-        // transient failures without permanently losing the customer message.
+        if (error instanceof ForbiddenException) {
+          this.logger.warn({ event: 'instagram_sales_dm_blocked', userId: this.graph.safeId(userId), code });
+          await this.graph.sendText(userId, event.senderId, 'Salom 🙂 Hozir AI javobida vaqtinchalik cheklov bor. Savolingizni yozib qoldiring.').catch(() => undefined);
+          return true;
+        }
+        // Transient processing failures release the receipt so webhook/poller
+        // delivery can retry. A handled fallback above keeps its receipt.
         await this.prisma.salesInboundReceipt.deleteMany({
           where: { channel: 'INSTAGRAM', userId, peerId: event.senderId, messageId: event.messageId },
         }).catch(() => undefined);
-        if (error instanceof ForbiddenException) {
-          this.logger.warn({ event: 'instagram_sales_dm_blocked', userId: this.graph.safeId(userId), code });
-          return false;
-        }
         this.logger.warn({ event: 'instagram_sales_dm_failed', userId: this.graph.safeId(userId), code });
         await this.graph.sendText(userId, event.senderId, 'Hozir javob berishda vaqtinchalik muammo bo‘ldi. Iltimos, savolni yana bir marta yozib ko‘ring.').catch(() => undefined);
         return false;
@@ -235,11 +237,12 @@ export class InstagramSalesAgentService {
 
         const media = await this.graph.getMedia(userId, event.mediaId);
         const session = await this.ensureSession(userId, event.commenterId, event.username, event.username);
-        const active = Boolean(session.salesContextUntil && session.salesContextUntil.getTime() > Date.now());
-        const state = active ? coerceUniversalSalesState(session.salesState) : { version: 1 as const };
+        const active = Boolean(session.lastInboundAt || session.salesState || session.salesContextUntil);
+        const state = coerceUniversalSalesState(session.salesState);
         const message = event.text.trim() || 'Salom';
         const result = await this.ai.chat(userId, { message, conversationId: session.conversationId }, undefined, turn.signal, {
           externalSales: true,
+          professionalInbox: true,
           newSalesEpoch: !active,
           channel: 'INSTAGRAM',
           surface: 'COMMENT',
@@ -249,20 +252,21 @@ export class InstagramSalesAgentService {
           sourceContext: media?.caption ? `Instagram post caption: ${media.caption.slice(0, 1200)}` : undefined,
         });
         await this.prisma.instagramSalesSession.update({ where: { id: session.id }, data: { salesState: state as unknown as Prisma.InputJsonValue, lastInboundAt: new Date() } });
-        if ('suppressReply' in result && result.suppressReply === true) return true;
-        const answer = customerSafeSalesAnswer(result.message?.trim() || 'Directga yozsangiz, yordam beraman 🙂', state).slice(0, 900);
+        const rawAnswer = ('suppressReply' in result && result.suppressReply === true)
+          ? professionalSalesFallbackReply(state, message)
+          : (result.message?.trim() || professionalSalesFallbackReply(state, message));
+        const answer = customerSafeSalesAnswer(rawAnswer, state).slice(0, 900);
         if (answer) await this.graph.replyToComment(userId, event.commentId, answer);
         await this.prisma.instagramSalesSession.update({ where: { id: session.id }, data: { lastOutboundAt: new Date(), salesContextUntil: new Date(Date.now() + SALES_CONTEXT_MS) } });
         return true;
       } catch (error) {
-        // A blocked/failed AI comment should not be permanently marked as
-        // consumed by the development poller. Releasing the outer receipt lets
-        // a later poll retry after credits/permissions/reachability recover.
-        await this.releaseCommentInboundReceipt(userId, event);
         if (error instanceof ForbiddenException) {
           this.logger.warn({ event: 'instagram_comment_agent_blocked', userId: this.graph.safeId(userId), code: this.graph.errorCode(error) });
-          return false;
+          await this.graph.replyToComment(userId, event.commentId, 'Salom 🙂 Yordam beraman. Nima kerakligini yozing.').catch(() => undefined);
+          return true;
         }
+        // Only transient failures release the receipt for retry.
+        await this.releaseCommentInboundReceipt(userId, event);
         this.logger.warn({ event: 'instagram_comment_agent_failed', userId: this.graph.safeId(userId), code: this.graph.errorCode(error) });
         return false;
       }

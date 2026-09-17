@@ -11,6 +11,7 @@ import {
   salesCatalogLookupQueryForUnderstanding,
   salesCatalogLookupScopeForUnderstanding,
   updateUniversalSalesState,
+  professionalSalesFallbackReply,
 } from '../src/ai-agent/universal-sales-context';
 import { extractBusinessSalesProfilePatch } from '../src/ai-agent/business-sales-profile';
 import {
@@ -557,6 +558,12 @@ describe('universal sales engine hardening', () => {
     expect(guarded.intent).toBe('ACKNOWLEDGEMENT');
     const accepted = applySalesTurnUnderstanding(state, guarded, 'Mayli');
     expect(accepted.model).toBe('13 pro');
+  });
+
+  it('professional fallback keeps short customer turns conversational instead of going silent', () => {
+    expect(professionalSalesFallbackReply({ version: 1 }, 'salom')).toContain('Salom');
+    expect(professionalSalesFallbackReply({ version: 1, product: 'iphone', model: '13 pro' }, 'mayli')).toContain('13 pro');
+    expect(professionalSalesFallbackReply({ version: 1 }, 'rahmat')).toContain('Arzimaydi');
   });
 
 });

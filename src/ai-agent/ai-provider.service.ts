@@ -34,6 +34,7 @@ export type ProviderResponse = {
 };
 
 export type ProviderStreamEvent = { type: 'text_delta'; delta: string } | { type: 'response_started' };
+export type ProviderReasoningEffort = 'low' | 'medium' | 'high';
 
 /**
  * Thin seam over the OpenAI Responses API. Keeps the Chat-Completions-shaped
@@ -51,7 +52,7 @@ export class AiProviderService {
     return Boolean(this.config.get<string>('ai.apiKey'));
   }
 
-  async complete(messages: ProviderMessage[], tools: ProviderTool[], onEvent?: (event: ProviderStreamEvent) => void, signal?: AbortSignal, toolChoice: 'auto' | 'required' = 'auto'): Promise<ProviderResponse> {
+  async complete(messages: ProviderMessage[], tools: ProviderTool[], onEvent?: (event: ProviderStreamEvent) => void, signal?: AbortSignal, toolChoice: 'auto' | 'required' = 'auto', reasoningEffort: ProviderReasoningEffort = 'low'): Promise<ProviderResponse> {
     const apiKey = this.config.get<string>('ai.apiKey');
     if (!apiKey) throw new ServiceUnavailableException('AI hali sozlanmagan. OPENAI_API_KEY ni Render Environment’ga qo‘ying.');
     const model = this.config.get<string>('ai.model', 'gpt-5-mini');
@@ -68,7 +69,7 @@ export class AiProviderService {
         tool_choice: toolChoice,
         store: false,
         include: ['reasoning.encrypted_content'] as Array<'reasoning.encrypted_content'>,
-        ...(/^gpt-5(?:-|$)/.test(model) ? { reasoning: { effort: 'low' as const } } : {}),
+        ...(/^gpt-5(?:-|$)/.test(model) ? { reasoning: { effort: reasoningEffort } } : {}),
       };
       let response: OpenAIResponse;
       if (onEvent) {

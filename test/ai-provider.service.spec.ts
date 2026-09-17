@@ -95,6 +95,13 @@ describe('AiProviderService', () => {
       });
     });
 
+    it('allows professional sales calls to request medium reasoning effort', async () => {
+      responsesCreateMock.mockResolvedValue({ error: null, output: [], output_text: 'ok', usage: { input_tokens: 1, output_tokens: 1 }, model: 'gpt-5-mini' });
+      const service = new AiProviderService(config);
+      await service.complete([{ role: 'user', content: '16 pro bormi' }], [], undefined, undefined, 'auto', 'medium');
+      expect(responsesCreateMock.mock.calls[0][0].reasoning).toEqual({ effort: 'medium' });
+    });
+
     it('translates ProviderTool into the flat Responses API tool shape', async () => {
       responsesCreateMock.mockResolvedValue({ error: null, output: [], output_text: 'ok', usage: { input_tokens: 1, output_tokens: 1 }, model: 'gpt-5-mini' });
       const service = new AiProviderService(config);
