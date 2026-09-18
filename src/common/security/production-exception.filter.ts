@@ -1,6 +1,7 @@
 import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus, Optional } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { MonitoringService } from '../../monitoring/monitoring.service';
+import { RateLimitException } from './rate-limit.exception';
 
 @Catch()
 export class ProductionExceptionFilter implements ExceptionFilter {
@@ -20,6 +21,10 @@ export class ProductionExceptionFilter implements ExceptionFilter {
       : parserOrUploadError.status === HttpStatus.PAYLOAD_TOO_LARGE || parserOrUploadError.statusCode === HttpStatus.PAYLOAD_TOO_LARGE
         ? HttpStatus.PAYLOAD_TOO_LARGE
         : HttpStatus.INTERNAL_SERVER_ERROR;
+
+    if (exception instanceof RateLimitException) {
+      response.setHeader('Retry-After', String(exception.retryAfterSeconds));
+    }
 
     if (status === HttpStatus.PAYLOAD_TOO_LARGE && (request.headers['content-type']?.startsWith('multipart/form-data') || request.url.includes('/files/upload'))) {
       response.status(HttpStatus.BAD_REQUEST).json({ statusCode: HttpStatus.BAD_REQUEST, message: 'File is too large' });

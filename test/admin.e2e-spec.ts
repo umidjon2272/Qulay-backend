@@ -1,9 +1,10 @@
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
-import { UserRole } from '@prisma/client';
+import { SubscriptionRequestStatus, SubscriptionStatus, SubscriptionTier, UsageType, UserRole } from '@prisma/client';
 import request = require('supertest');
 import { AppModule } from '../src/app.module';
 import { PrismaService } from '../src/prisma/prisma.service';
+import { configureApp } from '../src/main';
 
 describe('Admin console API', () => {
   let app: INestApplication;
@@ -19,8 +20,7 @@ describe('Admin console API', () => {
   beforeAll(async () => {
     const moduleRef: TestingModule = await Test.createTestingModule({ imports: [AppModule] }).compile();
     app = moduleRef.createNestApplication();
-    app.setGlobalPrefix('api');
-    app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }));
+    configureApp(app);
     prisma = app.get(PrismaService);
     await app.init();
 
@@ -32,8 +32,9 @@ describe('Admin console API', () => {
   });
 
   afterAll(async () => {
-    await prisma.user.deleteMany({ where: { id: { in: [adminId, targetId] } } });
-    await prisma.user.deleteMany({ where: { email: { contains: 'admin-test-' } } });
+    const ids = [adminId, targetId].filter((id): id is string => Boolean(id));
+    if (ids.length) await prisma.user.deleteMany({ where: { id: { in: ids } } });
+    if (prisma) await prisma.user.deleteMany({ where: { email: { contains: 'admin-test-' } } }).catch(() => undefined);
     await app.close();
   });
 
@@ -52,6 +53,61 @@ describe('Admin console API', () => {
       expect(JSON.stringify(response.body)).not.toContain('passwordHash');
       expect(JSON.stringify(response.body)).not.toContain('tokenHash');
     });
+  });
+
+  it('keeps login, activity, and session facts separate during normal admin browsing', async () => {
+    const before = await prisma.user.findUniqueOrThrow({ where: { id: targetId }, select: { lastLoginAt: true, lastActivityAt: true } });
+    expect(before.lastLoginAt).toBeNull();
+    expect(before.lastActivityAt).toBeNull();
+
+    await request(app.getHttpServer()).get('/api/auth/me').set('Authorization', `Bearer ${adminToken}`).expect(200);
+    await request(app.getHttpServer()).get('/api/health/platform').expect(200);
+    await request(app.getHttpServer()).get('/api/admin/users?page=1&sort=createdAt&order=desc').set('Authorization', `Bearer ${adminToken}`).expect(200)
+      .expect((response) => {
+        const target = response.body.items.find((item: { id: string }) => item.id === targetId);
+        expect(target).toEqual(expect.objectContaining({ lastLoginAt: null, lastActivityAt: null, activeSession: true }));
+      });
+    await request(app.getHttpServer()).get(`/api/admin/users/${targetId}`).set('Authorization', `Bearer ${adminToken}`).expect(200)
+      .expect((response) => {
+        expect(response.body.lastLoginAt).toBeNull();
+        expect(response.body.lastActivityAt).toBeNull();
+        expect(response.body.integrations.telegram.connected).toBe(false);
+        expect(response.body.integrations.google.connected).toBe(false);
+        expect(response.body.integrations.bito.connected).toBe(false);
+        expect(response.body.integrations.whatsapp).toEqual(expect.objectContaining({ connected: false, productEnabled: false }));
+        expect(response.body.integrations.instagram).toEqual(expect.objectContaining({ connected: false, productEnabled: false }));
+      });
+
+    const after = await prisma.user.findUniqueOrThrow({ where: { id: targetId }, select: { lastLoginAt: true, lastActivityAt: true } });
+    expect(after).toEqual(before);
+  });
+
+  it('updates lastLoginAt only after a successful login', async () => {
+    const before = await prisma.user.findUniqueOrThrow({ where: { id: targetId }, select: { lastLoginAt: true } });
+    expect(before.lastLoginAt).toBeNull();
+    await request(app.getHttpServer()).post('/api/auth/login').send({ email: (await prisma.user.findUniqueOrThrow({ where: { id: targetId }, select: { email: true } })).email, password: 'wrong-password' }).expect(401);
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: targetId }, select: { lastLoginAt: true } })).lastLoginAt).toBeNull();
+    await login((await prisma.user.findUniqueOrThrow({ where: { id: targetId }, select: { email: true } })).email);
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: targetId }, select: { lastLoginAt: true, lastActivityAt: true } }))).toEqual({ lastLoginAt: expect.any(Date), lastActivityAt: expect.any(Date) });
+  });
+
+  it('returns real usage and never treats expired or pending subscriptions as active', async () => {
+    const periodStart = new Date(Date.now() - 30 * 86_400_000);
+    const periodEnd = new Date(Date.now() - 86_400_000);
+    await prisma.userSubscription.upsert({
+      where: { userId: targetId },
+      create: { userId: targetId, tier: SubscriptionTier.PRO, status: SubscriptionStatus.ACTIVE, currentPeriodStart: periodStart, currentPeriodEnd: periodEnd },
+      update: { tier: SubscriptionTier.PRO, status: SubscriptionStatus.ACTIVE, currentPeriodStart: periodStart, currentPeriodEnd: periodEnd },
+    });
+    await prisma.subscriptionRequest.create({ data: { userId: targetId, tier: SubscriptionTier.BUSINESS, status: SubscriptionRequestStatus.PENDING } });
+    await prisma.aiUsage.create({ data: { userId: targetId, type: UsageType.TEXT, creditUnits: 7, createdAt: new Date(Date.now() - 2 * 86_400_000) } });
+
+    await request(app.getHttpServer()).get(`/api/admin/users/${targetId}`).set('Authorization', `Bearer ${adminToken}`).expect(200)
+      .expect((response) => {
+        expect(response.body.subscription).toEqual(expect.objectContaining({ status: 'EXPIRED', canUseAi: false }));
+        expect(response.body.pendingSubscriptionRequest).toEqual(expect.objectContaining({ tier: 'BUSINESS', status: 'PENDING' }));
+        expect(response.body.subscription.usage.aiCredits.used).toBe(7);
+      });
   });
 
   it('blocks a user, revokes refresh sessions, and permits an explicit unblock', async () => {

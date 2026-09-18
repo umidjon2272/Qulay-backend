@@ -260,6 +260,8 @@ model User {
   timezone               String                  @default("UTC")
   language               String                  @default("en")
   memoryEnabled          Boolean                 @default(true)
+  lastLoginAt            DateTime?
+  lastActivityAt         DateTime?
   createdAt              DateTime                @default(now())
   updatedAt              DateTime                @updatedAt
   refreshTokens          RefreshToken[]
@@ -310,6 +312,8 @@ model User {
   @@index([createdAt])
   @@index([status, createdAt])
   @@index([role, status])
+  @@index([lastLoginAt])
+  @@index([lastActivityAt])
 }
 
 model FileFolder {

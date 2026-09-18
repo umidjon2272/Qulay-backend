@@ -8,6 +8,9 @@ import { ProductionExceptionFilter } from './common/security/production-exceptio
 import { SecurityRateLimitService } from './common/security/security-rate-limit.service';
 import { SECURITY_LIMITS } from './common/security/security-limits.constants';
 import { PrismaService } from './prisma/prisma.service';
+import { JwtService } from '@nestjs/jwt';
+import { JwtPayload } from './auth/types/jwt-payload.type';
+import { createGlobalRateLimitKey, resolveClientIp } from './common/security/client-ip';
 
 export function configureApp(app: INestApplication): void {
   const configService = app.get(ConfigService);
@@ -48,10 +51,26 @@ export function configureApp(app: INestApplication): void {
   });
 
   const rateLimiter = app.get(SecurityRateLimitService);
+  const jwtService = app.get(JwtService);
+  const trustProxy = configService.get<boolean>('trustProxy', false);
   app.use((request: Request, response: Response, next: () => void) => {
-    const ip = request.ip ?? request.socket.remoteAddress ?? 'unknown';
-    if (!rateLimiter.isAllowed('global-ip', ip, SECURITY_LIMITS.globalPerIp.max, SECURITY_LIMITS.globalPerIp.windowMs)) {
-      response.status(429).json({ statusCode: 429, message: 'Too many requests. Try again later.' });
+    const ip = resolveClientIp(request, trustProxy);
+    const authorization = request.headers.authorization;
+    let userId: string | undefined;
+    if (authorization?.toLowerCase().startsWith('bearer ')) {
+      try {
+        userId = jwtService.verify<JwtPayload>(authorization.slice(7), {
+          secret: configService.getOrThrow<string>('jwt.accessSecret'),
+        }).sub;
+      } catch {
+        // Invalid/expired credentials stay in the anonymous IP bucket and are
+        // rejected by the authentication guard where appropriate.
+      }
+    }
+    const decision = rateLimiter.consume('global', createGlobalRateLimitKey(ip, userId), SECURITY_LIMITS.globalPerIp.max, SECURITY_LIMITS.globalPerIp.windowMs);
+    if (!decision.allowed) {
+      response.setHeader('Retry-After', String(decision.retryAfterSeconds));
+      response.status(429).json({ statusCode: 429, message: 'Too many requests. Try again later.', code: 'RATE_LIMITED', retryAfterSeconds: decision.retryAfterSeconds });
       return;
     }
     next();

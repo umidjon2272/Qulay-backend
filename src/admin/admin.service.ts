@@ -1,6 +1,6 @@
 import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { ActivityLog, FileSource, FileStatus, GoogleConnectionStatus, NotificationStatus, Prisma, SubscriptionRequestStatus, TelegramConnectionStatus, UsageType, UserRole, UserStatus } from '@prisma/client';
+import { ActivityLog, BitoConnectionStatus, FileSource, FileStatus, GoogleConnectionStatus, InstagramConnectionStatus, NotificationStatus, Prisma, SubscriptionRequestStatus, TelegramConnectionStatus, UsageType, UserRole, UserStatus, WhatsAppConnectionStatus } from '@prisma/client';
 import { ActivityLogService } from '../activity-log/activity-log.service';
 import { paginationMeta, paginationSkip } from '../common/dto/pagination-query.dto';
 import { NotificationWorkerService } from '../notifications/notification-worker.service';
@@ -30,7 +30,7 @@ export class AdminService {
     const rangeStart = this.daysAgo(range);
     const [users, activeUsers, registeredToday, registeredThisMonth, blockedUsers, aiUsage, files, notifications, telegram, google, activeReminders, upcomingMeetings, activityOverview, growth, activityTrend] = await Promise.all([
       this.prisma.user.count(),
-      this.prisma.user.count({ where: { status: UserStatus.ACTIVE } }),
+      this.prisma.user.count({ where: { lastActivityAt: { gte: rangeStart, lt: now } } }),
       this.prisma.user.count({ where: { createdAt: { gte: startOfToday } } }),
       this.prisma.user.count({ where: { createdAt: { gte: startOfMonth } } }),
       this.prisma.user.count({ where: { status: UserStatus.BLOCKED } }),
@@ -62,31 +62,31 @@ export class AdminService {
       { firstName: { contains: search, mode: 'insensitive' } },
       { lastName: { contains: search, mode: 'insensitive' } },
     ] } : {}) };
-    const orderBy = query.sort === 'lastActivity' ? { activityLogs: { _count: query.order } } : { createdAt: query.order };
+    const orderBy: Prisma.UserOrderByWithRelationInput = query.sort === 'lastActivity' ? { lastActivityAt: query.order } : { createdAt: query.order };
     const [rows, total] = await Promise.all([
       this.prisma.user.findMany({ where, orderBy, skip: paginationSkip(query.page, query.limit), take: query.limit, select: {
-        id: true, email: true, firstName: true, lastName: true, avatarUrl: true, role: true, status: true, createdAt: true,
+        id: true, email: true, firstName: true, lastName: true, avatarUrl: true, role: true, status: true, createdAt: true, lastLoginAt: true, lastActivityAt: true,
         refreshTokens: { where: { revokedAt: null, expiresAt: { gt: new Date() } }, select: { id: true }, take: 1 },
-        activityLogs: { orderBy: { createdAt: 'desc' }, select: { createdAt: true }, take: 1 },
         telegramConnection: { select: { status: true } }, googleConnection: { select: { status: true } },
       } }),
       this.prisma.user.count({ where }),
     ]);
-    return { items: rows.map((row) => ({ ...row, lastActivity: row.activityLogs[0]?.createdAt ?? null, activeSession: row.refreshTokens.length > 0, integrations: { telegram: row.telegramConnection?.status === TelegramConnectionStatus.CONNECTED, google: row.googleConnection?.status === GoogleConnectionStatus.CONNECTED }, activityLogs: undefined, refreshTokens: undefined })), meta: paginationMeta(query.page, query.limit, total) };
+    return { items: rows.map((row) => ({ ...row, lastActivity: row.lastActivityAt, activeSession: row.refreshTokens.length > 0, integrations: { telegram: row.telegramConnection?.status === TelegramConnectionStatus.CONNECTED, google: row.googleConnection?.status === GoogleConnectionStatus.CONNECTED }, refreshTokens: undefined, telegramConnection: undefined, googleConnection: undefined })), meta: paginationMeta(query.page, query.limit, total) };
   }
 
   async getUser(id: string) {
     const user = await this.prisma.user.findUnique({ where: { id }, select: {
-      id: true, email: true, firstName: true, lastName: true, avatarUrl: true, role: true, status: true, createdAt: true, updatedAt: true,
+      id: true, email: true, firstName: true, lastName: true, avatarUrl: true, role: true, status: true, createdAt: true, updatedAt: true, lastLoginAt: true, lastActivityAt: true,
       telegramConnection: { select: { status: true, connectedAt: true } }, googleConnection: { select: { status: true, connectedAt: true } },
-      activityLogs: { orderBy: { createdAt: 'desc' }, take: 10, select: { id: true, action: true, entityType: true, entityId: true, createdAt: true } }, subscription: { select: { tier: true, status: true, currentPeriodStart: true, currentPeriodEnd: true, bonusCredits: true } }, subscriptionRequests: { where: { status: SubscriptionRequestStatus.PENDING }, orderBy: { requestedAt: 'desc' }, take: 1, select: { id: true, tier: true, status: true, requestedAt: true } },
+      bitoConnection: { select: { status: true, connectedAt: true } }, whatsAppConnection: { select: { status: true, connectedAt: true } }, instagramConnection: { select: { status: true, connectedAt: true } },
+      activityLogs: { orderBy: { createdAt: 'desc' }, take: 10, select: { id: true, action: true, entityType: true, entityId: true, createdAt: true } }, subscriptionRequests: { where: { status: SubscriptionRequestStatus.PENDING }, orderBy: { requestedAt: 'desc' }, take: 1, select: { id: true, tier: true, status: true, requestedAt: true } },
     } });
     if (!user) throw new NotFoundException('User was not found');
     const now = new Date();
-    const [tasks, reminders, meetings, notes, contacts, finance, files, aiUsage, sessions, resetRequests] = await Promise.all([
-      this.prisma.task.count({ where: { userId: id } }), this.prisma.reminder.count({ where: { userId: id } }), this.prisma.meeting.count({ where: { userId: id } }), this.prisma.note.count({ where: { userId: id } }), this.prisma.contact.count({ where: { userId: id } }), this.prisma.financeTransaction.count({ where: { userId: id } }), this.prisma.userFile.count({ where: { userId: id, status: { not: FileStatus.DELETED } } }), this.prisma.aiUsage.count({ where: { userId: id } }), this.prisma.refreshToken.count({ where: { userId: id, revokedAt: null, expiresAt: { gt: now } } }), this.prisma.passwordResetToken.count({ where: { userId: id } }),
+    const [tasks, reminders, meetings, notes, contacts, finance, files, aiUsage, sessions, resetRequests, subscription] = await Promise.all([
+      this.prisma.task.count({ where: { userId: id } }), this.prisma.reminder.count({ where: { userId: id } }), this.prisma.meeting.count({ where: { userId: id } }), this.prisma.note.count({ where: { userId: id } }), this.prisma.contact.count({ where: { userId: id } }), this.prisma.financeTransaction.count({ where: { userId: id } }), this.prisma.userFile.count({ where: { userId: id, status: { not: FileStatus.DELETED } } }), this.prisma.aiUsage.count({ where: { userId: id } }), this.prisma.refreshToken.count({ where: { userId: id, revokedAt: null, expiresAt: { gt: now } } }), this.prisma.passwordResetToken.count({ where: { userId: id } }), this.subscriptions.getForUser(id),
     ]);
-    return { ...user, pendingSubscriptionRequest: user.subscriptionRequests[0] ?? null, subscriptionRequests: undefined, lastActivity: user.activityLogs[0]?.createdAt ?? null, activity: user.activityLogs, usage: { tasks, reminders, meetings, notes, contacts, financeTransactions: finance, files, aiRequests: aiUsage }, security: { activeRefreshSessions: sessions, passwordResetRequests: resetRequests }, integrations: { telegram: { connected: user.telegramConnection?.status === TelegramConnectionStatus.CONNECTED, status: user.telegramConnection?.status ?? TelegramConnectionStatus.DISCONNECTED }, google: { connected: user.googleConnection?.status === GoogleConnectionStatus.CONNECTED, status: user.googleConnection?.status ?? GoogleConnectionStatus.DISCONNECTED } }, telegramConnection: undefined, googleConnection: undefined, activityLogs: undefined };
+    return { ...user, subscription, pendingSubscriptionRequest: user.subscriptionRequests[0] ?? null, subscriptionRequests: undefined, lastActivity: user.lastActivityAt, activity: user.activityLogs, usage: { tasks, reminders, meetings, notes, contacts, financeTransactions: finance, files, aiRequests: aiUsage, plan: subscription.usage }, security: { activeRefreshSessions: sessions, passwordResetRequests: resetRequests }, integrations: { telegram: { connected: user.telegramConnection?.status === TelegramConnectionStatus.CONNECTED, status: user.telegramConnection?.status ?? TelegramConnectionStatus.DISCONNECTED }, google: { connected: user.googleConnection?.status === GoogleConnectionStatus.CONNECTED, status: user.googleConnection?.status ?? GoogleConnectionStatus.DISCONNECTED }, bito: { connected: user.bitoConnection?.status === BitoConnectionStatus.CONNECTED, status: user.bitoConnection?.status ?? BitoConnectionStatus.DISCONNECTED }, whatsapp: { connected: user.whatsAppConnection?.status === WhatsAppConnectionStatus.CONNECTED, status: user.whatsAppConnection?.status ?? WhatsAppConnectionStatus.DISCONNECTED, productEnabled: false }, instagram: { connected: user.instagramConnection?.status === InstagramConnectionStatus.CONNECTED, status: user.instagramConnection?.status ?? InstagramConnectionStatus.DISCONNECTED, productEnabled: false } }, telegramConnection: undefined, googleConnection: undefined, bitoConnection: undefined, whatsAppConnection: undefined, instagramConnection: undefined, activityLogs: undefined };
   }
 
   listPlans() { return this.subscriptions.listPlans(true); }
@@ -135,22 +135,32 @@ export class AdminService {
 
   async getUsage(range = 30) {
     const end = new Date(); const start = this.daysAgo(range);
-    const [byType, byUser, trend, tools] = await Promise.all([
-      this.prisma.aiUsage.groupBy({ by: ['type'], where: { createdAt: { gte: start, lt: end } }, _count: { _all: true }, _sum: { inputTokens: true, outputTokens: true, audioSeconds: true, estimatedCost: true } }),
-      this.prisma.aiUsage.groupBy({ by: ['userId'], where: { createdAt: { gte: start, lt: end } }, _count: { _all: true }, _sum: { inputTokens: true, outputTokens: true, estimatedCost: true }, orderBy: { _count: { userId: 'desc' } }, take: 10 }),
+    const [byType, byUser, trend, tools, storage] = await Promise.all([
+      this.prisma.aiUsage.groupBy({ by: ['type'], where: { createdAt: { gte: start, lt: end } }, _count: { _all: true }, _sum: { inputTokens: true, outputTokens: true, audioSeconds: true, estimatedCost: true, creditUnits: true } }),
+      this.prisma.aiUsage.groupBy({ by: ['userId'], where: { createdAt: { gte: start, lt: end } }, _count: { _all: true }, _sum: { inputTokens: true, outputTokens: true, audioSeconds: true, estimatedCost: true, creditUnits: true }, orderBy: { _count: { userId: 'desc' } }, take: 10 }),
       this.getUsageTrend(start, end),
       this.getToolUsage(start, end),
+      this.prisma.userFile.aggregate({ where: { status: { not: FileStatus.DELETED } }, _sum: { sizeBytes: true } }),
     ]);
     const ids = byUser.map((row) => row.userId); const users = await this.prisma.user.findMany({ where: { id: { in: ids } }, select: { id: true, email: true, firstName: true, lastName: true } }); const byId = new Map(users.map((user) => [user.id, user]));
-    const sum = (field: 'inputTokens' | 'outputTokens' | 'audioSeconds' | 'estimatedCost') => byType.reduce((total, row) => total + Number(row._sum[field] ?? 0), 0);
-    return { range, provider: { status: process.env.OPENAI_API_KEY ? 'configured' : 'not_configured' }, totals: { requests: byType.reduce((total, row) => total + row._count._all, 0), text: this.typeSummary(byType, UsageType.TEXT), voice: this.typeSummary(byType, UsageType.VOICE), tool: this.typeSummary(byType, UsageType.TOOL), file: this.typeSummary(byType, UsageType.FILE), inputTokens: sum('inputTokens'), outputTokens: sum('outputTokens'), audioSeconds: sum('audioSeconds'), estimatedCost: sum('estimatedCost') }, byUser: byUser.map((row) => ({ user: byId.get(row.userId) ?? { id: row.userId, email: 'Unknown', firstName: '', lastName: '' }, requests: row._count._all, inputTokens: row._sum.inputTokens ?? 0, outputTokens: row._sum.outputTokens ?? 0, estimatedCost: row._sum.estimatedCost ?? 0 })), trend, tools };
+    const sum = (field: 'inputTokens' | 'outputTokens' | 'audioSeconds' | 'estimatedCost' | 'creditUnits') => byType.reduce((total, row) => total + Number(row._sum[field] ?? 0), 0);
+    const userUsage = await Promise.all(byUser.map(async (row) => {
+      const user = byId.get(row.userId);
+      if (!user) return null;
+      const entitlement = await this.subscriptions.getForUser(row.userId);
+      return { user, requests: row._count._all, inputTokens: row._sum.inputTokens ?? 0, outputTokens: row._sum.outputTokens ?? 0, audioSeconds: row._sum.audioSeconds ?? 0, creditUnits: row._sum.creditUnits ?? 0, estimatedCost: row._sum.estimatedCost ?? 0, plan: { tier: entitlement.effectiveTier, status: entitlement.status, canUseAi: entitlement.canUseAi, usage: entitlement.usage } };
+    }));
+    return { range, provider: { status: process.env.OPENAI_API_KEY ? 'configured' : 'not_configured' }, totals: { requests: byType.reduce((total, row) => total + row._count._all, 0), text: this.typeSummary(byType, UsageType.TEXT), voice: this.typeSummary(byType, UsageType.VOICE), tool: this.typeSummary(byType, UsageType.TOOL), file: this.typeSummary(byType, UsageType.FILE), inputTokens: sum('inputTokens'), outputTokens: sum('outputTokens'), audioSeconds: sum('audioSeconds'), creditUnits: sum('creditUnits'), storageBytes: Number(storage._sum.sizeBytes ?? 0n), estimatedCost: sum('estimatedCost') }, byUser: userUsage.filter((row) => row !== null), trend, tools };
   }
 
   async getIntegrations() {
     const warningSince = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const [telegram, google, telegramRecent, googleRecent, telegramLastValidated, googleConnected] = await Promise.all([
+    const [telegram, google, bito, whatsapp, instagram, telegramRecent, googleRecent, telegramLastValidated, googleConnections] = await Promise.all([
       this.prisma.telegramConnection.groupBy({ by: ['status'], _count: { _all: true } }),
       this.prisma.googleConnection.groupBy({ by: ['status'], _count: { _all: true } }),
+      this.prisma.bitoConnection.groupBy({ by: ['status'], _count: { _all: true } }),
+      this.prisma.whatsAppConnection.groupBy({ by: ['status'], _count: { _all: true } }),
+      this.prisma.instagramConnection.groupBy({ by: ['status'], _count: { _all: true } }),
       this.prisma.telegramConnection.findMany({
         where: { OR: [{ status: TelegramConnectionStatus.ERROR }, { lastErrorAt: { gte: warningSince } }] },
         orderBy: { lastErrorAt: 'desc' },
@@ -164,21 +174,28 @@ export class AdminService {
         select: { userId: true, status: true, updatedAt: true, user: { select: { email: true } } },
       }),
       this.prisma.telegramConnection.aggregate({ _max: { lastValidatedAt: true } }),
-      this.prisma.googleConnection.findMany({ where: { status: GoogleConnectionStatus.CONNECTED }, select: { scopes: true } }),
+      this.prisma.googleConnection.findMany({ select: { status: true, scopes: true } }),
     ]);
 
-    const calendarScopes = ['https://www.googleapis.com/auth/calendar.readonly', 'https://www.googleapis.com/auth/calendar.events'];
-    const driveScopes = ['https://www.googleapis.com/auth/drive.metadata.readonly', 'https://www.googleapis.com/auth/drive.readonly'];
-    const hasAll = (scopes: string[], required: string[]) => required.every((scope) => scopes.includes(scope));
+    const hasScope = (scopes: string[], prefix: string) => scopes.some((scope) => scope === prefix || scope.startsWith(`${prefix}.`));
+    const connectedGoogle = googleConnections.filter((row) => row.status === GoogleConnectionStatus.CONNECTED);
+    const calendarConnected = connectedGoogle.filter((row) => hasScope(row.scopes, 'https://www.googleapis.com/auth/calendar')).length;
+    const driveConnected = connectedGoogle.filter((row) => hasScope(row.scopes, 'https://www.googleapis.com/auth/drive')).length;
+    const googleErrors = googleConnections.filter((row) => row.status === GoogleConnectionStatus.ERROR).length;
 
     return {
       telegram: this.integrationSummary(telegram, ['CONNECTED', 'DISCONNECTED', 'ERROR']),
       google: this.integrationSummary(google, ['CONNECTED', 'DISCONNECTED', 'ERROR']),
+      googleCalendar: { connected: calendarConnected, disconnected: googleConnections.length - calendarConnected - googleErrors, error: googleErrors },
+      googleDrive: { connected: driveConnected, disconnected: googleConnections.length - driveConnected - googleErrors, error: googleErrors },
+      bito: this.integrationSummary(bito, ['CONNECTED', 'DISCONNECTED', 'AUTHORIZING', 'ERROR']),
+      whatsapp: { ...this.integrationSummary(whatsapp, ['CONNECTED', 'DISCONNECTED', 'DEGRADED', 'ERROR']), productEnabled: false },
+      instagram: { ...this.integrationSummary(instagram, ['CONNECTED', 'DISCONNECTED', 'DEGRADED', 'ERROR']), productEnabled: false },
       health: {
         telegram: { lastValidatedAt: telegramLastValidated._max.lastValidatedAt?.toISOString() ?? null, recentErrors: telegramRecent.length },
         google: {
-          calendarEnabledUsers: googleConnected.filter((row) => hasAll(row.scopes, calendarScopes)).length,
-          driveEnabledUsers: googleConnected.filter((row) => hasAll(row.scopes, driveScopes)).length,
+          calendarEnabledUsers: calendarConnected,
+          driveEnabledUsers: driveConnected,
           recentErrors: googleRecent.length,
         },
       },
@@ -244,13 +261,16 @@ export class AdminService {
   async getSystemHealth() {
     const started = Date.now(); let db: { status: string; latencyMs: number } = { status: 'ok', latencyMs: 0 };
     try { await this.prisma.$queryRaw`SELECT 1`; db = { status: 'ok', latencyMs: Date.now() - started }; } catch { db = { status: 'unreachable', latencyMs: Date.now() - started }; }
-    return { api: { status: 'ok' }, database: db, notificationWorker: this.worker.health(), uptimeSeconds: Math.floor(process.uptime()), environment: this.config.get<string>('nodeEnv', 'development'), version: this.config.get<string>('deploymentVersion', 'unknown'), migrations: { status: 'managed_by_prisma' }, integrations: await this.getIntegrations() };
+    return { api: { status: 'ok' }, database: db, notificationWorker: this.worker.health(), uptimeSeconds: Math.floor(process.uptime()), environment: this.config.get<string>('nodeEnv', 'development'), version: this.config.get<string>('deploymentVersion', 'unknown'), migrations: { status: 'not_checked' }, integrations: await this.getIntegrations() };
   }
 
   async getSettings() {
     const storage = this.config.get<{ provider: string; maxSizeBytes: number }>('storage')!;
     const telegram = this.config.get<{ configured: boolean }>('telegram')!;
     const google = this.config.get<{ configured: boolean }>('google')!;
+    const whatsapp = this.config.get<{ configured: boolean }>('whatsapp')!;
+    const instagram = this.config.get<{ configured: boolean; oauthReady: boolean }>('instagram')!;
+    const bito = this.config.get<{ credentialEncryptionKey?: string; oauthClientId?: string }>('bito')!;
     const jwt = this.config.get<{ accessExpiresIn: string; refreshExpiresIn: string }>('jwt')!;
     const worker = this.worker.config();
     const health = await this.getSystemHealth();
@@ -277,7 +297,7 @@ export class AdminService {
         },
       },
       notifications: { workerStatus: this.worker.health().status, intervalSeconds: Math.round(worker.intervalMs / 1000), batchSize: worker.batchSize, retryLimit: worker.retryLimit },
-      integrations: { telegram: { configured: telegram.configured, loginDiagnosticEnabled: this.config.get<boolean>('telegram.loginDiagnosticEnabled', false) }, google: { configured: google.configured }, openai: { configured: Boolean(process.env.OPENAI_API_KEY) } },
+      integrations: { telegram: { configured: telegram.configured, loginDiagnosticEnabled: this.config.get<boolean>('telegram.loginDiagnosticEnabled', false) }, google: { configured: google.configured }, bito: { configured: Boolean(bito.credentialEncryptionKey) }, whatsapp: { configured: whatsapp.configured, productEnabled: false }, instagram: { configured: instagram.configured, oauthReady: instagram.oauthReady, productEnabled: false }, openai: { configured: Boolean(process.env.OPENAI_API_KEY) } },
       storage: {
         provider: storage.provider,
         maxFileSizeBytes: storage.maxSizeBytes,
@@ -317,6 +337,6 @@ export class AdminService {
   private async getUsageTrend(start: Date, end: Date) { const rows = await this.prisma.$queryRaw<TrendRow[]>(Prisma.sql`SELECT date_trunc('day', "createdAt") AS date, COUNT(*)::bigint AS count FROM "AiUsage" WHERE "createdAt" >= ${start} AND "createdAt" < ${end} GROUP BY 1 ORDER BY 1`); return rows.map((row) => ({ date: new Date(row.date).toISOString().slice(0, 10), count: Number(row.count) })); }
   private async getToolUsage(start: Date, end: Date) { const rows = await this.prisma.$queryRaw<ToolRow[]>(Prisma.sql`SELECT metadata->>'toolName' AS "toolName", COUNT(*)::bigint AS count FROM "ActivityLog" WHERE action = 'AI_TOOL_EXECUTED' AND "createdAt" >= ${start} AND "createdAt" < ${end} GROUP BY 1 ORDER BY count DESC`); return rows.filter((row) => row.toolName).map((row) => ({ tool: row.toolName, count: Number(row.count) })); }
   private async getActivityOverview(start: Date, end: Date) { const [tasks, reminders, meetings, notes, contacts, finance, files] = await Promise.all([this.prisma.task.count({ where: { createdAt: { gte: start, lt: end } } }), this.prisma.reminder.count({ where: { createdAt: { gte: start, lt: end } } }), this.prisma.meeting.count({ where: { createdAt: { gte: start, lt: end } } }), this.prisma.note.count({ where: { createdAt: { gte: start, lt: end } } }), this.prisma.contact.count({ where: { createdAt: { gte: start, lt: end } } }), this.prisma.financeTransaction.count({ where: { createdAt: { gte: start, lt: end } } }), this.prisma.userFile.count({ where: { createdAt: { gte: start, lt: end }, status: { not: FileStatus.DELETED } } })]); return { tasks, reminders, meetings, notes, contacts, financeTransactions: finance, filesUploaded: files }; }
-  private typeSummary(groups: Array<{ type: UsageType; _count: { _all: number }; _sum: { inputTokens: number | null; outputTokens: number | null; audioSeconds: number | null; estimatedCost: number | null } }>, type: UsageType) { const row = groups.find((item) => item.type === type); return { requests: row?._count._all ?? 0, inputTokens: row?._sum.inputTokens ?? 0, outputTokens: row?._sum.outputTokens ?? 0, audioSeconds: row?._sum.audioSeconds ?? 0, estimatedCost: row?._sum.estimatedCost ?? 0 }; }
+  private typeSummary(groups: Array<{ type: UsageType; _count: { _all: number }; _sum: { inputTokens: number | null; outputTokens: number | null; audioSeconds: number | null; estimatedCost: number | null; creditUnits: number | null } }>, type: UsageType) { const row = groups.find((item) => item.type === type); return { requests: row?._count._all ?? 0, inputTokens: row?._sum.inputTokens ?? 0, outputTokens: row?._sum.outputTokens ?? 0, audioSeconds: row?._sum.audioSeconds ?? 0, creditUnits: row?._sum.creditUnits ?? 0, estimatedCost: row?._sum.estimatedCost ?? 0 }; }
   private integrationSummary(rows: CountRow[], keys: string[]) { const counts = Object.fromEntries(rows.map((row) => [row.status, row._count._all])); return Object.fromEntries(keys.map((key) => [key.toLowerCase(), counts[key] ?? 0])); }
 }

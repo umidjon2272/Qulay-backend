@@ -138,7 +138,20 @@ export class SubscriptionsService {
         reviewer: { select: { id: true, email: true, firstName: true, lastName: true } },
       },
     });
-    return Promise.all(rows.map(async (row) => ({ ...row, plan: await this.getPlan(row.tier) })));
+    const now = new Date();
+    return Promise.all(rows.map(async (row) => {
+      const current = row.user.subscription;
+      const active = current?.status === SubscriptionStatus.ACTIVE
+        && (!current.currentPeriodEnd || current.currentPeriodEnd > now);
+      return {
+        ...row,
+        user: {
+          ...row.user,
+          subscription: current ? { ...current, status: active ? current.status : SubscriptionStatus.EXPIRED, active } : null,
+        },
+        plan: await this.getPlan(row.tier),
+      };
+    }));
   }
 
   async approveRequest(actorId: string, requestId: string) {

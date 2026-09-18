@@ -114,6 +114,7 @@ export class AuthService {
     }
 
     this.bruteForce.recordSuccess(ip, email);
+    await this.prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
     await this.securityAudit.recordUserAction(user.id, AuthSecurityAuditService.actions.LOGIN_SUCCEEDED);
     return this.issueAndPersistTokens(toPublicUser(user), 'login', startedAt);
   }
@@ -195,8 +196,6 @@ export class AuthService {
     }
     this.logTiming('refresh:rotation_persist', stageStartedAt);
     this.logTiming('refresh:end', startedAt);
-    await this.securityAudit.recordUserAction(user.id, AuthSecurityAuditService.actions.REFRESH_SUCCEEDED);
-
     return {
       user: toPublicUser(user),
       accessToken: tokenPair.accessToken,

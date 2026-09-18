@@ -4,13 +4,14 @@ describe('IntegrationsHealthService', () => {
   const googleAuth = { status: jest.fn() } as any;
   const telegramIntegration = { status: jest.fn() } as any;
   const bitoIntegration = { status: jest.fn() } as any;
-  const prisma = { whatsAppConnection: { findUnique: jest.fn() } } as any;
+  const prisma = { whatsAppConnection: { findUnique: jest.fn() }, instagramConnection: { findUnique: jest.fn() } } as any;
   let service: IntegrationsHealthService;
 
   beforeEach(() => {
     jest.clearAllMocks();
     bitoIntegration.status.mockResolvedValue({ connected: false, status: 'DISCONNECTED' });
     prisma.whatsAppConnection.findUnique.mockResolvedValue(null);
+    prisma.instagramConnection.findUnique.mockResolvedValue(null);
     service = new IntegrationsHealthService(googleAuth, telegramIntegration, bitoIntegration, prisma);
   });
 
